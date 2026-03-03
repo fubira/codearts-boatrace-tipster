@@ -37,10 +37,23 @@ export function parseSchedulePage($: CheerioAPI, date: string): VenueDay[] {
 /** Discover venues for a specific date (YYYY-MM-DD or YYYYMMDD) */
 export async function discoverDateSchedule(date: string): Promise<VenueDay[]> {
   const yyyymmdd = date.replace(/-/g, "");
+  if (yyyymmdd > todayYYYYMMDD()) {
+    logger.warn(`Skip future date ${date}`);
+    return [];
+  }
   const { $ } = await fetchPage(dailyScheduleUrl(yyyymmdd));
   const venues = parseSchedulePage($, yyyymmdd);
   logger.info(`Found ${venues.length} venue(s) for ${date}`);
   return venues;
+}
+
+/** Today as YYYYMMDD */
+function todayYYYYMMDD(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}${m}${d}`;
 }
 
 /** Get number of days in a month */
@@ -55,16 +68,19 @@ export async function discoverMonthSchedule(
   yearMonth: string,
 ): Promise<VenueDay[]> {
   const days = daysInMonth(yearMonth);
+  const today = todayYYYYMMDD();
   const allVenues: VenueDay[] = [];
 
   for (let d = 1; d <= days; d++) {
     const date = `${yearMonth}${String(d).padStart(2, "0")}`;
+    if (date > today) {
+      logger.debug(`Skip future date ${date}`);
+      break;
+    }
     const venues = await discoverDateSchedule(date);
     allVenues.push(...venues);
   }
 
-  logger.info(
-    `Found ${allVenues.length} venue-day(s) for ${yearMonth} across ${days} date(s)`,
-  );
+  logger.info(`Found ${allVenues.length} venue-day(s) for ${yearMonth}`);
   return allVenues;
 }
