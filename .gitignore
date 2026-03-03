@@ -20,5 +20,14 @@ data/backups/
 .DS_Store
 Thumbs.db
 
+# Python / ML
+ml/.venv/
+ml/cache/
+ml/models/
+ml/__pycache__/
+ml/src/**/__pycache__/
+*.pyc
+*.pkl
+
 # Misc
 .wrangler/
