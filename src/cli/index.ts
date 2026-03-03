@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { scrapeCommand } from "@/cli/commands/scrape";
 import { setLogLevel } from "@/shared/logger";
 import { Command } from "commander";
 
@@ -14,5 +15,7 @@ program
       setLogLevel("debug");
     }
   });
+
+program.addCommand(scrapeCommand);
 
 program.parse();
