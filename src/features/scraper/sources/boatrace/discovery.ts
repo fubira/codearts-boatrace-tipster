@@ -3,7 +3,7 @@
 import { fetchPage } from "@/features/scraper/http-client";
 import { logger } from "@/shared/logger";
 import type { CheerioAPI } from "cheerio";
-import { dailyScheduleUrl, monthlyScheduleUrl } from "./constants";
+import { dailyScheduleUrl } from "./constants";
 
 export interface VenueDay {
   stadiumCode: string;
@@ -43,32 +43,28 @@ export async function discoverDateSchedule(date: string): Promise<VenueDay[]> {
   return venues;
 }
 
+/** Get number of days in a month */
+function daysInMonth(yearMonth: string): number {
+  const year = Number.parseInt(yearMonth.slice(0, 4), 10);
+  const month = Number.parseInt(yearMonth.slice(4, 6), 10);
+  return new Date(year, month, 0).getDate();
+}
+
 /** Discover all venue-days for a given month (YYYYMM) */
 export async function discoverMonthSchedule(
   yearMonth: string,
 ): Promise<VenueDay[]> {
-  const { $ } = await fetchPage(monthlyScheduleUrl(yearMonth));
-
-  // Extract all date links from the monthly calendar
-  const dates = new Set<string>();
-  $("a[href*='hd=']").each((_i, el) => {
-    const href = $(el).attr("href") ?? "";
-    const hdMatch = href.match(/hd=(\d{8})/);
-    if (hdMatch?.[1].startsWith(yearMonth)) {
-      dates.add(hdMatch[1]);
-    }
-  });
-
+  const days = daysInMonth(yearMonth);
   const allVenues: VenueDay[] = [];
-  const sortedDates = [...dates].sort();
 
-  for (const date of sortedDates) {
+  for (let d = 1; d <= days; d++) {
+    const date = `${yearMonth}${String(d).padStart(2, "0")}`;
     const venues = await discoverDateSchedule(date);
     allVenues.push(...venues);
   }
 
   logger.info(
-    `Found ${allVenues.length} venue-day(s) for ${yearMonth} across ${sortedDates.length} date(s)`,
+    `Found ${allVenues.length} venue-day(s) for ${yearMonth} across ${days} date(s)`,
   );
   return allVenues;
 }
