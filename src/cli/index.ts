@@ -1,0 +1,18 @@
+#!/usr/bin/env bun
+import { setLogLevel } from "@/shared/logger";
+import { Command } from "commander";
+
+const program = new Command();
+
+program
+  .name("boatrace-tipster")
+  .description("Boat race prediction AI powered by machine learning")
+  .version("0.1.0")
+  .option("-v, --verbose", "enable verbose logging")
+  .hook("preAction", (thisCommand) => {
+    if (thisCommand.opts().verbose) {
+      setLogLevel("debug");
+    }
+  });
+
+program.parse();

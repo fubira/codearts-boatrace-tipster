@@ -1,0 +1,29 @@
+{
+  "name": "boatrace-tipster",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Boat race prediction AI powered by machine learning",
+  "bin": {
+    "boatrace-tipster": "./src/cli/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli/index.ts",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "cheerio": "^1.0.0",
+    "commander": "^13.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  }
+}
