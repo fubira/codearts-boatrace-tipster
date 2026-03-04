@@ -23,6 +23,7 @@ export interface ScraperOptions {
   month?: string;
   year?: string;
   stadiumId?: string;
+  raceNumbers?: number[];
   limit?: number;
   /** Callback to check if a race should be skipped */
   shouldSkip?: (

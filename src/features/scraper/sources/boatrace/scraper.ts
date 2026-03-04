@@ -86,6 +86,7 @@ async function scrapeVenueDay(
   let skipped = 0;
 
   for (let rno = 1; rno <= MAX_RACES_PER_VENUE; rno++) {
+    if (options.raceNumbers && !options.raceNumbers.includes(rno)) continue;
     const params: RaceParams = { raceNumber: rno, stadiumCode, date };
     const result = await scrapeOneRace(params, options.shouldSkip);
 

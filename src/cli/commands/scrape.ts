@@ -21,6 +21,7 @@ export const scrapeCommand = new Command("scrape")
   .option("-m, --month <month>", "target month (YYYYMM)")
   .option("-y, --year <year>", "target year (YYYY)")
   .option("-s, --stadium <id>", "stadium code (01-24)")
+  .option("-r, --race <numbers>", "race number(s) (1-12, comma-separated)")
   .option("-l, --limit <n>", "max races to scrape", Number.parseInt)
   .option("--dry-run", "parse only, do not save to DB")
   .option("--force", "re-scrape even if already in DB")
@@ -28,6 +29,16 @@ export const scrapeCommand = new Command("scrape")
   .action(async (opts) => {
     if (!opts.date && !opts.month && !opts.year) {
       console.error("Error: --date, --month, or --year is required");
+      process.exit(1);
+    }
+
+    const raceNumbers: number[] | undefined = opts.race
+      ? (opts.race as string).split(",").map(Number)
+      : undefined;
+    if (
+      raceNumbers?.some((n: number) => !Number.isInteger(n) || n < 1 || n > 12)
+    ) {
+      console.error("Error: --race values must be integers between 1 and 12");
       process.exit(1);
     }
 
@@ -84,6 +95,7 @@ export const scrapeCommand = new Command("scrape")
         month: opts.month,
         year: opts.year,
         stadiumId: opts.stadium,
+        raceNumbers,
         limit: opts.limit,
         shouldSkip,
         onBatchComplete,
