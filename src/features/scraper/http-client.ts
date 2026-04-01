@@ -15,6 +15,7 @@ const BASE_HEADERS: Record<string, string> = {
   "User-Agent": USER_AGENT,
   Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+  "Accept-Encoding": "gzip, deflate, br",
 };
 
 export interface FetchPageResult {
