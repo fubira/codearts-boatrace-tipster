@@ -31,12 +31,7 @@ def evaluate_model(
     df["score"] = scores
     df["actual_pos"] = y.values
 
-    # Filter to complete races (6 entries) for vectorized computation
-    race_counts = df.groupby("race_id").size()
-    complete_races = race_counts[race_counts == FIELD_SIZE].index
-    df = df[df["race_id"].isin(complete_races)].reset_index(drop=True)
-
-    # Pre-compute predicted ranking per race (vectorized)
+    # Pre-compute predicted ranking per race (vectorized, assumes 6 entries/race)
     pred_ranks, actual_ranks = _compute_rankings(df)
 
     results = {

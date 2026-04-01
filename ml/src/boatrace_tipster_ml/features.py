@@ -64,15 +64,22 @@ SELECT
     EXTRACT(MONTH FROM CAST(r.race_date AS DATE)) AS race_month
 FROM db.races r
 JOIN db.race_entries re ON re.race_id = r.id
-WHERE re.finish_position IS NOT NULL
-  AND re.finish_position BETWEEN 1 AND 6
 ORDER BY r.race_date, r.id, re.id
 """
+
+# Rank assigned to non-finishers (disqualified, capsized, flying start return)
+NON_FINISHER_RANK = 7
 
 
 def _load_all_data(conn) -> pd.DataFrame:
     df = conn.execute(_BASE_QUERY).fetchdf()
     df = df.sort_values(["race_date", "race_id", "entry_id"]).reset_index(drop=True)
+    # Assign worst rank to non-finishers to keep 6 entries per race
+    df["finish_position"] = df["finish_position"].fillna(NON_FINISHER_RANK).astype(int)
+    # Drop races that don't have exactly 6 entries (data corruption)
+    race_counts = df.groupby("race_id").size()
+    valid_races = race_counts[race_counts == 6].index
+    df = df[df["race_id"].isin(valid_races)].reset_index(drop=True)
     return df
 
 
