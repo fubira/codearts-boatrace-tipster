@@ -11,12 +11,11 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 FEATURE_COLS: list[str] = [
-    # --- Race conditions (5) ---
+    # --- Race conditions (4) ---
     "stadium_id",
     "race_number",
     "race_grade_code",
     "race_month",
-    "is_night_race",
     # --- Weather / environment (6) ---
     "wind_speed",
     "wind_direction",
@@ -55,6 +54,18 @@ FEATURE_COLS: list[str] = [
     "racer_course_win_rate",
     "racer_course_top2_rate",
     "racer_course_top3_rate",
+    # --- Course behavior (2) ---
+    "course_taking_rate",
+    "course_avg_st",
+    # --- Recent form (3) ---
+    "recent_win_rate",
+    "recent_top2_rate",
+    "recent_avg_position",
+    # --- Motor actual performance (2) ---
+    "motor_actual_win_rate",
+    "motor_actual_top2_rate",
+    # --- Start stability (1) ---
+    "st_stability",
     # --- Race-relative z-scores (4) ---
     "rel_national_win_rate",
     "rel_exhibition_time",
