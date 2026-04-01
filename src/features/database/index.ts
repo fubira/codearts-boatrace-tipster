@@ -5,6 +5,7 @@ export {
   saveRaceResults,
   saveBeforeInfo,
   saveRacerCourseStats,
+  saveOdds,
   isRaceScraped,
 } from "./storage";
 export type {
@@ -17,4 +18,5 @@ export type {
   BeforeInfoEntry,
   RacerCourseStatsData,
   SaveResult,
+  OddsData,
 } from "./storage";

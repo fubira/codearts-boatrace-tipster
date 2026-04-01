@@ -87,6 +87,26 @@ export function raceResultUrl(params: RaceParams): string {
   return `/owpc/pc/race/raceresult?rno=${params.raceNumber}&jcd=${params.stadiumCode}&hd=${params.date}`;
 }
 
+/** /race/oddstf?rno=1&jcd=04&hd=20250115 — 単勝・複勝オッズ */
+export function oddsTfUrl(params: RaceParams): string {
+  return `/owpc/pc/race/oddstf?rno=${params.raceNumber}&jcd=${params.stadiumCode}&hd=${params.date}`;
+}
+
+/** /race/odds2tf?rno=1&jcd=04&hd=20250115 — 2連単・2連複オッズ */
+export function odds2TfUrl(params: RaceParams): string {
+  return `/owpc/pc/race/odds2tf?rno=${params.raceNumber}&jcd=${params.stadiumCode}&hd=${params.date}`;
+}
+
+/** /race/odds3t?rno=1&jcd=04&hd=20250115 — 3連単オッズ */
+export function odds3TUrl(params: RaceParams): string {
+  return `/owpc/pc/race/odds3t?rno=${params.raceNumber}&jcd=${params.stadiumCode}&hd=${params.date}`;
+}
+
+/** /race/odds3f?rno=1&jcd=04&hd=20250115 — 3連複オッズ */
+export function odds3FUrl(params: RaceParams): string {
+  return `/owpc/pc/race/odds3f?rno=${params.raceNumber}&jcd=${params.stadiumCode}&hd=${params.date}`;
+}
+
 /** /owpc/pc/race/index?hd=YYYYMMDD */
 export function dailyScheduleUrl(date: string): string {
   return `/owpc/pc/race/index?hd=${date}`;

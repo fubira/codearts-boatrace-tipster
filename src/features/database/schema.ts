@@ -102,6 +102,16 @@ export const CREATE_TABLES_SQL = `
     UNIQUE(racer_id, course_number)
   );
 
+  -- オッズ（締切時確定オッズ）
+  CREATE TABLE IF NOT EXISTS race_odds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    race_id INTEGER NOT NULL REFERENCES races(id),
+    bet_type TEXT NOT NULL,
+    combination TEXT NOT NULL,
+    odds REAL NOT NULL,
+    UNIQUE(race_id, bet_type, combination)
+  );
+
   -- インデックス
   CREATE INDEX IF NOT EXISTS idx_races_date ON races(race_date);
   CREATE INDEX IF NOT EXISTS idx_races_stadium_date ON races(stadium_id, race_date);
@@ -109,6 +119,7 @@ export const CREATE_TABLES_SQL = `
   CREATE INDEX IF NOT EXISTS idx_race_entries_racer ON race_entries(racer_id);
   CREATE INDEX IF NOT EXISTS idx_race_payouts_race ON race_payouts(race_id);
   CREATE INDEX IF NOT EXISTS idx_racer_course_stats_racer ON racer_course_stats(racer_id);
+  CREATE INDEX IF NOT EXISTS idx_race_odds_race ON race_odds(race_id);
 `;
 
 /** Incremental migrations keyed by target version */

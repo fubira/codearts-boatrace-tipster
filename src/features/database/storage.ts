@@ -471,6 +471,57 @@ export function saveRacerCourseStats(
   logger.info(`Saved ${stats.length} racer course stats`);
 }
 
+export interface OddsData {
+  stadiumId: number;
+  raceDate: string;
+  raceNumber: number;
+  entries: { betType: string; combination: string; odds: number }[];
+}
+
+/** Save race odds (delete + re-insert per race) */
+export function saveOdds(oddsList: OddsData[], db?: Database): void {
+  const database = db ?? getDatabase();
+
+  const transaction = database.transaction(() => {
+    for (const odds of oddsList) {
+      const race = database
+        .query(
+          `SELECT id FROM races
+           WHERE stadium_id = $stadiumId AND race_date = $raceDate AND race_number = $raceNumber`,
+        )
+        .get({
+          $stadiumId: odds.stadiumId,
+          $raceDate: odds.raceDate,
+          $raceNumber: odds.raceNumber,
+        }) as { id: number } | null;
+
+      if (!race) continue;
+
+      database
+        .query("DELETE FROM race_odds WHERE race_id = $raceId")
+        .run({ $raceId: race.id });
+
+      for (const entry of odds.entries) {
+        database
+          .query(
+            `INSERT INTO race_odds (race_id, bet_type, combination, odds)
+             VALUES ($raceId, $betType, $combination, $odds)
+             ON CONFLICT (race_id, bet_type, combination) DO UPDATE SET odds = excluded.odds`,
+          )
+          .run({
+            $raceId: race.id,
+            $betType: entry.betType,
+            $combination: entry.combination,
+            $odds: entry.odds,
+          });
+      }
+    }
+  });
+
+  transaction();
+  logger.info(`Saved odds for ${oddsList.length} race(s)`);
+}
+
 /** Check if a race has already been scraped (has finish_position data) */
 export function isRaceScraped(
   stadiumId: number,
