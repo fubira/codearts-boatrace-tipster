@@ -1,5 +1,5 @@
 /** Rate limiting: sleep between pages within the same venue */
-export const COOLDOWN_BETWEEN_PAGES_MS = 300;
+export const COOLDOWN_BETWEEN_PAGES_MS = 100;
 
 /** Rate limiting: sleep between venue-day groups */
 export const COOLDOWN_BETWEEN_VENUES_MS = 1000;
