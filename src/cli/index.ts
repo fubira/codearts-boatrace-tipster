@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { backupCommand } from "@/cli/commands/backup";
 import { scrapeCommand } from "@/cli/commands/scrape";
 import { verifyCommand } from "@/cli/commands/verify";
 import { setLogLevel } from "@/shared/logger";
@@ -19,5 +20,6 @@ program
 
 program.addCommand(scrapeCommand);
 program.addCommand(verifyCommand);
+program.addCommand(backupCommand);
 
 program.parse();
