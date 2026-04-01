@@ -4,7 +4,6 @@
  */
 
 import { logger } from "@/shared/logger";
-import * as cheerio from "cheerio";
 import { readCache, writeCache } from "./cache-manager";
 
 const USER_AGENT =
@@ -20,7 +19,6 @@ const BASE_HEADERS: Record<string, string> = {
 
 export interface FetchPageResult {
   html: string;
-  $: cheerio.CheerioAPI;
   status: number;
   fromCache: boolean;
 }
@@ -32,17 +30,12 @@ export async function fetchPage(
   if (!options?.skipCache) {
     const cached = readCache(path);
     if (cached) {
-      return {
-        html: cached,
-        $: cheerio.load(cached),
-        status: 200,
-        fromCache: true,
-      };
+      return { html: cached, status: 200, fromCache: true };
     }
   }
 
   const url = path.startsWith("http") ? path : `${BASE_URL}${path}`;
-  logger.debug(`GET ${url}`);
+  logger.info(`GET ${url}`);
 
   const response = await fetch(url, { headers: BASE_HEADERS });
 
@@ -53,10 +46,5 @@ export async function fetchPage(
   const html = await response.text();
   writeCache(path, html);
 
-  return {
-    html,
-    $: cheerio.load(html),
-    status: response.status,
-    fromCache: false,
-  };
+  return { html, status: response.status, fromCache: false };
 }
