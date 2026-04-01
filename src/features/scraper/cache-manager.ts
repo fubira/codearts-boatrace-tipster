@@ -24,11 +24,20 @@ export function isCacheEnabled(): boolean {
   return cacheEnabled;
 }
 
-/** Convert URL path to cache file path: /race/racelist?rno=1&jcd=04&hd=20250115 -> data/cache/race/racelist/rno=1&jcd=04&hd=20250115.html.gz */
+/** Convert URL path to cache file path: /race/racelist?rno=1&jcd=04&hd=20250115 -> data/cache/race/racelist/202501/rno=1&jcd=04&hd=20250115.html.gz */
 function cachePathFor(path: string): string {
   const normalized = path.startsWith("/") ? path.slice(1) : path;
   // Replace '?' with '/' to create directory structure from query params
   const safePath = normalized.replace("?", "/");
+  // Extract YYYYMM from hd= parameter for subdirectory partitioning
+  const hdMatch = path.match(/hd=(\d{6})/);
+  const yyyymm = hdMatch ? hdMatch[1] : "";
+  if (yyyymm) {
+    const lastSlash = safePath.lastIndexOf("/");
+    const dir = safePath.slice(0, lastSlash);
+    const file = safePath.slice(lastSlash + 1);
+    return resolve(config.cacheDir, `${dir}/${yyyymm}/${file}.html.gz`);
+  }
   return resolve(config.cacheDir, `${safePath}.html.gz`);
 }
 

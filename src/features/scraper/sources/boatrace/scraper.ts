@@ -195,33 +195,22 @@ export const boatraceScraper: Scraper = {
       `Found ${venueDays.length} venue-day(s), up to ${totalRaces} races (concurrency: ${MAX_CONCURRENCY})`,
     );
 
+    // Only accumulate results when no onBatchComplete callback (e.g. dry-run)
+    const accumulate = !options.onBatchComplete;
     const allRaces: RaceData[] = [];
     const allResults: RaceResultData[] = [];
     const allBeforeInfo: BeforeInfoData[] = [];
     let completedVenues = 0;
+    let totalRacesScraped = 0;
 
-    // Group venue-days by date for better progress tracking
-    const batchResults = await parallelMap(
-      venueDays,
-      MAX_CONCURRENCY,
-      async (vd) => {
-        const result = await scrapeVenueDay(vd.stadiumCode, vd.date, options);
+    await parallelMap(venueDays, MAX_CONCURRENCY, async (vd) => {
+      const batch = await scrapeVenueDay(vd.stadiumCode, vd.date, options);
 
-        // Cooldown between venues (per-worker)
-        if (result.scraped > 0 && !isCacheEnabled()) {
-          await Bun.sleep(COOLDOWN_BETWEEN_VENUES_MS);
-        }
-
-        return result;
-      },
-    );
-
-    for (const batch of batchResults) {
-      allRaces.push(...batch.races);
-      allResults.push(...batch.results);
-      allBeforeInfo.push(...batch.beforeInfo);
-
-      if (batch.races.length > 0 || batch.results.length > 0) {
+      if (accumulate) {
+        allRaces.push(...batch.races);
+        allResults.push(...batch.results);
+        allBeforeInfo.push(...batch.beforeInfo);
+      } else if (batch.races.length > 0 || batch.results.length > 0) {
         options.onBatchComplete?.({
           races: batch.races,
           results: batch.results,
@@ -230,10 +219,16 @@ export const boatraceScraper: Scraper = {
       }
 
       completedVenues++;
-    }
+      totalRacesScraped += batch.races.length;
+
+      // Cooldown between venues (per-worker)
+      if (batch.scraped > 0 && !isCacheEnabled()) {
+        await Bun.sleep(COOLDOWN_BETWEEN_VENUES_MS);
+      }
+    });
 
     logger.info(
-      `Completed: ${completedVenues} venue-day(s), ${allRaces.length} races`,
+      `Completed: ${completedVenues} venue-day(s), ${totalRacesScraped} races`,
     );
 
     return { races: allRaces, results: allResults, beforeInfo: allBeforeInfo };
