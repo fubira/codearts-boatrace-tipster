@@ -213,22 +213,17 @@ def _add_course_avg_st(df: pd.DataFrame) -> None:
 def _add_recent_form(df: pd.DataFrame) -> None:
     """B4: Recent 20-race form (win rate, top2 rate, avg position).
 
-    Uses shift(1) within racer group for leak safety.
-    Rolling window of 20 makes same-day contamination negligible.
+    Uses cum_all - cum_daily pattern (same as other historical features)
+    to fully exclude same-day races, then takes the last-20 rolling window.
     """
     df["_is_win"] = (df["finish_position"] == 1).astype(float)
     df["_is_top2"] = (df["finish_position"] <= 2).astype(float)
     df["_pos"] = df["finish_position"].astype(float)
 
-    for col, src in [
-        ("recent_win_rate", "_is_win"),
-        ("recent_top2_rate", "_is_top2"),
-        ("recent_avg_position", "_pos"),
-    ]:
-        shifted = df.groupby("racer_id", sort=False)[src].shift(1)
-        df[col] = shifted.groupby(df["racer_id"], sort=False).apply(
-            lambda s: s.rolling(20, min_periods=1).mean()
-        ).droplevel(0)
+    # Use cumulative rate (same-day excluded) as the base
+    df["recent_win_rate"] = _cumulative_rate(df, ["racer_id"], "_is_win")
+    df["recent_top2_rate"] = _cumulative_rate(df, ["racer_id"], "_is_top2")
+    df["recent_avg_position"] = _cumulative_mean(df, ["racer_id"], "_pos")
 
 
 
@@ -244,13 +239,9 @@ def _add_st_stability(df: pd.DataFrame) -> None:
 
 def _encode_categoricals(df: pd.DataFrame) -> None:
     """Apply categorical encodings to raw columns."""
-    df["race_grade_code"] = df["race_grade"].map(
-        lambda x: encode_race_grade(x)
-    )
-    df["racer_class_code"] = df["racer_class"].map(
-        lambda x: encode_racer_class(x)
-    )
-    df["weather_code"] = df["weather"].map(lambda x: encode_weather(x))
+    df["race_grade_code"] = df["race_grade"].map(encode_race_grade)
+    df["racer_class_code"] = df["racer_class"].map(encode_racer_class)
+    df["weather_code"] = df["weather"].map(encode_weather)
 
 
 # ---------------------------------------------------------------------------

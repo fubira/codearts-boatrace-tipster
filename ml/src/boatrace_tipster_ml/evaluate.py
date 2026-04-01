@@ -31,6 +31,12 @@ def evaluate_model(
     df["score"] = scores
     df["actual_pos"] = y.values
 
+    # Filter to races with a valid winner (exclude all-DNF races)
+    actual_pos = df["actual_pos"].values.reshape(-1, FIELD_SIZE)
+    has_winner = (actual_pos == 1).any(axis=1)
+    keep_mask = np.repeat(has_winner, FIELD_SIZE)
+    df = df[keep_mask].reset_index(drop=True)
+
     # Pre-compute predicted ranking per race (vectorized, assumes 6 entries/race)
     pred_ranks, actual_ranks = _compute_rankings(df)
 
@@ -225,10 +231,6 @@ def _exacta_bets(nums: np.ndarray) -> list[str]:
     return [_combo([nums[0], s], ordered=True) for s in nums[1:3]]
 
 
-def _quinella_bets(nums: np.ndarray) -> list[str]:
-    return [_combo(nums[:2])]
-
-
 def _trifecta_bets(nums: np.ndarray) -> list[str]:
     first, second, third = int(nums[0]), nums[1:3], nums[1:4]
     bets = []
@@ -237,10 +239,6 @@ def _trifecta_bets(nums: np.ndarray) -> list[str]:
             if int(s) != int(t):
                 bets.append(_combo([first, s, t], ordered=True))
     return bets
-
-
-def _trio_bets(nums: np.ndarray) -> list[str]:
-    return [_combo([nums[0], nums[1], t]) for t in nums[2:4]]
 
 
 _STRATEGIES: list[tuple[str, str, callable]] = [
