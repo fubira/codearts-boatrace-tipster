@@ -233,30 +233,80 @@ class TestLeakagePrevention:
         assert std[2] == pytest.approx(0.0)  # std(10, 10) = 0
         assert std[3] == pytest.approx(np.std([10, 10, 20]), abs=0.01)
 
-    def test_no_future_race_in_racer_course_stats(self, full_data):
-        """Spot-check: a racer's course stats at time T should not
-        reflect races at time >= T."""
-        X, _, meta = full_data
-        full = pd.concat([meta, X], axis=1)
+    def test_racer_course_stats_manual_verification(self):
+        """Verify racer_course_win_rate by manual calculation."""
+        from .features import _add_racer_course_stats
 
-        # Pick a racer with many races
-        racer_counts = full["racer_id"].value_counts()
-        test_racer = racer_counts.index[0]
-        racer_df = full[full["racer_id"] == test_racer].sort_values("race_date")
+        df = pd.DataFrame({
+            "racer_id": [1, 1, 1, 1, 1],
+            "course_number": [1, 1, 1, 1, 1],
+            "race_date": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"],
+            "race_id": [10, 20, 30, 40, 50],
+            "entry_id": [1, 2, 3, 4, 5],
+            "finish_position": [1, 3, 1, 2, 1],
+            "boat_number": [1, 1, 1, 1, 1],
+        }).sort_values(["race_date", "race_id", "entry_id"]).reset_index(drop=True)
 
-        # The course win rate should be monotonically updating
-        # (not jumping ahead of time)
-        first_row = racer_df.iloc[0]
-        last_row = racer_df.iloc[-1]
+        _add_racer_course_stats(df)
 
-        # First row's racer_course_win_rate should be NaN or based on prior days only
-        # Last row should reflect more history → different value
-        if pd.notna(first_row["racer_course_win_rate"]) and pd.notna(
-            last_row["racer_course_win_rate"]
-        ):
-            # They should differ (unless the racer always wins, which is unlikely)
-            # This is a weak check but catches obvious leakage
-            assert True  # At least both are computed
+        # Day1: no prior → NaN
+        assert np.isnan(df.iloc[0]["racer_course_win_rate"])
+        # Day2: prior = day1 (1 win / 1 race) = 1.0
+        assert df.iloc[1]["racer_course_win_rate"] == pytest.approx(1.0)
+        # Day3: prior = day1+day2 (1 win / 2 races) = 0.5
+        assert df.iloc[2]["racer_course_win_rate"] == pytest.approx(0.5)
+        # Day4: prior = day1+2+3 (2 wins / 3 races) = 0.667
+        assert df.iloc[3]["racer_course_win_rate"] == pytest.approx(2 / 3)
+
+    def test_course_taking_rate_logic(self):
+        """Verify course_taking_rate: rate of taking inner course than boat_number."""
+        from .features import _add_course_taking_rate
+
+        df = pd.DataFrame({
+            "racer_id": [1, 1, 1, 1],
+            "boat_number": [3, 3, 3, 3],
+            "course_number": [1, 3, 2, 3],  # inner, same, inner, same
+            "race_date": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
+            "race_id": [10, 20, 30, 40],
+            "entry_id": [1, 2, 3, 4],
+            "finish_position": [1, 2, 3, 4],
+        }).sort_values(["race_date", "race_id", "entry_id"]).reset_index(drop=True)
+
+        _add_course_taking_rate(df)
+
+        # Day1: no prior → NaN
+        assert np.isnan(df.iloc[0]["course_taking_rate"])
+        # Day2: prior = day1 (took inner=1, total=1) = 1.0
+        assert df.iloc[1]["course_taking_rate"] == pytest.approx(1.0)
+        # Day3: prior = day1+2 (took inner=1, total=2) = 0.5
+        assert df.iloc[2]["course_taking_rate"] == pytest.approx(0.5)
+        # Day4: prior = day1+2+3 (took inner=2, total=3) = 0.667
+        assert df.iloc[3]["course_taking_rate"] == pytest.approx(2 / 3)
+
+    def test_recent_form_uses_cum_all_minus_daily(self):
+        """Verify recent_form excludes same-day races (cum_all - cum_daily)."""
+        from .features import _add_recent_form
+
+        df = pd.DataFrame({
+            "racer_id": [1, 1, 1, 1],
+            "race_date": ["2024-01-01", "2024-01-01", "2024-01-02", "2024-01-02"],
+            "race_id": [10, 20, 30, 40],
+            "entry_id": [1, 2, 3, 4],
+            "finish_position": [1, 2, 1, 3],
+            "boat_number": [1, 2, 1, 2],
+            "course_number": [1, 2, 1, 2],
+        }).sort_values(["race_date", "race_id", "entry_id"]).reset_index(drop=True)
+
+        _add_recent_form(df)
+
+        # Day1 race1: no prior → NaN
+        assert np.isnan(df.iloc[0]["recent_win_rate"])
+        # Day1 race2: same day excluded → NaN
+        assert np.isnan(df.iloc[1]["recent_win_rate"])
+        # Day2 race1: prior = day1 (1 win + 0 win) / 2 = 0.5
+        assert df.iloc[2]["recent_win_rate"] == pytest.approx(0.5)
+        # Day2 race2: prior = day1 only = 0.5
+        assert df.iloc[3]["recent_win_rate"] == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------
