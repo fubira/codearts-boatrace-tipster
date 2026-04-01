@@ -10,6 +10,7 @@ import type {
   RaceResultEntry,
 } from "@/features/database";
 import { logger } from "@/shared/logger";
+import * as cheerio from "cheerio";
 import type { Cheerio, CheerioAPI } from "cheerio";
 import type { AnyNode } from "domhandler";
 import { type RaceParams, STADIUMS, STADIUM_PREFECTURES } from "./constants";
@@ -68,9 +69,64 @@ function extractFloat(s: string): number | undefined {
   return parseFloat_(s.replace(/[^0-9.]/g, ""));
 }
 
+/**
+ * Extract sections of HTML that contain any of the given markers.
+ * For each marker, finds the nearest enclosing <table> or <div> and extracts it.
+ * Each marker extracts only the first matching section (no duplicates).
+ * Much smaller than full HTML → faster cheerio.load.
+ */
+function extractSections(html: string, markers: string[]): string {
+  let result = "";
+  const used = new Set<number>();
+
+  for (const marker of markers) {
+    const idx = html.indexOf(marker);
+    if (idx === -1) continue;
+
+    const tableStart = html.lastIndexOf("<table", idx);
+    const divStart = html.lastIndexOf("<div", idx);
+    const start = Math.max(tableStart, divStart);
+    if (start === -1 || used.has(start)) continue;
+
+    const tagName = start === tableStart ? "table" : "div";
+    const openTag = `<${tagName}`;
+    const closeTag = `</${tagName}`;
+    let depth = 0;
+    let pos = start;
+
+    while (pos < html.length) {
+      const openIdx = html.indexOf(openTag, pos + 1);
+      const closeIdx = html.indexOf(closeTag, pos + 1);
+      if (closeIdx === -1) break;
+      if (openIdx !== -1 && openIdx < closeIdx) {
+        depth++;
+        pos = openIdx;
+      } else {
+        if (depth === 0) {
+          const end = html.indexOf(">", closeIdx) + 1;
+          result += html.slice(start, end);
+          used.add(start);
+          break;
+        }
+        depth--;
+        pos = closeIdx;
+      }
+    }
+  }
+
+  return result;
+}
+
+/** Create a CheerioAPI from partial HTML extracted by markers. */
+function loadPartial(html: string, markers: string[]): CheerioAPI {
+  return cheerio.load(extractSections(html, markers));
+}
+
 // ---------------------------------------------------------------------------
 // parseRaceList — 出走表ページ
 // ---------------------------------------------------------------------------
+
+const RACELIST_MARKERS = ["heading2_title", "is-tableFixed__3rdadd"];
 
 function parseRacerIdentity(
   $: Cheerio<AnyNode>,
@@ -186,11 +242,13 @@ function parseRacerStats(
 }
 
 export function parseRaceList(
-  $: CheerioAPI,
+  html: string,
   context: RaceContext,
 ): RaceData | null {
   const { params, raceDate } = context;
   const stadiumId = Number.parseInt(params.stadiumCode, 10);
+
+  const $ = loadPartial(html, RACELIST_MARKERS);
 
   const raceTitle = normalizeText($(".heading2_titleName").text()) || undefined;
   const gradeClass = $(".heading2_title").attr("class") ?? "";
@@ -247,6 +305,8 @@ export function parseRaceList(
 // parseBeforeInfo — 直前情報ページ
 // ---------------------------------------------------------------------------
 
+const BEFOREINFO_MARKERS = ["is-w748", "is-w238"];
+
 function parseExhibitionSt($: CheerioAPI, entries: BeforeInfoEntry[]): void {
   $("table.is-w238 .table1_boatImage1").each((_i, div) => {
     const $div = $(div);
@@ -265,9 +325,8 @@ function parseExhibitionSt($: CheerioAPI, entries: BeforeInfoEntry[]): void {
   });
 }
 
-function applyStabilizer($: CheerioAPI, entries: BeforeInfoEntry[]): void {
-  const hasStabilizer = $("body").text().includes("安定板使用");
-  if (hasStabilizer) {
+function applyStabilizer(html: string, entries: BeforeInfoEntry[]): void {
+  if (html.includes("安定板使用")) {
     for (const entry of entries) {
       entry.stabilizer = true;
     }
@@ -275,11 +334,13 @@ function applyStabilizer($: CheerioAPI, entries: BeforeInfoEntry[]): void {
 }
 
 export function parseBeforeInfo(
-  $: CheerioAPI,
+  html: string,
   context: RaceContext,
 ): BeforeInfoData | null {
   const { params, raceDate } = context;
   const stadiumId = Number.parseInt(params.stadiumCode, 10);
+
+  const $ = loadPartial(html, BEFOREINFO_MARKERS);
   const entries: BeforeInfoEntry[] = [];
 
   $("table.is-w748 tbody.is-fs12").each((i, tbody) => {
@@ -305,7 +366,7 @@ export function parseBeforeInfo(
   });
 
   parseExhibitionSt($, entries);
-  applyStabilizer($, entries);
+  applyStabilizer(html, entries);
 
   if (entries.length === 0) {
     logger.warn(`No before-info entries parsed for R${params.raceNumber}`);
@@ -333,6 +394,14 @@ export function parseBeforeInfo(
 // ---------------------------------------------------------------------------
 // parseRaceResult — レース結果ページ
 // ---------------------------------------------------------------------------
+
+const RACERESULT_MARKERS = [
+  "is-w495",
+  "is-h292__3rdadd",
+  "決まり手",
+  "weather1_body",
+  "勝式",
+];
 
 function parseResultEntries($: CheerioAPI): RaceResultEntry[] {
   const resultTable = $("table.is-w495 th:contains('着')")
@@ -389,11 +458,13 @@ function parseStartInfo($: CheerioAPI, entries: RaceResultEntry[]): void {
 }
 
 export function parseRaceResult(
-  $: CheerioAPI,
+  html: string,
   context: RaceContext,
 ): RaceResultData | null {
   const { params, raceDate } = context;
   const stadiumId = Number.parseInt(params.stadiumCode, 10);
+
+  const $ = loadPartial(html, RACERESULT_MARKERS);
 
   const resultEntries = parseResultEntries($);
   if (resultEntries.length === 0) {

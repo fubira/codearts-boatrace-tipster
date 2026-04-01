@@ -12,9 +12,8 @@ import {
 
 const FIXTURES_DIR = resolve(import.meta.dirname, "__fixtures__");
 
-function loadFixture(name: string): cheerio.CheerioAPI {
-  const html = readFileSync(resolve(FIXTURES_DIR, name), "utf-8");
-  return cheerio.load(html);
+function loadFixture(name: string): string {
+  return readFileSync(resolve(FIXTURES_DIR, name), "utf-8");
 }
 
 /** Assert non-null and return typed value */
@@ -37,8 +36,8 @@ const resultContext: RaceContext = {
 };
 
 describe("parseRaceList", () => {
-  const $ = loadFixture("racelist.html");
-  const result = assertDefined(parseRaceList($, raceListContext));
+  const html = loadFixture("racelist.html");
+  const result = assertDefined(parseRaceList(html, raceListContext));
 
   test("parses race metadata", () => {
     expect(result.stadiumId).toBe(4);
@@ -93,8 +92,8 @@ describe("parseRaceList", () => {
 });
 
 describe("parseBeforeInfo", () => {
-  const $ = loadFixture("beforeinfo.html");
-  const result = assertDefined(parseBeforeInfo($, raceListContext));
+  const html = loadFixture("beforeinfo.html");
+  const result = assertDefined(parseBeforeInfo(html, raceListContext));
 
   test("parses before info metadata", () => {
     expect(result.stadiumId).toBe(4);
@@ -132,9 +131,10 @@ describe("parseBeforeInfo", () => {
 });
 
 describe("parseBeforeInfo weather", () => {
-  const $ = loadFixture("beforeinfo.html");
+  const html = loadFixture("beforeinfo.html");
 
   test("parses weather info", () => {
+    const $ = cheerio.load(html);
     const weather = parseWeather($);
     expect(weather.windSpeed).toBe(4);
     expect(weather.windDirection).toBe(13);
@@ -145,8 +145,8 @@ describe("parseBeforeInfo weather", () => {
 });
 
 describe("parseRaceResult", () => {
-  const $ = loadFixture("raceresult.html");
-  const result = assertDefined(parseRaceResult($, resultContext));
+  const html = loadFixture("raceresult.html");
+  const result = assertDefined(parseRaceResult(html, resultContext));
 
   test("parses result metadata", () => {
     expect(result.stadiumId).toBe(4);

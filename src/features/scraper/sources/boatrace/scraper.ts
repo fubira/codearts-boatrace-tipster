@@ -60,9 +60,9 @@ async function scrapeOneRace(
     fetchPage(raceResultUrl(params)),
   ]);
 
-  const race = parseRaceList(raceListPage.$, context);
-  const beforeInfo = parseBeforeInfo(beforeInfoPage.$, context);
-  const result = parseRaceResult(resultPage.$, context);
+  const race = parseRaceList(raceListPage.html, context);
+  const beforeInfo = parseBeforeInfo(beforeInfoPage.html, context);
+  const result = parseRaceResult(resultPage.html, context);
 
   const anyFetched =
     !raceListPage.fromCache ||
