@@ -35,9 +35,13 @@ bun run start scrape --force -d 2025-01-15   # キャッシュ無視で再取得
 ### データ管理
 
 ```bash
-bun run start verify              # DB 整合性チェック
+bun run start data test           # DB 整合性チェック
+bun run start data fingerprint    # DB 統計表示
+bun run start data verify         # ローカル vs サーバ比較
+bun run start data sync           # DB + キャッシュをサーバと同期
+bun run start data sync --cache-only   # キャッシュのみ同期
+bun run start data sync --db-only      # DB のみ同期
 bun run start backup              # ローカルバックアップ（7 世代保持）
-bun run start backup -n 14        # 保持数を変更
 ```
 
 ### 外部バックアップ
@@ -47,6 +51,8 @@ bun run start backup -n 14        # 保持数を変更
 ./scripts/backup.sh --db-only /path/to/dest        # DB のみ
 ./scripts/backup.sh --rotate 21 --db-only /path/to/dest  # 21 日ローテーション
 ```
+
+`data sync` / `data verify` には環境変数 `PRODUCT_SERVER` と `PRODUCT_DIR` が必要（`.env` で設定）。
 
 ## 開発コマンド
 

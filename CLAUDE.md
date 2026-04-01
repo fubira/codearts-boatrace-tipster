@@ -24,9 +24,14 @@
 
 SQLite（WALモード）。スキーマバージョン管理による自動マイグレーション（tateyamakun と同パターン）。
 
-- `bun run start verify` で整合性チェック（孤立レコード、重複、月次完全性等）
-- `bun run start backup` でローカルバックアップ（7世代ローテーション）
+- `data test` でローカル整合性チェック（孤立レコード、重複、月次完全性等）
+- `data verify` でサーバとの整合性比較（スキーマ、件数、ID sum、キャッシュ数）
+- `data sync` でサーバとの同期（WALチェックポイント→アトミックDB入れ替え＋双方向キャッシュ同期）
+- `data fingerprint` でDB統計表示
+- `backup` でローカルバックアップ（7世代ローテーション）
 - `scripts/backup.sh` で外部ストレージへの tar.gz バックアップ
+
+サーバ接続には `.env` で `PRODUCT_SERVER` と `PRODUCT_DIR`（絶対パス）を設定する。
 
 ## 開発ワークフロー
 
