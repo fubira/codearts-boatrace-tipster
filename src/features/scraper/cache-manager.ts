@@ -10,6 +10,7 @@ import { logger } from "@/shared/logger";
 
 let cacheEnabled = false;
 let cacheReadEnabled = true;
+let cacheRequired = false;
 
 export function enableCache(): void {
   cacheEnabled = true;
@@ -22,6 +23,14 @@ export function disableCacheRead(): void {
 
 export function isCacheEnabled(): boolean {
   return cacheEnabled;
+}
+
+export function setCacheRequired(): void {
+  cacheRequired = true;
+}
+
+export function isCacheRequired(): boolean {
+  return cacheRequired;
 }
 
 /** Convert URL path to cache file path: /race/racelist?rno=1&jcd=04&hd=20250115 -> data/cache/race/racelist/202501/rno=1&jcd=04&hd=20250115.html.gz */

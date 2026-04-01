@@ -9,6 +9,7 @@ import {
 import {
   disableCacheRead,
   enableCache,
+  setCacheRequired,
 } from "@/features/scraper/cache-manager";
 import { getScraper } from "@/features/scraper/registry";
 import type { ScraperResult } from "@/features/scraper/types";
@@ -26,6 +27,7 @@ export const scrapeCommand = new Command("scrape")
   .option("--dry-run", "parse only, do not save to DB")
   .option("--force", "re-scrape even if already in DB")
   .option("--cache-only", "download HTML to cache without parsing")
+  .option("--from-cache", "parse from cache only, never fetch from network")
   .action(async (opts) => {
     if (!opts.date && !opts.month && !opts.year) {
       console.error("Error: --date, --month, or --year is required");
@@ -42,10 +44,21 @@ export const scrapeCommand = new Command("scrape")
       process.exit(1);
     }
 
+    if (opts.cacheOnly && opts.fromCache) {
+      console.error(
+        "Error: --cache-only and --from-cache cannot be used together",
+      );
+      process.exit(1);
+    }
+
     enableCache();
 
     if (opts.force) {
       disableCacheRead();
+    }
+
+    if (opts.fromCache) {
+      setCacheRequired();
     }
 
     const scraper = getScraper("boatrace");

@@ -42,8 +42,12 @@ export async function discoverDateSchedule(date: string): Promise<VenueDay[]> {
     logger.warn(`Skip future date ${date}`);
     return [];
   }
-  const { html } = await fetchPage(dailyScheduleUrl(yyyymmdd));
-  const $ = cheerio.load(html);
+  const page = await fetchPage(dailyScheduleUrl(yyyymmdd));
+  if (!page) {
+    logger.warn(`No schedule cache for ${date}`);
+    return [];
+  }
+  const $ = cheerio.load(page.html);
   const venues = parseSchedulePage($, yyyymmdd);
   logger.info(`Found ${venues.length} venue(s) for ${date}`);
   return venues;

@@ -4,7 +4,7 @@
  */
 
 import { logger } from "@/shared/logger";
-import { readCache, writeCache } from "./cache-manager";
+import { isCacheRequired, readCache, writeCache } from "./cache-manager";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -26,7 +26,7 @@ export interface FetchPageResult {
 export async function fetchPage(
   path: string,
   options?: { skipCache?: boolean },
-): Promise<FetchPageResult> {
+): Promise<FetchPageResult | null> {
   if (!options?.skipCache) {
     const cached = readCache(path);
     if (cached) {
@@ -34,8 +34,13 @@ export async function fetchPage(
     }
   }
 
+  if (isCacheRequired()) {
+    logger.debug(`Cache miss (from-cache mode): ${path}`);
+    return null;
+  }
+
   const url = path.startsWith("http") ? path : `${BASE_URL}${path}`;
-  logger.info(`GET ${url}`);
+  logger.warn(`[HTTP] GET ${url}`);
 
   const response = await fetch(url, { headers: BASE_HEADERS });
 

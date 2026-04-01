@@ -33,15 +33,19 @@ function buildRaceDate(yyyymmdd: string): string {
   return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
 }
 
-async function scrapeOneRace(
-  params: RaceParams,
-  shouldSkip?: ScraperOptions["shouldSkip"],
-): Promise<{
+interface ScrapeOneRaceResult {
   race: RaceData | null;
   result: RaceResultData | null;
   beforeInfo: BeforeInfoData | null;
   skipped: boolean;
-}> {
+  cacheHits: number;
+  cacheMisses: number;
+}
+
+async function scrapeOneRace(
+  params: RaceParams,
+  shouldSkip?: ScraperOptions["shouldSkip"],
+): Promise<ScrapeOneRaceResult> {
   const stadiumId = Number.parseInt(params.stadiumCode, 10);
   const raceDate = buildRaceDate(params.date);
   const context: RaceContext = { params, raceDate };
@@ -50,7 +54,14 @@ async function scrapeOneRace(
     logger.debug(
       `Skip ${STADIUMS[params.stadiumCode] ?? params.stadiumCode} R${params.raceNumber} (already scraped)`,
     );
-    return { race: null, result: null, beforeInfo: null, skipped: true };
+    return {
+      race: null,
+      result: null,
+      beforeInfo: null,
+      skipped: true,
+      cacheHits: 0,
+      cacheMisses: 0,
+    };
   }
 
   // Fetch all 3 pages in parallel
@@ -60,17 +71,28 @@ async function scrapeOneRace(
     fetchPage(raceResultUrl(params)),
   ]);
 
-  const race = parseRaceList(raceListPage.html, context);
-  const beforeInfo = parseBeforeInfo(beforeInfoPage.html, context);
-  const result = parseRaceResult(resultPage.html, context);
+  // Count cache stats from non-null results
+  const pages = [raceListPage, beforeInfoPage, resultPage];
+  const cacheHits = pages.filter((p) => p?.fromCache).length;
+  const cacheMisses = pages.filter((p) => p !== null && !p.fromCache).length;
 
-  const anyFetched =
-    !raceListPage.fromCache ||
-    !beforeInfoPage.fromCache ||
-    !resultPage.fromCache;
+  const race = raceListPage ? parseRaceList(raceListPage.html, context) : null;
+  const beforeInfo = beforeInfoPage
+    ? parseBeforeInfo(beforeInfoPage.html, context)
+    : null;
+  const result = resultPage ? parseRaceResult(resultPage.html, context) : null;
+
+  const anyFetched = pages.some((p) => p !== null && !p.fromCache);
   if (anyFetched) await Bun.sleep(COOLDOWN_BETWEEN_PAGES_MS);
 
-  return { race, result, beforeInfo, skipped: false };
+  return { race, result, beforeInfo, skipped: false, cacheHits, cacheMisses };
+}
+
+interface VenueDayResult extends ScraperResult {
+  scraped: number;
+  skipped: number;
+  cacheHits: number;
+  cacheMisses: number;
 }
 
 /** Scrape all 12 races for a single venue-day */
@@ -78,17 +100,22 @@ async function scrapeVenueDay(
   stadiumCode: string,
   date: string,
   options: ScraperOptions,
-): Promise<ScraperResult & { scraped: number; skipped: number }> {
+): Promise<VenueDayResult> {
   const venueName = STADIUMS[stadiumCode] ?? stadiumCode;
   const races: RaceData[] = [];
   const results: RaceResultData[] = [];
   const beforeInfo: BeforeInfoData[] = [];
   let skipped = 0;
+  let cacheHits = 0;
+  let cacheMisses = 0;
 
   for (let rno = 1; rno <= MAX_RACES_PER_VENUE; rno++) {
     if (options.raceNumbers && !options.raceNumbers.includes(rno)) continue;
     const params: RaceParams = { raceNumber: rno, stadiumCode, date };
     const result = await scrapeOneRace(params, options.shouldSkip);
+
+    cacheHits += result.cacheHits;
+    cacheMisses += result.cacheMisses;
 
     if (result.skipped) {
       skipped++;
@@ -105,7 +132,15 @@ async function scrapeVenueDay(
     `${venueName} ${buildRaceDate(date)}: ${scraped} scraped, ${skipped} skipped`,
   );
 
-  return { races, results, beforeInfo, scraped, skipped };
+  return {
+    races,
+    results,
+    beforeInfo,
+    scraped,
+    skipped,
+    cacheHits,
+    cacheMisses,
+  };
 }
 
 async function resolveVenueDays(
@@ -178,6 +213,8 @@ async function parallelMap<T, R>(
   return results;
 }
 
+const PROGRESS_LOG_INTERVAL = 50;
+
 export const boatraceScraper: Scraper = {
   name: "boatrace",
   description: "boatrace.jp 公式サイト",
@@ -200,8 +237,14 @@ export const boatraceScraper: Scraper = {
     const allRaces: RaceData[] = [];
     const allResults: RaceResultData[] = [];
     const allBeforeInfo: BeforeInfoData[] = [];
-    let completedVenues = 0;
-    let totalRacesScraped = 0;
+
+    const stats = {
+      completedVenues: 0,
+      totalRacesScraped: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      startTime: Date.now(),
+    };
 
     await parallelMap(venueDays, MAX_CONCURRENCY, async (vd) => {
       const batch = await scrapeVenueDay(vd.stadiumCode, vd.date, options);
@@ -218,8 +261,25 @@ export const boatraceScraper: Scraper = {
         });
       }
 
-      completedVenues++;
-      totalRacesScraped += batch.races.length;
+      stats.completedVenues++;
+      stats.totalRacesScraped += batch.races.length;
+      stats.cacheHits += batch.cacheHits;
+      stats.cacheMisses += batch.cacheMisses;
+
+      if (stats.completedVenues % PROGRESS_LOG_INTERVAL === 0) {
+        const elapsed = (Date.now() - stats.startTime) / 1000;
+        const rate =
+          elapsed > 0 ? (stats.totalRacesScraped / elapsed).toFixed(1) : "—";
+        const total = stats.cacheHits + stats.cacheMisses;
+        const hitRate =
+          total > 0 ? ((stats.cacheHits / total) * 100).toFixed(0) : "—";
+        const pct = ((stats.completedVenues / venueDays.length) * 100).toFixed(
+          1,
+        );
+        logger.info(
+          `Progress: ${stats.completedVenues}/${venueDays.length} venue-days (${pct}%) | ${stats.totalRacesScraped} races at ${rate}/sec | Cache: ${stats.cacheHits}/${total} (${hitRate}%)`,
+        );
+      }
 
       // Cooldown between venues (per-worker)
       if (batch.scraped > 0 && !isCacheEnabled()) {
@@ -227,8 +287,12 @@ export const boatraceScraper: Scraper = {
       }
     });
 
+    const elapsed = ((Date.now() - stats.startTime) / 1000).toFixed(1);
+    const total = stats.cacheHits + stats.cacheMisses;
+    const hitRate =
+      total > 0 ? ((stats.cacheHits / total) * 100).toFixed(0) : "—";
     logger.info(
-      `Completed: ${completedVenues} venue-day(s), ${totalRacesScraped} races`,
+      `Completed: ${stats.completedVenues} venue-day(s), ${stats.totalRacesScraped} races in ${elapsed}s | Cache: ${stats.cacheHits}/${total} (${hitRate}%)`,
     );
 
     return { races: allRaces, results: allResults, beforeInfo: allBeforeInfo };
