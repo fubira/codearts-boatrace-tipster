@@ -23,7 +23,6 @@ FIELD_SIZE = 6  # Boat racing always has 6 boats
 DEFAULT_PARAMS = {
     "objective": "lambdarank",
     "metric": "ndcg",
-    "ndcg_eval_at": [1, 3, 5],
     "boosting_type": "gbdt",
     "num_leaves": 63,
     "learning_rate": 0.05,
@@ -188,6 +187,7 @@ def train_model(
         groups_val = _compute_query_groups(meta_val["race_id"])
         fit_kwargs["eval_set"] = [(X_val, y_rel_val)]
         fit_kwargs["eval_group"] = [groups_val]
+        fit_kwargs["eval_at"] = [1, 3]
 
     model.fit(**fit_kwargs)
 
