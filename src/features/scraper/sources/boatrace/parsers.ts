@@ -128,10 +128,7 @@ function loadPartial(html: string, markers: string[]): CheerioAPI {
 
 const RACELIST_MARKERS = ["heading2_title", "is-tableFixed__3rdadd"];
 
-function parseRacerIdentity(
-  $: Cheerio<AnyNode>,
-  $root: CheerioAPI,
-): {
+function parseRacerIdentity($: Cheerio<AnyNode>): {
   boatNumber: number;
   racerId: number;
   racerName: string;
@@ -264,7 +261,7 @@ export function parseRaceList(
 
   entryTable.find("tbody.is-fs12").each((_i, tbody) => {
     const $tbody = $(tbody);
-    const identity = parseRacerIdentity($tbody, $);
+    const identity = parseRacerIdentity($tbody);
     if (!identity) return;
 
     const firstRow = $tbody.find("tr").first();
@@ -395,6 +392,8 @@ export function parseBeforeInfo(
 // parseRaceResult — レース結果ページ
 // ---------------------------------------------------------------------------
 
+// Each marker matches only the FIRST occurrence in the HTML (extractSections limitation).
+// Use distinct markers for sections that appear multiple times (e.g., is-w495 has 4 tables).
 const RACERESULT_MARKERS = [
   "is-w495",
   "is-h292__3rdadd",
