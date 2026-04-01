@@ -10,7 +10,8 @@ import type {
   RaceResultEntry,
 } from "@/features/database";
 import { logger } from "@/shared/logger";
-import type { CheerioAPI } from "cheerio";
+import type { Cheerio, CheerioAPI } from "cheerio";
+import type { AnyNode } from "domhandler";
 import { type RaceParams, STADIUMS, STADIUM_PREFECTURES } from "./constants";
 import {
   beforeInfoDataSchema,
@@ -22,6 +23,10 @@ export interface RaceContext {
   params: RaceParams;
   raceDate: string; // YYYY-MM-DD
 }
+
+// ---------------------------------------------------------------------------
+// Shared utilities
+// ---------------------------------------------------------------------------
 
 /** Convert full-width digits to half-width: "１２３" → "123" */
 function toHalfWidth(s: string): string {
@@ -44,9 +49,141 @@ function normalizeText(s: string): string {
   return s.replace(/[\s\u3000]+/g, " ").trim();
 }
 
+/** Extract numeric values from a multi-line cell (split by <br>). */
+function parseMultilineCell(
+  html: string,
+  parsers: Array<(line: string) => number | undefined>,
+): Array<number | undefined> {
+  const lines = html.split("<br");
+  return parsers.map((parse, i) =>
+    parse((lines[i] ?? "").replace(/<[^>]*>/g, "")),
+  );
+}
+
+function extractInt(s: string): number | undefined {
+  return parseInt_(s.replace(/[^0-9]/g, ""));
+}
+
+function extractFloat(s: string): number | undefined {
+  return parseFloat_(s.replace(/[^0-9.]/g, ""));
+}
+
 // ---------------------------------------------------------------------------
 // parseRaceList — 出走表ページ
 // ---------------------------------------------------------------------------
+
+function parseRacerIdentity(
+  $: Cheerio<AnyNode>,
+  $root: CheerioAPI,
+): {
+  boatNumber: number;
+  racerId: number;
+  racerName: string;
+  racerClass?: string;
+  branch?: string;
+  birthplace?: string;
+  racerWeight?: number;
+} | null {
+  const firstRow = $.find("tr").first();
+
+  const boatCell = firstRow.find("td.is-fs14[class*='is-boatColor']");
+  const boatNumber = parseInt_(boatCell.text().trim());
+  if (!boatNumber) return null;
+
+  const profileLink = $.find("a[href*='toban=']").first();
+  const tobanMatch = (profileLink.attr("href") ?? "").match(/toban=(\d+)/);
+  const racerId = tobanMatch ? Number.parseInt(tobanMatch[1], 10) : 0;
+  if (!racerId) return null;
+
+  const racerName = normalizeText($.find(".is-fs18.is-fBold a").first().text());
+  if (!racerName) return null;
+
+  const regText = normalizeText($.find(".is-fs11").first().text());
+  const classMatch = regText.match(/\/ ?(A1|A2|B1|B2)/);
+
+  const infoText = normalizeText($.find(".is-fs11").eq(1).text());
+  const branchMatch = infoText.match(/^(.+?)\/(.+?)\s/);
+  const weightMatch = infoText.match(/([\d.]+)kg/);
+
+  return {
+    boatNumber,
+    racerId,
+    racerName,
+    racerClass: classMatch?.[1],
+    branch: branchMatch?.[1],
+    birthplace: branchMatch?.[2],
+    racerWeight: weightMatch ? parseFloat_(weightMatch[1]) : undefined,
+  };
+}
+
+function parseRacerStats(
+  firstRow: Cheerio<AnyNode>,
+  $: CheerioAPI,
+): Pick<
+  RaceEntryData,
+  | "flyingCount"
+  | "lateCount"
+  | "averageSt"
+  | "nationalWinRate"
+  | "nationalTop2Rate"
+  | "nationalTop3Rate"
+  | "localWinRate"
+  | "localTop2Rate"
+  | "localTop3Rate"
+  | "motorNumber"
+  | "motorTop2Rate"
+  | "motorTop3Rate"
+  | "boatNumberAssigned"
+  | "boatTop2Rate"
+  | "boatTop3Rate"
+> {
+  const cells = firstRow.find("td.is-lineH2");
+
+  const [flyingCount, lateCount, averageSt] = parseMultilineCell(
+    cells.eq(0).html() ?? "",
+    [extractInt, extractInt, extractFloat],
+  );
+
+  const [nationalWinRate, nationalTop2Rate, nationalTop3Rate] =
+    parseMultilineCell(cells.eq(1).html() ?? "", [
+      extractFloat,
+      extractFloat,
+      extractFloat,
+    ]);
+
+  const [localWinRate, localTop2Rate, localTop3Rate] = parseMultilineCell(
+    cells.eq(2).html() ?? "",
+    [extractFloat, extractFloat, extractFloat],
+  );
+
+  const [motorNumber, motorTop2Rate, motorTop3Rate] = parseMultilineCell(
+    cells.eq(3).html() ?? "",
+    [extractInt, extractFloat, extractFloat],
+  );
+
+  const [boatNumberAssigned, boatTop2Rate, boatTop3Rate] = parseMultilineCell(
+    cells.eq(4).html() ?? "",
+    [extractInt, extractFloat, extractFloat],
+  );
+
+  return {
+    flyingCount,
+    lateCount,
+    averageSt,
+    nationalWinRate,
+    nationalTop2Rate,
+    nationalTop3Rate,
+    localWinRate,
+    localTop2Rate,
+    localTop3Rate,
+    motorNumber,
+    motorTop2Rate,
+    motorTop3Rate,
+    boatNumberAssigned,
+    boatTop2Rate,
+    boatTop3Rate,
+  };
+}
 
 export function parseRaceList(
   $: CheerioAPI,
@@ -55,14 +192,10 @@ export function parseRaceList(
   const { params, raceDate } = context;
   const stadiumId = Number.parseInt(params.stadiumCode, 10);
 
-  // Race title from heading
   const raceTitle = normalizeText($(".heading2_titleName").text()) || undefined;
-
-  // Race grade from heading2_title class
   const gradeClass = $(".heading2_title").attr("class") ?? "";
   const raceGrade = extractGrade(gradeClass);
 
-  // Entry table: div.table1.is-tableFixed__3rdadd
   const entryTable = $("div.table1.is-tableFixed__3rdadd table");
   if (entryTable.length === 0) {
     logger.warn(`No entry table found for R${params.raceNumber}`);
@@ -73,124 +206,13 @@ export function parseRaceList(
 
   entryTable.find("tbody.is-fs12").each((_i, tbody) => {
     const $tbody = $(tbody);
+    const identity = parseRacerIdentity($tbody, $);
+    if (!identity) return;
+
     const firstRow = $tbody.find("tr").first();
+    const stats = parseRacerStats(firstRow, $);
 
-    // Boat number from is-boatColor + is-fs14 cell (main boat number, not past results)
-    const boatCell = firstRow.find("td.is-fs14[class*='is-boatColor']");
-    const boatNumber = parseInt_(boatCell.text().trim());
-    if (!boatNumber) return;
-
-    // Racer ID from profile link
-    const profileLink = $tbody.find("a[href*='toban=']").first();
-    const tobanMatch = (profileLink.attr("href") ?? "").match(/toban=(\d+)/);
-    const racerId = tobanMatch ? Number.parseInt(tobanMatch[1], 10) : 0;
-    if (!racerId) return;
-
-    // Racer name
-    const racerName = normalizeText(
-      $tbody.find(".is-fs18.is-fBold a").first().text(),
-    );
-    if (!racerName) return;
-
-    // Racer class and registration info: "3470 / B1"
-    const regDiv = $tbody.find(".is-fs11").first();
-    const regText = normalizeText(regDiv.text());
-    const classMatch = regText.match(/\/ ?(A1|A2|B1|B2)/);
-    const racerClass = classMatch?.[1];
-
-    // Branch / birthplace and age/weight
-    const infoDiv = $tbody.find(".is-fs11").eq(1);
-    const infoText = normalizeText(infoDiv.text());
-    // "徳島/徳島 56歳/46.5kg"
-    const branchMatch = infoText.match(/^(.+?)\/(.+?)\s/);
-    const branch = branchMatch?.[1];
-    const birthplace = branchMatch?.[2];
-    const weightMatch = infoText.match(/([\d.]+)kg/);
-    const racerWeight = weightMatch ? parseFloat_(weightMatch[1]) : undefined;
-
-    // F count, L count, average ST: in the rowspan=4 cell
-    const statsCell = firstRow.find("td.is-lineH2").eq(0);
-    const statsLines = (statsCell.html() ?? "").split("<br");
-    const flyingCount = parseInt_((statsLines[0] ?? "").replace(/[^0-9]/g, ""));
-    const lateCount = parseInt_((statsLines[1] ?? "").replace(/[^0-9]/g, ""));
-    const averageSt = parseFloat_(
-      (statsLines[2] ?? "").replace(/[^0-9.]/g, ""),
-    );
-
-    // National stats: win rate, 2-rate, 3-rate
-    const nationalCell = firstRow.find("td.is-lineH2").eq(1);
-    const nationalLines = (nationalCell.html() ?? "").split("<br");
-    const nationalWinRate = parseFloat_(
-      (nationalLines[0] ?? "").replace(/[^0-9.]/g, ""),
-    );
-    const nationalTop2Rate = parseFloat_(
-      (nationalLines[1] ?? "").replace(/[^0-9.]/g, ""),
-    );
-    const nationalTop3Rate = parseFloat_(
-      (nationalLines[2] ?? "").replace(/[^0-9.]/g, ""),
-    );
-
-    // Local stats
-    const localCell = firstRow.find("td.is-lineH2").eq(2);
-    const localLines = (localCell.html() ?? "").split("<br");
-    const localWinRate = parseFloat_(
-      (localLines[0] ?? "").replace(/[^0-9.]/g, ""),
-    );
-    const localTop2Rate = parseFloat_(
-      (localLines[1] ?? "").replace(/[^0-9.]/g, ""),
-    );
-    const localTop3Rate = parseFloat_(
-      (localLines[2] ?? "").replace(/[^0-9.]/g, ""),
-    );
-
-    // Motor stats
-    const motorCell = firstRow.find("td.is-lineH2").eq(3);
-    const motorLines = (motorCell.html() ?? "").split("<br");
-    const motorNumber = parseInt_((motorLines[0] ?? "").replace(/[^0-9]/g, ""));
-    const motorTop2Rate = parseFloat_(
-      (motorLines[1] ?? "").replace(/[^0-9.]/g, ""),
-    );
-    const motorTop3Rate = parseFloat_(
-      (motorLines[2] ?? "").replace(/[^0-9.]/g, ""),
-    );
-
-    // Boat stats
-    const boatCell2 = firstRow.find("td.is-lineH2").eq(4);
-    const boatLines = (boatCell2.html() ?? "").split("<br");
-    const boatNumberAssigned = parseInt_(
-      (boatLines[0] ?? "").replace(/[^0-9]/g, ""),
-    );
-    const boatTop2Rate = parseFloat_(
-      (boatLines[1] ?? "").replace(/[^0-9.]/g, ""),
-    );
-    const boatTop3Rate = parseFloat_(
-      (boatLines[2] ?? "").replace(/[^0-9.]/g, ""),
-    );
-
-    entries.push({
-      racerId,
-      boatNumber,
-      racerName,
-      racerClass,
-      racerWeight,
-      flyingCount,
-      lateCount,
-      averageSt,
-      nationalWinRate,
-      nationalTop2Rate,
-      nationalTop3Rate,
-      localWinRate,
-      localTop2Rate,
-      localTop3Rate,
-      motorNumber,
-      motorTop2Rate,
-      motorTop3Rate,
-      boatNumberAssigned,
-      boatTop2Rate,
-      boatTop3Rate,
-      branch,
-      birthplace,
-    });
+    entries.push({ ...identity, ...stats });
   });
 
   if (entries.length === 0) {
@@ -225,72 +247,14 @@ export function parseRaceList(
 // parseBeforeInfo — 直前情報ページ
 // ---------------------------------------------------------------------------
 
-export function parseBeforeInfo(
-  $: CheerioAPI,
-  context: RaceContext,
-): BeforeInfoData | null {
-  const { params, raceDate } = context;
-  const stadiumId = Number.parseInt(params.stadiumCode, 10);
-  const entries: BeforeInfoEntry[] = [];
-
-  // Main table: table.is-w748 > tbody.is-fs12
-  $("table.is-w748 tbody.is-fs12").each((i, tbody) => {
-    const $tbody = $(tbody);
-    const boatNumber = i + 1;
-    const firstRow = $tbody.find("tr").first();
-    const tds = firstRow.find("td");
-
-    // Column layout (from thead):
-    // 0: 枠 (boat number, rowspan=4)
-    // 1: 写真 (photo, rowspan=4)
-    // 2: ボートレーサー (name, rowspan=4)
-    // 3: 体重 (weight, rowspan=2)
-    // 4: 展示タイム (rowspan=4)
-    // 5: チルト (rowspan=4)
-    // 6: プロペラ (rowspan=4)
-    // 7: 部品交換 (rowspan=4)
-    // 8: 前走成績R
-    // 9: 前走成績値
-
-    // Exhibition time (index 4 in first row)
-    const exhibitionTimeText = normalizeText(tds.eq(4).text());
-    const exhibitionTime = parseFloat_(exhibitionTimeText);
-
-    // Tilt (index 5)
-    const tiltText = normalizeText(tds.eq(5).text());
-    const tilt = parseFloat_(tiltText);
-
-    // Parts replaced (in labelGroup1 ul)
-    const partsReplaced: string[] = [];
-    $tbody.find("ul.labelGroup1 span.label4").each((_j, span) => {
-      const part = normalizeText($(span).text());
-      if (part) partsReplaced.push(part);
-    });
-
-    // Weight adjustment (index 3, second row)
-    // The third row has the "調整重量" value
-    const thirdRow = $tbody.find("tr").eq(2);
-    const adjustWeightTd = thirdRow.find("td").first();
-    // This contains the adjustment weight value (e.g. "0.5")
-
-    entries.push({
-      boatNumber,
-      exhibitionTime,
-      tilt,
-      partsReplaced: partsReplaced.length > 0 ? partsReplaced : undefined,
-    });
-  });
-
-  // Exhibition ST from table.is-w238
+function parseExhibitionSt($: CheerioAPI, entries: BeforeInfoEntry[]): void {
   $("table.is-w238 .table1_boatImage1").each((_i, div) => {
     const $div = $(div);
-    const numberEl = $div.find(".table1_boatImage1Number");
-    const typeClass = numberEl.attr("class") ?? "";
+    const typeClass = $div.find(".table1_boatImage1Number").attr("class") ?? "";
     const typeMatch = typeClass.match(/is-type(\d)/);
     const boatNumber = typeMatch ? Number.parseInt(typeMatch[1], 10) : 0;
 
     const timeText = normalizeText($div.find(".table1_boatImage1Time").text());
-    // timeText: ".01" or "F.04" (flying)
     const stMatch = timeText.match(/F?\s*\.?(\d+\.?\d*)/);
     const exhibitionSt = stMatch ? parseFloat_(`.${stMatch[1]}`) : undefined;
 
@@ -299,15 +263,49 @@ export function parseBeforeInfo(
       entry.exhibitionSt = exhibitionSt;
     }
   });
+}
 
-  // Stabilizer: check for "安定板" text on the page
-  const pageText = $("body").text();
-  const hasStabilizer = pageText.includes("安定板使用");
+function applyStabilizer($: CheerioAPI, entries: BeforeInfoEntry[]): void {
+  const hasStabilizer = $("body").text().includes("安定板使用");
   if (hasStabilizer) {
     for (const entry of entries) {
       entry.stabilizer = true;
     }
   }
+}
+
+export function parseBeforeInfo(
+  $: CheerioAPI,
+  context: RaceContext,
+): BeforeInfoData | null {
+  const { params, raceDate } = context;
+  const stadiumId = Number.parseInt(params.stadiumCode, 10);
+  const entries: BeforeInfoEntry[] = [];
+
+  $("table.is-w748 tbody.is-fs12").each((i, tbody) => {
+    const $tbody = $(tbody);
+    const firstRow = $tbody.find("tr").first();
+    const tds = firstRow.find("td");
+
+    const exhibitionTime = parseFloat_(normalizeText(tds.eq(4).text()));
+    const tilt = parseFloat_(normalizeText(tds.eq(5).text()));
+
+    const partsReplaced: string[] = [];
+    $tbody.find("ul.labelGroup1 span.label4").each((_j, span) => {
+      const part = normalizeText($(span).text());
+      if (part) partsReplaced.push(part);
+    });
+
+    entries.push({
+      boatNumber: i + 1,
+      exhibitionTime,
+      tilt,
+      partsReplaced: partsReplaced.length > 0 ? partsReplaced : undefined,
+    });
+  });
+
+  parseExhibitionSt($, entries);
+  applyStabilizer($, entries);
 
   if (entries.length === 0) {
     logger.warn(`No before-info entries parsed for R${params.raceNumber}`);
@@ -336,6 +334,60 @@ export function parseBeforeInfo(
 // parseRaceResult — レース結果ページ
 // ---------------------------------------------------------------------------
 
+function parseResultEntries($: CheerioAPI): RaceResultEntry[] {
+  const resultTable = $("table.is-w495 th:contains('着')")
+    .closest("table")
+    .first();
+
+  if (resultTable.length === 0) return [];
+
+  const entries: RaceResultEntry[] = [];
+
+  resultTable.find("tbody").each((_i, tbody) => {
+    const row = $(tbody).find("tr").first();
+    const tds = row.find("td");
+
+    const posText = normalizeText(tds.eq(0).text());
+    const finishPosition = parseInt_(toHalfWidth(posText));
+
+    const boatNumber = parseInt_(normalizeText(tds.eq(1).text()));
+    if (!boatNumber) return;
+
+    const timeText = normalizeText(tds.eq(3).text());
+
+    entries.push({
+      boatNumber,
+      finishPosition,
+      raceTime: timeText || undefined,
+    });
+  });
+
+  return entries;
+}
+
+function parseStartInfo($: CheerioAPI, entries: RaceResultEntry[]): void {
+  $(".table1_boatImage1.is-type1__3rdadd").each((_i, div) => {
+    const $div = $(div);
+    const typeClass = $div.find(".table1_boatImage1Number").attr("class") ?? "";
+    const typeMatch = typeClass.match(/is-type(\d)/);
+    const boatNumber = typeMatch ? Number.parseInt(typeMatch[1], 10) : 0;
+
+    const courseNumber = _i + 1;
+
+    const timeInnerText = normalizeText(
+      $div.find(".table1_boatImage1TimeInner").text(),
+    );
+    const stMatch = timeInnerText.match(/\.(\d+)/);
+    const startTiming = stMatch ? parseFloat_(`.${stMatch[1]}`) : undefined;
+
+    const entry = entries.find((e) => e.boatNumber === boatNumber);
+    if (entry) {
+      entry.courseNumber = courseNumber;
+      entry.startTiming = startTiming;
+    }
+  });
+}
+
 export function parseRaceResult(
   $: CheerioAPI,
   context: RaceContext,
@@ -343,86 +395,20 @@ export function parseRaceResult(
   const { params, raceDate } = context;
   const stadiumId = Number.parseInt(params.stadiumCode, 10);
 
-  // Result table: table.is-w495 with 着/枠/ボートレーサー/レースタイム columns
-  const resultTable = $("table.is-w495 th:contains('着')")
-    .closest("table")
-    .first();
-
-  if (resultTable.length === 0) {
+  const resultEntries = parseResultEntries($);
+  if (resultEntries.length === 0) {
     logger.warn(`No result table found for R${params.raceNumber}`);
     return null;
   }
 
-  const resultEntries: RaceResultEntry[] = [];
+  parseStartInfo($, resultEntries);
 
-  resultTable.find("tbody").each((_i, tbody) => {
-    const row = $(tbody).find("tr").first();
-    const tds = row.find("td");
-
-    // Column 0: 着 (finish position) — full-width number like "１"
-    const posText = normalizeText(tds.eq(0).text());
-    const finishPosition = parseInt_(
-      posText.replace(/[０-９]/g, (c) =>
-        String.fromCharCode(c.charCodeAt(0) - 0xfee0),
-      ),
-    );
-
-    // Column 1: 枠 (boat number) — has is-boatColor class
-    const boatNumber = parseInt_(normalizeText(tds.eq(1).text()));
-    if (!boatNumber) return;
-
-    // Column 3: レースタイム — format: 1'48"7
-    const timeText = normalizeText(tds.eq(3).text());
-    const raceTime = timeText || undefined;
-
-    resultEntries.push({
-      boatNumber,
-      finishPosition,
-      raceTime,
-    });
-  });
-
-  // Start info: course order and start timings from the second table
-  $(".table1_boatImage1.is-type1__3rdadd").each((_i, div) => {
-    const $div = $(div);
-    const numberEl = $div.find(".table1_boatImage1Number");
-    const typeClass = numberEl.attr("class") ?? "";
-    const typeMatch = typeClass.match(/is-type(\d)/);
-    const boatNumber = typeMatch ? Number.parseInt(typeMatch[1], 10) : 0;
-
-    // Course number is the display order (i + 1)
-    const courseNumber = _i + 1;
-
-    // Start timing from TimeInner
-    const timeInnerText = normalizeText(
-      $div.find(".table1_boatImage1TimeInner").text(),
-    );
-    // ".18 まくり" or ".28"
-    const stMatch = timeInnerText.match(/\.(\d+)/);
-    const startTiming = stMatch ? parseFloat_(`.${stMatch[1]}`) : undefined;
-
-    const entry = resultEntries.find((e) => e.boatNumber === boatNumber);
-    if (entry) {
-      entry.courseNumber = courseNumber;
-      entry.startTiming = startTiming;
-    }
-  });
-
-  // Decision technique (決まり手)
   const techniqueTable = $("th:contains('決まり手')").closest("table");
   const technique =
     normalizeText(techniqueTable.find("tbody td").first().text()) || undefined;
 
-  // Weather conditions
   const weather = parseWeather($);
-
-  // Payouts
   const payouts = parsePayouts($);
-
-  if (resultEntries.length === 0) {
-    logger.warn(`No result entries parsed for R${params.raceNumber}`);
-    return null;
-  }
 
   const data: RaceResultData = {
     stadiumId,
@@ -466,13 +452,11 @@ interface WeatherInfo {
 export function parseWeather($: CheerioAPI): WeatherInfo {
   const weather: WeatherInfo = {};
 
-  // Weather text
   const weatherUnit = $(".weather1_bodyUnit.is-weather");
   weather.weatherText =
     normalizeText(weatherUnit.find(".weather1_bodyUnitLabelTitle").text()) ||
     undefined;
 
-  // Temperature
   const tempText = $(
     ".weather1_bodyUnit.is-direction .weather1_bodyUnitLabelData",
   )
@@ -481,14 +465,12 @@ export function parseWeather($: CheerioAPI): WeatherInfo {
   const tempMatch = tempText.match(/([\d.]+)/);
   weather.temperature = tempMatch ? parseFloat_(tempMatch[1]) : undefined;
 
-  // Wind speed
   const windText = $(".weather1_bodyUnit.is-wind .weather1_bodyUnitLabelData")
     .text()
     .trim();
   const windMatch = windText.match(/(\d+)/);
   weather.windSpeed = windMatch ? parseInt_(windMatch[1]) : undefined;
 
-  // Wind direction: is-wind1 through is-wind16
   const windDirEl = $(
     ".weather1_bodyUnit.is-windDirection .weather1_bodyUnitImage",
   );
@@ -496,7 +478,6 @@ export function parseWeather($: CheerioAPI): WeatherInfo {
   const windDirMatch = windDirClass.match(/is-wind(\d+)/);
   weather.windDirection = windDirMatch ? parseInt_(windDirMatch[1]) : undefined;
 
-  // Water temperature
   const waterTempText = $(
     ".weather1_bodyUnit.is-waterTemperature .weather1_bodyUnitLabelData",
   )
@@ -507,7 +488,6 @@ export function parseWeather($: CheerioAPI): WeatherInfo {
     ? parseFloat_(waterTempMatch[1])
     : undefined;
 
-  // Wave height
   const waveText = $(".weather1_bodyUnit.is-wave .weather1_bodyUnitLabelData")
     .text()
     .trim();
@@ -524,7 +504,6 @@ export function parseWeather($: CheerioAPI): WeatherInfo {
 function parsePayouts($: CheerioAPI): PayoutData[] {
   const payouts: PayoutData[] = [];
 
-  // Payout table has 勝式/組番/払戻金/人気 columns
   const payoutTable = $("th:contains('勝式')").closest("table");
   if (payoutTable.length === 0) return payouts;
 
@@ -532,7 +511,6 @@ function parsePayouts($: CheerioAPI): PayoutData[] {
     const $tbody = $(tbody);
     const rows = $tbody.find("tr.is-p3-0");
 
-    // First row has the bet type in a rowspan td
     const betTypeEl = rows.first().find("td[rowspan]").first();
     const betType = normalizeText(betTypeEl.text());
     if (!betType) return;
@@ -540,14 +518,12 @@ function parsePayouts($: CheerioAPI): PayoutData[] {
     rows.each((_j, row) => {
       const $row = $(row);
 
-      // Combination from numberSet1_number elements
       const numbers: string[] = [];
       $row.find(".numberSet1_number").each((_k, num) => {
         numbers.push(normalizeText($(num).text()));
       });
       if (numbers.length === 0) return;
 
-      // Separator: - or =
       const separators: string[] = [];
       $row.find(".numberSet1_text").each((_k, sep) => {
         separators.push(normalizeText($(sep).text()));
@@ -561,7 +537,6 @@ function parsePayouts($: CheerioAPI): PayoutData[] {
         combination += numbers[k];
       }
 
-      // Payout amount
       const payoutText = normalizeText($row.find(".is-payout1").text());
       const payoutMatch = payoutText.match(/[\d,]+/);
       if (!payoutMatch) return;
