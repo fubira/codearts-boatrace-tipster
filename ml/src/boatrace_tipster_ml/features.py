@@ -231,15 +231,6 @@ def _add_recent_form(df: pd.DataFrame) -> None:
         ).droplevel(0)
 
 
-def _add_motor_actual_stats(df: pd.DataFrame) -> None:
-    """B5: Motor's actual win/top2 rate at this stadium."""
-    df["_is_win"] = (df["finish_position"] == 1).astype(int)
-    df["_is_top2"] = (df["finish_position"] <= 2).astype(int)
-
-    group = ["stadium_id", "motor_number"]
-    df["motor_actual_win_rate"] = _cumulative_rate(df, group, "_is_win")
-    df["motor_actual_top2_rate"] = _cumulative_rate(df, group, "_is_top2")
-
 
 def _add_st_stability(df: pd.DataFrame) -> None:
     """B6: Standard deviation of racer's start timing (lower = more stable)."""
@@ -316,7 +307,6 @@ def build_features(
     _add_course_taking_rate(df)
     _add_course_avg_st(df)
     _add_recent_form(df)
-    _add_motor_actual_stats(df)
     _add_st_stability(df)
 
     _cleanup_temp_cols(df)

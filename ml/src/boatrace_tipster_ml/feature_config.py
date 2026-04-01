@@ -61,9 +61,6 @@ FEATURE_COLS: list[str] = [
     "recent_win_rate",
     "recent_top2_rate",
     "recent_avg_position",
-    # --- Motor actual performance (2) ---
-    "motor_actual_win_rate",
-    "motor_actual_top2_rate",
     # --- Start stability (1) ---
     "st_stability",
     # --- Race-relative z-scores (4) ---

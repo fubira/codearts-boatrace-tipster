@@ -152,11 +152,6 @@ RACER_HISTORICAL_COLS = [
     "recent_avg_position",
     "st_stability",
 ]
-# Motor-based features are NOT per-racer — a motor has history from prior riders
-MOTOR_HISTORICAL_COLS = [
-    "motor_actual_win_rate",
-    "motor_actual_top2_rate",
-]
 
 
 class TestLeakagePrevention:
