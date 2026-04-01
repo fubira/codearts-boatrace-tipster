@@ -345,7 +345,11 @@ export function parseBeforeInfo(
     const firstRow = $tbody.find("tr").first();
     const tds = firstRow.find("td");
 
-    const exhibitionTime = parseFloat_(normalizeText(tds.eq(4).text()));
+    const exhibitionTimeRaw = parseFloat_(normalizeText(tds.eq(4).text()));
+    const exhibitionTime =
+      exhibitionTimeRaw && exhibitionTimeRaw > 0
+        ? exhibitionTimeRaw
+        : undefined;
     const tilt = parseFloat_(normalizeText(tds.eq(5).text()));
 
     const partsReplaced: string[] = [];
