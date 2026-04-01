@@ -155,10 +155,13 @@ def _load_payouts(
 
 
 def _combo(nums: list[int], ordered: bool = False) -> str:
-    """Build combination string matching DB format."""
+    """Build combination string matching DB format.
+
+    DB format: ordered uses '-' (e.g., 1-2), unordered uses '=' (e.g., 1=2).
+    """
     if ordered:
         return "-".join(str(n) for n in nums)
-    return "-".join(str(n) for n in sorted(nums))
+    return "=".join(str(n) for n in sorted(nums))
 
 
 def _bet_stats(bet: int, payout: int, hits: int) -> dict[str, float] | None:
