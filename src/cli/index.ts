@@ -3,6 +3,7 @@ import { analyzeCommand } from "@/cli/commands/analyze";
 import { backupCommand } from "@/cli/commands/backup";
 import { dataCommand } from "@/cli/commands/data";
 import { predictCommand } from "@/cli/commands/predict";
+import { runCommand } from "@/cli/commands/run";
 import { scrapeCommand } from "@/cli/commands/scrape";
 import { scrapeOddsCommand } from "@/cli/commands/scrape-odds";
 import { setLogLevel } from "@/shared/logger";
@@ -25,6 +26,7 @@ program.addCommand(scrapeCommand);
 program.addCommand(scrapeOddsCommand);
 program.addCommand(predictCommand);
 program.addCommand(analyzeCommand);
+program.addCommand(runCommand);
 program.addCommand(dataCommand);
 program.addCommand(backupCommand);
 

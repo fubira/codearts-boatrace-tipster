@@ -35,6 +35,7 @@ def backtest(
     bankroll: float,
     bet_cap: int,
     kelly_fraction: float,
+    ev_threshold: float = 0.0,
 ) -> dict:
     with contextlib.redirect_stdout(sys.stderr):
         df = build_features_df(db_path)
@@ -82,14 +83,14 @@ def backtest(
             "bets": n,
             "hit_rate": round(float(wins.mean()), 4),
             "roi": round(float((wins * o).sum() / n), 4),
-            "profit_at_100": int(((wins * o).sum() - n) * 100),
+            "profit_at_100": round(((wins * o).sum() - n) * 100),
         })
 
     # --- Kelly simulation ---
-    mask_ev0 = has_odds & (ev >= 0)
+    mask_ev0 = has_odds & (ev >= ev_threshold / 100)
     indices = np.where(mask_ev0)[0]
 
-    bank = float(bankroll)
+    bank = int(bankroll)
     daily: dict[str, dict] = {}
     n_bets = 0
     min_bank = bank
@@ -111,7 +112,7 @@ def backtest(
         if bet < 100:
             continue
 
-        payout = int(bet * o) if won else 0
+        payout = round(bet * o) if won else 0
         bank += payout - bet
         min_bank = min(min_bank, bank)
         max_bank = max(max_bank, bank)
@@ -156,6 +157,7 @@ def backtest(
             "initial_bankroll": int(bankroll),
             "bet_cap": bet_cap,
             "kelly_fraction": kelly_fraction,
+            "ev_threshold": ev_threshold,
             "final_bankroll": int(bank),
             "profit": int(bank - bankroll),
             "total_wagered": total_wagered,
@@ -177,11 +179,12 @@ def main():
     parser.add_argument("--bankroll", type=float, default=50000)
     parser.add_argument("--bet-cap", type=int, default=4000)
     parser.add_argument("--kelly", type=float, default=0.25)
+    parser.add_argument("--ev-threshold", type=float, default=0, help="EV threshold for Kelly bets (e.g. 20 for EV>=+20%%)")
     args = parser.parse_args()
 
     result = backtest(
         args.from_date, args.to_date, args.db_path,
-        args.bankroll, args.bet_cap, args.kelly,
+        args.bankroll, args.bet_cap, args.kelly, args.ev_threshold,
     )
     json.dump(result, sys.stdout, ensure_ascii=False, default=str)
 

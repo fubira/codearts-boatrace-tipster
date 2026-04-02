@@ -126,7 +126,11 @@ function loadPartial(html: string, markers: string[]): CheerioAPI {
 // parseRaceList — 出走表ページ
 // ---------------------------------------------------------------------------
 
-const RACELIST_MARKERS = ["heading2_title", "is-tableFixed__3rdadd"];
+const RACELIST_MARKERS = [
+  "heading2_title",
+  "is-tableFixed__3rdadd",
+  "is-thColor8",
+];
 
 function parseRacerIdentity($: Cheerio<AnyNode>): {
   boatNumber: number;
@@ -275,6 +279,22 @@ export function parseRaceList(
     return null;
   }
 
+  // Parse deadline from 締切予定時刻 row (12 cells for races 1-12)
+  let deadline: string | undefined;
+  const deadlineRow = $("td.is-thColor8")
+    .filter((_i, el) => $(el).text().includes("締切予定時刻"))
+    .parent();
+  if (deadlineRow.length > 0) {
+    const cells = deadlineRow.find("td:not(.is-thColor8)");
+    const idx = params.raceNumber - 1;
+    if (idx < cells.length) {
+      const text = $(cells[idx]).text().trim();
+      if (/^\d{1,2}:\d{2}$/.test(text)) {
+        deadline = text;
+      }
+    }
+  }
+
   const data: RaceData = {
     stadiumId,
     stadiumName: STADIUMS[params.stadiumCode] ?? `場${params.stadiumCode}`,
@@ -284,6 +304,7 @@ export function parseRaceList(
     raceTitle,
     raceGrade,
     distance: 1800,
+    deadline,
     entries,
   };
 

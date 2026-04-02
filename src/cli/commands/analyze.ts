@@ -24,6 +24,7 @@ interface KellySummary {
   initial_bankroll: number;
   bet_cap: number;
   kelly_fraction: number;
+  ev_threshold: number;
   final_bankroll: number;
   profit: number;
   total_wagered: number;
@@ -53,6 +54,12 @@ export const analyzeCommand = new Command("analyze")
   .option("--bankroll <n>", "initial bankroll", (v: string) => Number(v), 50000)
   .option("--bet-cap <n>", "max bet per race", (v: string) => Number(v), 4000)
   .option("--kelly <f>", "Kelly fraction", (v: string) => Number(v), 0.25)
+  .option(
+    "--ev-threshold <n>",
+    "EV threshold for Kelly bets (e.g. 20)",
+    (v: string) => Number(v),
+    0,
+  )
   .option("--json", "output raw JSON")
   .action(async (opts) => {
     for (const d of [opts.from, opts.to]) {
@@ -83,6 +90,8 @@ export const analyzeCommand = new Command("analyze")
         String(opts.betCap),
         "--kelly",
         String(opts.kelly),
+        "--ev-threshold",
+        String(opts.evThreshold),
       ],
       { stdout: "pipe", stderr: "pipe" },
     );
@@ -146,7 +155,7 @@ function formatReport(r: AnalyzeResult): void {
 
   // Kelly simulation
   console.log(
-    `\n=== Kelly ${k.kelly_fraction} + cap ¥${k.bet_cap.toLocaleString()} (bankroll ¥${k.initial_bankroll.toLocaleString()}) ===`,
+    `\n=== Kelly ${k.kelly_fraction} + cap ¥${k.bet_cap.toLocaleString()} + EV≥${k.ev_threshold} (bankroll ¥${k.initial_bankroll.toLocaleString()}) ===`,
   );
   console.log(
     `  ${"日付".padEnd(12)} ${"BET".padStart(4)} ${"的中".padStart(5)}  ${"投入".padStart(9)}  ${"払戻".padStart(9)}  ${"損益".padStart(10)}  ${"残高".padStart(10)}`,
