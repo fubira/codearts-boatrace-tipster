@@ -18,7 +18,9 @@ function shouldLog(level: LogLevel): boolean {
 }
 
 function formatMessage(level: LogLevel, message: string): string {
-  const timestamp = new Date().toISOString();
+  const timestamp = new Date()
+    .toLocaleString("sv-SE", { timeZone: "Asia/Tokyo", hour12: false })
+    .replace(",", "");
   return `[${timestamp}] [${level.toUpperCase()}] ${message}`;
 }
 
