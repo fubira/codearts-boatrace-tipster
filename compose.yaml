@@ -1,0 +1,36 @@
+services:
+  runner:
+    image: ghcr.io/fubira/boatrace-tipster:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Asia/Tokyo
+    volumes:
+      - ./data:/app/data
+      - ./ml/models:/app/ml/models
+    labels:
+      - "com.centurylinklabs.watchtower.scope=boatrace-tipster"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  watchtower:
+    image: ghcr.io/nicholas-fedor/watchtower
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Tokyo
+      WATCHTOWER_SCOPE: boatrace-tipster
+      WATCHTOWER_POLL_INTERVAL: 300
+      WATCHTOWER_CLEANUP: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.docker/config.json:/config.json:ro
+    labels:
+      - "com.centurylinklabs.watchtower.scope=boatrace-tipster"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

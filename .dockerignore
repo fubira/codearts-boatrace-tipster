@@ -1,0 +1,12 @@
+node_modules
+data
+ml/.venv
+ml/models
+.git
+.env
+.env.*
+.claude
+*.log
+.DS_Store
+Thumbs.db
+logs
