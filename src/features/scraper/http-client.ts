@@ -8,6 +8,10 @@ import { execSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+const EXEC_OPTIONS = {
+  env: { ...process.env, PATH: `${process.env.PATH}:/usr/bin:/usr/local/bin` },
+};
 import { logger } from "@/shared/logger";
 import {
   hasCacheEntry,
@@ -63,6 +67,7 @@ export function fetchPage(
   const html = execSync(`curl -s --compressed ${CURL_HEADERS} "${url}"`, {
     encoding: "utf-8",
     timeout: 30_000,
+    ...EXEC_OPTIONS,
   });
 
   if (!html || html.length === 0) {
@@ -119,6 +124,7 @@ export function fetchPages(paths: string[]): (FetchPageResult | null)[] {
     execSync(`curl -s --compressed ${CURL_HEADERS} ${curlArgs}`, {
       timeout: 60_000 + toFetch.length * 5_000,
       stdio: ["pipe", "pipe", "pipe"],
+      ...EXEC_OPTIONS,
     });
 
     // Read results from temp files
