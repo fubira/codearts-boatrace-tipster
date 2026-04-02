@@ -51,6 +51,8 @@ FEATURE_COLS: list[str] = [
     "class_x_boat",
     "weight_x_boat",
     "wind_speed_x_boat",
+    # --- Rolling: course-specific recent form (1) ---
+    "rel_rolling_course_win",
 ]
 
 # Columns that need 0-fill (not NaN) for LightGBM categorical handling
@@ -116,6 +118,16 @@ def compute_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     df["rel_motor_top3_rate"] = _race_zscore(df, "motor_top3_rate")
     df["rel_racer_course_win_rate"] = _race_zscore(df, "racer_course_win_rate")
     df["rel_exhibition_st"] = _race_zscore(df, "exhibition_st")
+    df["rel_rolling_st"] = _race_zscore(df, "rolling_st_mean")
+    df["rel_rolling_win_rate"] = _race_zscore(df, "rolling_win_rate")
+    df["rel_rolling_avg_pos"] = _race_zscore(df, "rolling_avg_position")
+    df["rel_rolling_course_win"] = _race_zscore(df, "rolling_course_win_rate")
+    df["rel_rolling_course_st"] = _race_zscore(df, "rolling_course_st")
+    # Form deltas: recent rolling vs career stats (self-comparison)
+    # Positive = recent worse, negative = recent better
+    df["st_form_delta"] = df["rolling_st_mean"] - df["average_st"]
+    # Position delta: rolling recent vs cumulative career (both are avg finish position)
+    df["pos_form_delta"] = df["rolling_avg_position"] - df["recent_avg_position"]
     return df
 
 
@@ -171,6 +183,20 @@ def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     df["water_type_x_boat"] = df["stadium_id"].map(_WATER_TYPE) * (7 - df["boat_number"])
     # Kado × exhibition: fast boat at kado position is a major threat
     _add_kado_features(df)
+    # --- Wind decomposition ---
+    # wind_direction: 0=tailwind, 9=headwind, 18 directions (20° each)
+    # Decompose into headwind and crosswind (left) components
+    angle = df["wind_direction"].fillna(0) * (2 * np.pi / 18)
+    wind_crosswind = np.sin(angle)  # positive = wind from left of course
+    # Crosswind × inner course: left crosswind pushes boat 1 outward at 1st mark
+    df["crosswind_x_boat"] = wind_crosswind * df["wind_speed"] * (7 - df["boat_number"])
+    # --- Wave height × inner course ---
+    df["wave_height_x_boat"] = df["wave_height"] * (7 - df["boat_number"])
+    # --- Front-taking flag ---
+    # 1 if any boat in the race has course_number != boat_number
+    df["_course_changed"] = (df["course_number"] != df["boat_number"]).astype(int)
+    df["has_front_taking"] = df.groupby("race_id")["_course_changed"].transform("max")
+    df.drop(columns="_course_changed", inplace=True)
     return df
 
 

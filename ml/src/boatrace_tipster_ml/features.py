@@ -182,6 +182,78 @@ def _cumulative_std(
 
 
 # ---------------------------------------------------------------------------
+# Rolling window helpers (race-day granularity)
+# ---------------------------------------------------------------------------
+
+
+def _rolling_mean_daily(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    value_col: str,
+    window: int = 10,
+) -> np.ndarray:
+    """Rolling mean over last N race-days, same-day excluded.
+
+    Aggregates to (group, race_date) level, uses cumsum+shift trick
+    for O(n) vectorized computation (no per-group Python lambdas).
+    NaN values in value_col are excluded from sums and counts.
+    """
+    valid = df[value_col].notna()
+    val = df[value_col].fillna(0.0)
+
+    # Build daily summary
+    tmp = df[group_cols + ["race_date"]].copy()
+    tmp["_val"] = val
+    tmp["_valid"] = valid.astype(int)
+
+    daily = (
+        tmp.groupby(group_cols + ["race_date"], sort=False)
+        .agg(_dsum=("_val", "sum"), _dcnt=("_valid", "sum"))
+        .reset_index()
+        .sort_values(group_cols + ["race_date"])
+    )
+
+    # Vectorized rolling via cumsum + shift (all C-level, no Python lambdas)
+    g = daily.groupby(group_cols, sort=False)
+    cs_sum = g["_dsum"].cumsum()
+    cs_cnt = g["_dcnt"].cumsum()
+
+    # rolling_sum at day i = sum of last `window` days before day i
+    #   = cumsum[i-1] - cumsum[i-1-window]
+    # groupby.shift respects group boundaries (C-level, fast)
+    g2 = daily.groupby(group_cols, sort=False)
+    s1_sum = g2[cs_sum.name if hasattr(cs_sum, "name") else "_dsum"].shift(1)
+    # Need to use the cumsum series directly; assign to daily first
+    daily["_cs_sum"] = cs_sum.values
+    daily["_cs_cnt"] = cs_cnt.values
+
+    g3 = daily.groupby(group_cols, sort=False)
+    rsum = g3["_cs_sum"].shift(1).fillna(0) - g3["_cs_sum"].shift(1 + window).fillna(0)
+    rcnt = g3["_cs_cnt"].shift(1).fillna(0) - g3["_cs_cnt"].shift(1 + window).fillna(0)
+
+    daily["_rmean"] = np.where(rcnt > 0, rsum / rcnt, np.nan)
+
+    # Merge back to entry level
+    merge_keys = group_cols + ["race_date"]
+    result = df[merge_keys].merge(
+        daily[merge_keys + ["_rmean"]],
+        on=merge_keys,
+        how="left",
+    )
+    return result["_rmean"].values
+
+
+def _rolling_rate_daily(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    value_col: str,
+    window: int = 10,
+) -> np.ndarray:
+    """Rolling rate (0/1 indicator) over last N race-days, same-day excluded."""
+    return _rolling_mean_daily(df, group_cols, value_col, window)
+
+
+# ---------------------------------------------------------------------------
 # Tournament ID generation
 # ---------------------------------------------------------------------------
 
@@ -286,6 +358,46 @@ def _add_recent_form(df: pd.DataFrame) -> None:
 def _add_st_stability(df: pd.DataFrame) -> None:
     """B6: Standard deviation of racer's start timing (lower = more stable)."""
     df["st_stability"] = _cumulative_std(df, ["racer_id"], "start_timing")
+
+
+ROLLING_WINDOW: int = 5    # race-days; default for per-racer features
+ROLLING_WINDOW_GENERAL: int | None = None  # per-racer override (None = use ROLLING_WINDOW)
+ROLLING_WINDOW_COURSE: int | None = 20     # per-racer-course features (wider for sample size)
+
+
+def _add_rolling_features(df: pd.DataFrame) -> None:
+    """B10: Rolling features over recent race-days.
+
+    Captures short-term form that cumulative stats miss.
+    Start timing from previous races is available pre-race (historical data).
+
+    Window sizes:
+        ROLLING_WINDOW_GENERAL (default 5): per-racer features (ST, position, win rate)
+        ROLLING_WINDOW_COURSE (default 20): per-racer-course features (course win rate, ST)
+    """
+    w_general = ROLLING_WINDOW_GENERAL or ROLLING_WINDOW
+    w_course = ROLLING_WINDOW_COURSE or ROLLING_WINDOW
+    group = ["racer_id"]
+
+    # Recent start timing (actual race ST from past races)
+    df["rolling_st_mean"] = _rolling_mean_daily(df, group, "start_timing", w_general)
+
+    # Recent finish position (short-term form)
+    df["_pos"] = df["finish_position"].astype(float)
+    df["rolling_avg_position"] = _rolling_mean_daily(df, group, "_pos", w_general)
+
+    # Recent win rate
+    df["_is_win"] = (df["finish_position"] == 1).astype(float)
+    df["rolling_win_rate"] = _rolling_rate_daily(df, group, "_is_win", w_general)
+
+    # Course-specific rolling: recent performance at this course position
+    course_group = ["racer_id", "course_number"]
+    df["rolling_course_win_rate"] = _rolling_rate_daily(
+        df, course_group, "_is_win", w_course
+    )
+    df["rolling_course_st"] = _rolling_mean_daily(
+        df, course_group, "start_timing", w_course
+    )
 
 
 def _add_tournament_features(df: pd.DataFrame) -> None:
@@ -439,6 +551,7 @@ def build_features(
     _add_course_avg_st(df)
     _add_recent_form(df)
     _add_st_stability(df)
+    _add_rolling_features(df)
     _add_tournament_features(df)
     _add_self_comparison_features(df)
 
