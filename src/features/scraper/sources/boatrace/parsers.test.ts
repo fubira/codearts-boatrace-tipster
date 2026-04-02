@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import * as cheerio from "cheerio";
 import type { RaceContext } from "./parsers";
 import {
+  extractGrade,
   parseBeforeInfo,
   parseRaceList,
   parseRaceResult,
@@ -210,5 +211,21 @@ describe("parseRaceResult", () => {
     const win = assertDefined(payouts.find((p) => p.betType === "単勝"));
     expect(win.combination).toBe("2");
     expect(win.payout).toBe(230);
+  });
+});
+
+describe("extractGrade", () => {
+  test("parses actual CSS class variations from boatrace.jp", () => {
+    expect(extractGrade("heading2_title is-ippan ")).toBe("一般");
+    expect(extractGrade("heading2_title is-SGa ")).toBe("SG");
+    expect(extractGrade("heading2_title is-G1a ")).toBe("G1");
+    expect(extractGrade("heading2_title is-G1b ")).toBe("G1");
+    expect(extractGrade("heading2_title is-G2b ")).toBe("G2");
+    expect(extractGrade("heading2_title is-G3b ")).toBe("G3");
+  });
+
+  test("returns undefined for unknown class", () => {
+    expect(extractGrade("heading2_title")).toBeUndefined();
+    expect(extractGrade("")).toBeUndefined();
   });
 });

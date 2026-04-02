@@ -628,11 +628,12 @@ function parsePayouts($: CheerioAPI): PayoutData[] {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function extractGrade(classStr: string): string | undefined {
-  if (classStr.includes("is-sg")) return "SG";
-  if (classStr.includes("is-g1")) return "G1";
-  if (classStr.includes("is-g2")) return "G2";
-  if (classStr.includes("is-g3")) return "G3";
-  if (classStr.includes("is-ippan")) return "一般";
+export function extractGrade(classStr: string): string | undefined {
+  const lower = classStr.toLowerCase();
+  if (lower.includes("is-sg")) return "SG";
+  if (lower.includes("is-g1")) return "G1";
+  if (lower.includes("is-g2")) return "G2";
+  if (lower.includes("is-g3")) return "G3";
+  if (lower.includes("is-ippan")) return "一般";
   return undefined;
 }
