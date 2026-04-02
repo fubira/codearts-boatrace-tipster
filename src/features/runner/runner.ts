@@ -229,7 +229,7 @@ async function runPrediction(
   );
 }
 
-function calcKellyBet(
+export function calcKellyBet(
   prob: number,
   odds: number,
   bankroll: number,

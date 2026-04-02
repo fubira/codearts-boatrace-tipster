@@ -50,6 +50,19 @@ describe("parseRaceList", () => {
     expect(result.distance).toBe(1800);
   });
 
+  test("parses deadline time for R1", () => {
+    expect(result.deadline).toBe("10:57");
+  });
+
+  test("parses deadline time for R12", () => {
+    const r12Context: RaceContext = {
+      params: { raceNumber: 12, stadiumCode: "04", date: "20260303" },
+      raceDate: "2026-03-03",
+    };
+    const r12 = assertDefined(parseRaceList(html, r12Context));
+    expect(r12.deadline).toBe("16:40");
+  });
+
   test("parses 6 entries", () => {
     expect(result.entries).toHaveLength(6);
   });
