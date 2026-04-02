@@ -1,0 +1,10 @@
+# server-tune.conf — Server configuration for remote tuning
+#
+# Copy this file to server-tune.conf and edit for your environment.
+# server-tune.conf is gitignored.
+
+# SSH host (must be configured in ~/.ssh/config)
+SERVER="one"
+
+# Tuning workspace directory on the server (isolated from production)
+REMOTE_DIR="\$HOME/boatrace-tipster-tune"

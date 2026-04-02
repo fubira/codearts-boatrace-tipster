@@ -30,6 +30,7 @@ SELECT
     r.race_number,
     r.stadium_id,
     r.race_grade,
+    r.race_title,
     r.weather,
     r.wind_speed,
     r.wind_direction,
@@ -181,6 +182,50 @@ def _cumulative_std(
 
 
 # ---------------------------------------------------------------------------
+# Tournament ID generation
+# ---------------------------------------------------------------------------
+
+
+def _generate_tournament_id(df: pd.DataFrame) -> None:
+    """Generate tournament_id from (stadium_id, race_title, consecutive dates).
+
+    A tournament is a group of races at the same stadium with the same title
+    on consecutive dates. A gap of 2+ days starts a new tournament.
+    """
+    # Get unique (stadium_id, race_title, race_date) combos, sorted
+    race_info = (
+        df[["stadium_id", "race_title", "race_date"]]
+        .drop_duplicates()
+        .sort_values(["stadium_id", "race_title", "race_date"])
+        .reset_index(drop=True)
+    )
+
+    dates = pd.to_datetime(race_info["race_date"])
+    tid = 0
+    tournament_ids = []
+    prev_key = None
+
+    for i, row in race_info.iterrows():
+        key = (row["stadium_id"], row["race_title"])
+        if key != prev_key:
+            tid += 1
+        elif (dates.iloc[i] - dates.iloc[i - 1]).days > 1:
+            tid += 1
+        tournament_ids.append(tid)
+        prev_key = key
+
+    race_info["tournament_id"] = tournament_ids
+
+    # Merge back to df
+    df_merged = df.merge(
+        race_info[["stadium_id", "race_title", "race_date", "tournament_id"]],
+        on=["stadium_id", "race_title", "race_date"],
+        how="left",
+    )
+    df["tournament_id"] = df_merged["tournament_id"].values
+
+
+# ---------------------------------------------------------------------------
 # Category B: Historical features
 # ---------------------------------------------------------------------------
 
@@ -195,6 +240,17 @@ def _add_racer_course_stats(df: pd.DataFrame) -> None:
     df["racer_course_win_rate"] = _cumulative_rate(df, group, "_is_win")
     df["racer_course_top2_rate"] = _cumulative_rate(df, group, "_is_top2")
     df["racer_course_top3_rate"] = _cumulative_rate(df, group, "_is_top3")
+
+
+def _add_stadium_course_stats(df: pd.DataFrame) -> None:
+    """B7: Stadium × course win rate (leak-safe cumulative).
+
+    Captures venue-specific course advantages (e.g., Toda 1-course 44% vs Omura 64%).
+    Varies per boat because each boat is at a different course.
+    """
+    df["_is_win"] = (df["finish_position"] == 1).astype(int)
+    group = ["stadium_id", "course_number"]
+    df["stadium_course_win_rate"] = _cumulative_rate(df, group, "_is_win")
 
 
 def _add_course_taking_rate(df: pd.DataFrame) -> None:
@@ -232,6 +288,86 @@ def _add_st_stability(df: pd.DataFrame) -> None:
     df["st_stability"] = _cumulative_std(df, ["racer_id"], "start_timing")
 
 
+def _add_tournament_features(df: pd.DataFrame) -> None:
+    """B8: Tournament-scoped features (within same 開催).
+
+    Captures motor development and racer adaptation within a tournament.
+    Exhibition time trends are less noisy than finish positions (measured every race).
+    """
+    group = ["racer_id", "tournament_id"]
+
+    # Exhibition time trend: today vs tournament prior days
+    # Negative = boat getting faster = motor tuning working
+    df["tourn_exhibition_delta"] = (
+        df["exhibition_time"]
+        - _cumulative_mean(df, group, "exhibition_time")
+    )
+
+    # Exhibition ST trend: today vs tournament prior days
+    # Negative = starting earlier = racer adapting to conditions
+    df["tourn_st_delta"] = (
+        df["exhibition_st"]
+        - _cumulative_mean(df, group, "exhibition_st")
+    )
+
+    # Average position within tournament (current form with this motor)
+    df["_pos"] = df["finish_position"].astype(float)
+    df["tourn_avg_position"] = _cumulative_mean(df, group, "_pos")
+
+
+def _add_self_comparison_features(df: pd.DataFrame) -> None:
+    """B9: Self-comparison features (current vs own history).
+
+    Captures whether a racer's current boat is better/worse than their usual.
+    Different from rel_* (within-race comparison with opponents).
+    """
+    group = ["racer_id"]
+
+    # Exhibition time: negative = faster than my usual = good motor today
+    racer_avg_ex = _cumulative_mean(df, group, "exhibition_time")
+    df["self_exhibition_delta"] = df["exhibition_time"] - racer_avg_ex
+
+    # Exhibition ST: negative = starting earlier than my usual
+    racer_avg_st = _cumulative_mean(df, group, "exhibition_st")
+    df["self_st_delta"] = df["exhibition_st"] - racer_avg_st
+
+
+# ---------------------------------------------------------------------------
+# Course-taking (イン屋) features
+# ---------------------------------------------------------------------------
+
+# Racers with course_taking_rate above this are considered "イン屋"
+_INYA_THRESHOLD = 0.15
+
+
+def _add_inya_features(df: pd.DataFrame) -> None:
+    """Add within-race イン屋 features.
+
+    inya_x_boat: Racer's inner-taking aggressiveness × distance to cut in.
+        Boat 1 → 0 (already innermost), boat 6 with high rate → large value.
+
+    n_inya_outside: Count of boats with higher boat_number that have
+        course_taking_rate above threshold. Captures start formation threat
+        from aggressive outer boats. Varies per boat in a race.
+    """
+    rate = df["course_taking_rate"].fillna(0)
+    df["inya_x_boat"] = rate * (df["boat_number"] - 1)
+
+    is_inya = (rate > _INYA_THRESHOLD).astype(int)
+    # For each race, compute reverse cumulative sum of is_inya by boat_number
+    # boat 1 sees count of イン屋 in boats 2-6, boat 6 sees 0
+    race_total = df.groupby("race_id")["_inya_flag"].transform("sum") if "_inya_flag" in df.columns else None
+
+    df["_inya_flag"] = is_inya.values
+    # Total イン屋 in race minus cumulative from boat 1 up to this boat
+    race_inya_total = df.groupby("race_id")["_inya_flag"].transform("sum")
+    # Cumulative sum of イン屋 from boat 1 to current boat (inclusive)
+    cumsum = df.groupby("race_id")["_inya_flag"].cumsum()
+    # イン屋 outside = total - cumsum (boats after me)
+    df["n_inya_outside"] = race_inya_total - cumsum
+    df.drop(columns="_inya_flag", inplace=True)
+
+
 # ---------------------------------------------------------------------------
 # Encoding
 # ---------------------------------------------------------------------------
@@ -248,7 +384,7 @@ def _encode_categoricals(df: pd.DataFrame) -> None:
 # Cleanup
 # ---------------------------------------------------------------------------
 
-_TEMP_COLS = ["_is_win", "_is_top2", "_is_top3", "_took_inner", "_pos"]
+_TEMP_COLS = ["_is_win", "_is_top2", "_is_top3", "_took_inner", "_pos", "tournament_id"]
 
 
 def _cleanup_temp_cols(df: pd.DataFrame) -> None:
@@ -292,13 +428,19 @@ def build_features(
     finally:
         conn.close()
 
+    # Generate tournament ID for tournament-scoped features
+    _generate_tournament_id(df)
+
     # Historical features (must be computed on full dataset before filtering)
     print("Computing historical features...")
     _add_racer_course_stats(df)
+    _add_stadium_course_stats(df)
     _add_course_taking_rate(df)
     _add_course_avg_st(df)
     _add_recent_form(df)
     _add_st_stability(df)
+    _add_tournament_features(df)
+    _add_self_comparison_features(df)
 
     _cleanup_temp_cols(df)
     _encode_categoricals(df)

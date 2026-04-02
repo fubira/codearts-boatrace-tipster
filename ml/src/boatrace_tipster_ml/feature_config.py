@@ -4,6 +4,7 @@ Feature order matters for model compatibility — append new features at the end
 of each section, never reorder existing ones.
 """
 
+import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
@@ -11,68 +12,45 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 FEATURE_COLS: list[str] = [
-    # --- Race conditions (4) ---
-    "stadium_id",
-    "race_number",
-    "race_grade_code",
-    "race_month",
-    # --- Weather / environment (6) ---
-    "wind_speed",
-    "wind_direction",
-    "wave_height",
-    "temperature",
-    "water_temperature",
-    "weather_code",
     # --- Boat assignment (1) ---
     "boat_number",
-    # --- Racer attributes (5) ---
-    "racer_class_code",
+    # --- Racer attributes (1) ---
     "racer_weight",
-    "flying_count",
-    "late_count",
-    "average_st",
     # --- National performance (3) ---
     "national_win_rate",
     "national_top2_rate",
     "national_top3_rate",
-    # --- Local (stadium) performance (3) ---
+    # --- Local (stadium) performance (2) ---
     "local_win_rate",
-    "local_top2_rate",
     "local_top3_rate",
-    # --- Equipment: motor (2) ---
-    "motor_top2_rate",
+    # --- Equipment: motor (1) ---
     "motor_top3_rate",
-    # --- Equipment: boat (2) ---
-    "boat_top2_rate",
-    "boat_top3_rate",
-    # --- Exhibition data (4) ---
+    # --- Exhibition data (1) ---
     "exhibition_time",
-    "exhibition_st",
-    "tilt",
-    "stabilizer",
-    # --- Course-specific racer history (3) ---
+    # --- Course-specific racer history (2) ---
     "racer_course_win_rate",
     "racer_course_top2_rate",
-    "racer_course_top3_rate",
-    # --- Course behavior (2) ---
-    "course_taking_rate",
-    "course_avg_st",
-    # --- Recent form (3) ---
-    "recent_win_rate",
-    "recent_top2_rate",
+    # --- Recent form (1) ---
     "recent_avg_position",
-    # --- Start stability (1) ---
-    "st_stability",
-    # --- Race-relative z-scores (4) ---
+    # --- Race-relative z-scores (2) ---
     "rel_national_win_rate",
     "rel_exhibition_time",
-    "rel_motor_top2_rate",
-    "rel_average_st",
-    # --- Interaction features (4) ---
+    # --- Stadium × course (1) ---
+    "stadium_course_win_rate",
+    # --- Actual course position (1) ---
+    "course_number",
+    # --- Exhibition pre-race (1) ---
+    "rel_exhibition_st",
+    # --- Start formation (1) ---
+    "kado_x_exhibition",
+    # --- Tournament-scoped (3) ---
+    "tourn_exhibition_delta",
+    "tourn_st_delta",
+    "tourn_avg_position",
+    # --- Interaction features (3) ---
     "class_x_boat",
-    "motor_x_boat",
-    "wind_x_wave",
     "weight_x_boat",
+    "wind_speed_x_boat",
 ]
 
 # Columns that need 0-fill (not NaN) for LightGBM categorical handling
@@ -135,12 +113,45 @@ def compute_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     df["rel_exhibition_time"] = _race_zscore(df, "exhibition_time")
     df["rel_motor_top2_rate"] = _race_zscore(df, "motor_top2_rate")
     df["rel_average_st"] = _race_zscore(df, "average_st")
+    df["rel_motor_top3_rate"] = _race_zscore(df, "motor_top3_rate")
+    df["rel_racer_course_win_rate"] = _race_zscore(df, "racer_course_win_rate")
+    df["rel_exhibition_st"] = _race_zscore(df, "exhibition_st")
     return df
 
 
 # ---------------------------------------------------------------------------
 # Interaction features
 # ---------------------------------------------------------------------------
+
+
+# Water surface type: 海水=3, 汽水=2, 淡水=1
+# Seawater stadiums have tidal effects and rougher conditions
+_WATER_TYPE: dict[int, int] = {
+    1: 1,   # 桐生 — 淡水
+    2: 1,   # 戸田 — 淡水
+    3: 2,   # 江戸川 — 汽水
+    4: 3,   # 平和島 — 海水
+    5: 1,   # 多摩川 — 淡水
+    6: 2,   # 浜名湖 — 汽水
+    7: 2,   # 蒲郡 — 汽水
+    8: 3,   # 常滑 — 海水
+    9: 3,   # 津 — 海水
+    10: 1,  # 三国 — 淡水
+    11: 1,  # びわこ — 淡水
+    12: 1,  # 住之江 — 淡水
+    13: 1,  # 尼崎 — 淡水
+    14: 3,  # 鳴門 — 海水
+    15: 3,  # 丸亀 — 海水
+    16: 3,  # 児島 — 海水
+    17: 3,  # 宮島 — 海水
+    18: 3,  # 徳山 — 海水
+    19: 3,  # 下関 — 海水
+    20: 3,  # 若松 — 海水
+    21: 1,  # 芦屋 — 淡水
+    22: 2,  # 福岡 — 汽水
+    23: 1,  # 唐津 — 淡水
+    24: 3,  # 大村 — 海水
+}
 
 
 def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -154,7 +165,40 @@ def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     df["wind_x_wave"] = df["wind_speed"] * df["wave_height"]
     # Lighter racers advantage at outer courses
     df["weight_x_boat"] = df["racer_weight"] * df["boat_number"]
+    # Wind disruption at inner courses (strong wind weakens inner advantage)
+    df["wind_speed_x_boat"] = df["wind_speed"] * (7 - df["boat_number"])
+    # Water surface type × course (seawater reduces inner-course advantage)
+    df["water_type_x_boat"] = df["stadium_id"].map(_WATER_TYPE) * (7 - df["boat_number"])
+    # Kado × exhibition: fast boat at kado position is a major threat
+    _add_kado_features(df)
     return df
+
+
+def _add_kado_features(df: pd.DataFrame) -> None:
+    """Kado interaction: exhibition time advantage at kado position.
+
+    Kado = innermost dash starter (min course_number >= 4 in race).
+    kado_x_exhibition = is_kado * rel_exhibition_time (z-scored, negative = faster).
+    Non-kado boats get 0. Captures "fast boat at kado = dangerous."
+    """
+    n_races = len(df) // 6
+    course_2d = df["course_number"].values.reshape(n_races, 6)
+    is_kado = np.zeros(len(df), dtype=int)
+
+    for i in range(n_races):
+        dash_courses = course_2d[i][course_2d[i] >= 4]
+        if len(dash_courses) > 0:
+            kado_course = dash_courses.min()
+            offset = i * 6
+            for j in range(6):
+                if course_2d[i, j] == kado_course:
+                    is_kado[offset + j] = 1
+                    break
+
+    df["is_kado"] = is_kado
+    # Interaction: kado × relative exhibition time
+    rel_ex = df.get("rel_exhibition_time", 0)
+    df["kado_x_exhibition"] = is_kado * rel_ex
 
 
 # ---------------------------------------------------------------------------

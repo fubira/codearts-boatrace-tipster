@@ -13,6 +13,9 @@ from lightgbm import LGBMRanker
 
 from .db import get_connection
 
+# Permutation importance default settings
+PERM_N_REPEATS = 5
+
 FIELD_SIZE = 6
 BET_UNIT = 100
 
@@ -23,8 +26,15 @@ def evaluate_model(
     y: pd.Series,
     meta: pd.DataFrame,
     db_path: str | None = None,
+    payouts_cache: dict | None = None,
+    skip_confidence: bool = False,
 ) -> dict:
-    """Evaluate model on a dataset, computing per-race metrics."""
+    """Evaluate model on a dataset, computing per-race metrics.
+
+    Args:
+        payouts_cache: Pre-loaded payouts dict to avoid DB queries.
+        skip_confidence: Skip confidence analysis (faster for HPO).
+    """
     scores = model.predict(X)
 
     df = meta[["race_id", "boat_number"]].copy()
@@ -46,20 +56,28 @@ def evaluate_model(
         "multiHitRates": _multi_bet_hit_rates(pred_ranks, actual_ranks),
     }
 
-    if db_path:
+    if db_path or payouts_cache is not None:
         race_ids = df["race_id"].unique()
         boat_by_pred = _boat_numbers_by_pred_rank(df)
 
-        payout_roi = _payout_recovery(race_ids, boat_by_pred, db_path)
+        payouts_db = payouts_cache if payouts_cache is not None else _load_payouts(db_path, race_ids)
+
+        all_stats = _simulate_all_bets(race_ids, boat_by_pred, payouts_db)
+        payout_roi: dict[str, dict[str, float]] = {}
+        for name, (b, p, h) in all_stats.items():
+            s = _bet_stats(b, p, h)
+            if s:
+                payout_roi[name] = s
         if payout_roi:
             results["payoutROI"] = payout_roi
 
-        confidence = _race_confidence(df)
-        confidence_analysis = _confidence_analysis(
-            race_ids, boat_by_pred, confidence, db_path
-        )
-        if confidence_analysis:
-            results["confidenceAnalysis"] = confidence_analysis
+        if not skip_confidence:
+            confidence = _race_confidence(df)
+            confidence_analysis = _confidence_analysis_with_payouts(
+                race_ids, boat_by_pred, confidence, payouts_db
+            )
+            if confidence_analysis:
+                results["confidenceAnalysis"] = confidence_analysis
 
     return results
 
@@ -318,14 +336,13 @@ def _payout_recovery(
 # ---------------------------------------------------------------------------
 
 
-def _confidence_analysis(
+def _confidence_analysis_with_payouts(
     race_ids: np.ndarray,
     boat_by_pred: np.ndarray,
     confidence: np.ndarray,
-    db_path: str,
+    payouts_db: dict,
 ) -> list[dict]:
     """Analyze recovery rate at various confidence thresholds."""
-    payouts_db = _load_payouts(db_path, race_ids)
     if not payouts_db:
         return []
 
@@ -349,5 +366,60 @@ def _confidence_analysis(
                     "hitRate": s["hitRate"],
                     "betCount": s["betCount"],
                 })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Permutation importance
+# ---------------------------------------------------------------------------
+
+
+def permutation_importance(
+    model: LGBMRanker,
+    X: pd.DataFrame,
+    y: pd.Series,
+    meta: pd.DataFrame,
+    db_path: str | None = None,
+    n_repeats: int = PERM_N_REPEATS,
+    seed: int = 42,
+) -> dict[str, dict[str, float]]:
+    """Compute permutation importance for all features.
+
+    Measures the drop in nDCG and 2連単 ROI when each feature is shuffled.
+    Shuffles across all entries (breaking within-race signal).
+
+    Returns: {feature_name: {ndcg_drop, roi_drop, ndcg_drop_std, roi_drop_std}}
+    """
+    rng = np.random.default_rng(seed)
+
+    # Baseline scores
+    baseline = evaluate_model(model, X, y, meta, db_path=db_path)
+    base_ndcg = baseline["avgNDCG"]
+    base_roi = baseline.get("payoutROI", {}).get("2連単", {}).get("recoveryRate", 0.0)
+
+    results: dict[str, dict[str, float]] = {}
+
+    for col in X.columns:
+        ndcg_drops = []
+        roi_drops = []
+
+        for _ in range(n_repeats):
+            X_perm = X.copy()
+            X_perm[col] = rng.permutation(X_perm[col].values)
+
+            perm_result = evaluate_model(model, X_perm, y, meta, db_path=db_path)
+            perm_ndcg = perm_result["avgNDCG"]
+            perm_roi = perm_result.get("payoutROI", {}).get("2連単", {}).get("recoveryRate", 0.0)
+
+            ndcg_drops.append(base_ndcg - perm_ndcg)
+            roi_drops.append(base_roi - perm_roi)
+
+        results[col] = {
+            "ndcg_drop": float(np.mean(ndcg_drops)),
+            "ndcg_drop_std": float(np.std(ndcg_drops)),
+            "roi_drop": float(np.mean(roi_drops)),
+            "roi_drop_std": float(np.std(roi_drops)),
+        }
 
     return results

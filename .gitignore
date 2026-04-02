@@ -29,5 +29,9 @@ ml/src/**/__pycache__/
 *.pyc
 *.pkl
 
+# Server tune
+scripts/server-tune.conf
+logs/tune/
+
 # Misc
 .wrangler/

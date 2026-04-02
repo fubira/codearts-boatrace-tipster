@@ -158,6 +158,7 @@ def train_model(
     learning_rate: float | None = None,
     extra_params: dict | None = None,
     relevance_scheme: str = "linear",
+    early_stopping_rounds: int | None = None,
 ) -> tuple[lgb.LGBMRanker, dict]:
     """Train a LightGBM LambdaRank model.
 
@@ -182,12 +183,18 @@ def train_model(
         "group": groups_train,
     }
 
+    callbacks = []
     if X_val is not None and y_val is not None and meta_val is not None:
         y_rel_val = _position_to_relevance(y_val, scheme=relevance_scheme)
         groups_val = _compute_query_groups(meta_val["race_id"])
         fit_kwargs["eval_set"] = [(X_val, y_rel_val)]
         fit_kwargs["eval_group"] = [groups_val]
         fit_kwargs["eval_at"] = [1, 3]
+        if early_stopping_rounds is not None:
+            callbacks.append(lgb.early_stopping(early_stopping_rounds, verbose=False))
+
+    if callbacks:
+        fit_kwargs["callbacks"] = callbacks
 
     model.fit(**fit_kwargs)
 
