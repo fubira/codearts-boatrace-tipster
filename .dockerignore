@@ -9,4 +9,5 @@ ml/models
 *.log
 .DS_Store
 Thumbs.db
+bun.lockb
 logs

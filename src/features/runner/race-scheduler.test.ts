@@ -20,7 +20,10 @@ function makeSlot(overrides: Partial<RaceSlot> = {}): RaceSlot {
 }
 
 describe("buildSchedule", () => {
-  const stadiumNames = new Map([[1, "桐生"], [4, "平和島"]]);
+  const stadiumNames = new Map([
+    [1, "桐生"],
+    [4, "平和島"],
+  ]);
 
   test("builds schedule from DB rows", () => {
     const races = [
@@ -143,9 +146,17 @@ describe("getActionableRaces", () => {
 
   test("handles mixed statuses across multiple races", () => {
     const slots = [
-      makeSlot({ raceId: 1, deadlineMs: deadlineMs - 40 * 60_000, status: "predicted" }),
+      makeSlot({
+        raceId: 1,
+        deadlineMs: deadlineMs - 40 * 60_000,
+        status: "predicted",
+      }),
       makeSlot({ raceId: 2, deadlineMs, status: "waiting" }),
-      makeSlot({ raceId: 3, deadlineMs: deadlineMs + 30 * 60_000, status: "waiting" }),
+      makeSlot({
+        raceId: 3,
+        deadlineMs: deadlineMs + 30 * 60_000,
+        status: "waiting",
+      }),
     ];
     const now = deadlineMs - 5 * 60_000; // 5 min before race 2
 
@@ -163,10 +174,7 @@ describe("getActionableRaces", () => {
 
 describe("allDone", () => {
   test("returns true when all races are done", () => {
-    const slots = [
-      makeSlot({ status: "done" }),
-      makeSlot({ status: "done" }),
-    ];
+    const slots = [makeSlot({ status: "done" }), makeSlot({ status: "done" })];
     expect(allDone(slots)).toBe(true);
   });
 

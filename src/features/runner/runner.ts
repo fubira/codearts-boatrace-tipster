@@ -365,7 +365,10 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         continue;
       }
 
-      const payout = result.won ? Math.round(bet.betAmount * bet.odds) : 0;
+      // result.payout is per 100 yen; scale to actual bet amount
+      const payout = result.won
+        ? Math.round((bet.betAmount / 100) * result.payout)
+        : 0;
       state.bankroll += payout;
       results.set(slot.raceId, { won: result.won, payout });
 
@@ -513,10 +516,10 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   }
 
   process.on("SIGINT", () => {
-    shutdown();
+    shutdown().catch(console.error);
   });
   process.on("SIGTERM", () => {
-    shutdown();
+    shutdown().catch(console.error);
   });
 
   // Immediate first poll
@@ -531,7 +534,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
         await shutdown();
       }
     } catch (err) {
-      await notifyError("poll", err);
+      await notifyError("poll", err).catch(console.error);
     }
   }, POLL_INTERVAL_MS);
 

@@ -256,8 +256,6 @@ def run_wfcv(args, X, y, meta) -> dict:
 
 def run_save(args, X, y, meta, df) -> None:
     """Train on all available data and save model for production use."""
-    # Use last 2 months as val for early stopping, rest as train
-    val_cutoff = df["race_date"].max()[:7]  # last month approx
     dates = sorted(df["race_date"].unique())
     # Find date ~2 months before end
     end_date = dates[-1]

@@ -43,6 +43,7 @@ def predict_boat1(date: str, model_dir: str, db_path: str) -> dict:
     b1_rows = df[df["boat_number"] == 1][["race_id", "stadium_id", "race_number", "race_date"]].reset_index(drop=True)
 
     X, y, meta = reshape_to_boat1(df)
+    assert len(b1_rows) == len(X), f"Row mismatch: b1_rows={len(b1_rows)} vs X={len(X)}"
 
     # Load model
     model = load_boat1_model(model_dir)
