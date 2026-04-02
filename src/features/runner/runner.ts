@@ -345,6 +345,13 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             ? (cached.prob * latestOdds - 1) * 100
             : Number.NEGATIVE_INFINITY;
         const isRecommended = evPct >= opts.evThreshold;
+        const label = `${slot.stadiumName} R${slot.raceNumber}`;
+        const probPct = (cached.prob * 100).toFixed(1);
+        const oddsStr = latestOdds !== null ? latestOdds.toFixed(1) : "N/A";
+        const evStr =
+          evPct > Number.NEGATIVE_INFINITY
+            ? `${evPct >= 0 ? "+" : ""}${evPct.toFixed(1)}%`
+            : "N/A";
 
         if (isRecommended && latestOdds !== null) {
           const betAmount = calcKellyBet(
@@ -368,6 +375,10 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             };
             bets.set(slot.raceId, decision);
 
+            logger.info(
+              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}`,
+            );
+
             await notifyPrediction({
               stadiumName: slot.stadiumName,
               raceNumber: slot.raceNumber,
@@ -380,7 +391,15 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
             // DRY_RUN: deduct from virtual bankroll
             state.bankroll -= betAmount;
+          } else {
+            logger.info(
+              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP (bet=0)`,
+            );
           }
+        } else {
+          logger.info(
+            `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP`,
+          );
         }
 
         slot.status = "predicted";
