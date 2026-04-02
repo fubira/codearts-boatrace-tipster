@@ -80,22 +80,31 @@ bun run start predict -d 2026-04-02 --all    # 全レース表示
 
 # 期間バックテスト
 bun run start analyze --from 2026-03-19 --to 2026-04-03
-bun run start analyze --from 2026-03-01 --to 2026-04-03 --bankroll 100000 --bet-cap 5000
+bun run start analyze --from 2026-03-19 --to 2026-04-03 --ev-threshold 20  # EV≥+20% のみ
 ```
+
+## 自動運用（デーモン）
+
+```bash
+bun run start run                             # DRY RUN（デフォルト）
+bun run start run --ev-threshold 20           # EV≥+20% で厳選
+bun run start run --bankroll 100000 --bet-cap 5000
+bun run start run --live                      # LIVE モード（将来の自動購入用）
+```
+
+締切時刻ベースで自動データ取得 → 予測 → Slack 通知を行う。`.env` に `SLACK_WEBHOOK_URL` を設定すると Slack に通知が飛ぶ。未設定時はコンソール出力。
 
 ## ML 学習
 
 ```bash
-# 単勝1号艇 二値分類（メインモデル）
-uv run --directory ml python -m scripts.train_boat1_binary --mode single
+# 二値分類: single / wfcv / optuna
 uv run --directory ml python -m scripts.train_boat1_binary --mode wfcv
 uv run --directory ml python -m scripts.train_boat1_binary --mode optuna --n-trials 100
 
-# 6艇ランキング（LambdaRank、2連複EV戦略で使用）
-uv run --directory ml python -m scripts.train_eval --mode single
+# ランキング: single / wfcv
 uv run --directory ml python -m scripts.train_eval --mode wfcv
 
-# サーバーでの Optuna 実行
+# サーバー Optuna
 ./scripts/server-tune.sh --model boat1 --trials 100  # 二値分類
 ./scripts/server-tune.sh --trials 100                 # ランキング
 ./scripts/server-tune.sh --watch                      # ログ監視
@@ -110,6 +119,7 @@ src/
   features/
     scraper/        スクレイピング（プラグイン式、gzip キャッシュ）
     database/       SQLite 管理（スキーマ、マイグレーション、整合性チェック）
+    runner/         自動運用デーモン（スケジューラ、Slack 通知）
   shared/           共有モジュール（ロガー、設定）
 ml/                 Python ML エンジン（uv 管理、LightGBM）
   models/           保存済みモデル（boat1/model.pkl）
