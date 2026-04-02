@@ -29,7 +29,7 @@ COPY --from=install-py /app/ml/.venv ./ml/.venv
 COPY ml/pyproject.toml ml/uv.lock ./ml/
 
 # Runtime directories (rarely changes)
-RUN mkdir -p data ml/models && chown -R bun:bun data ml/models
+RUN mkdir -p data ml/models && chown -R bun:bun data ml/models ml/.venv
 
 # Config files (rarely changes)
 COPY tsconfig.json ./

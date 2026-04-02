@@ -1,5 +1,6 @@
 /** Daemon that automates scrape → predict → notify cycle. */
 
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   closeDatabase,
@@ -177,6 +178,28 @@ function scrapeResultForRace(
 // Prediction
 // ---------------------------------------------------------------------------
 
+/** Build command to run a Python ML script. Uses .venv directly in Docker. */
+function pythonCommand(scriptModule: string, args: string[]): string[] {
+  const mlDir = resolve(config.projectRoot, "ml");
+  const venvPython = resolve(mlDir, ".venv/bin/python");
+
+  // Docker: .venv exists with pre-built dependencies
+  if (existsSync(venvPython)) {
+    return [venvPython, "-m", scriptModule, ...args];
+  }
+  // Development: use uv run
+  return [
+    "uv",
+    "run",
+    "--directory",
+    mlDir,
+    "python",
+    "-m",
+    scriptModule,
+    ...args,
+  ];
+}
+
 async function runPrediction(
   date: string,
   opts: RunnerOptions,
@@ -190,24 +213,15 @@ async function runPrediction(
   }[]
 > {
   const modelDir = resolve(config.projectRoot, "ml/models/boat1");
-  const proc = Bun.spawn(
-    [
-      "uv",
-      "run",
-      "--directory",
-      resolve(config.projectRoot, "ml"),
-      "python",
-      "-m",
-      "scripts.predict_boat1",
-      "--date",
-      date,
-      "--model-dir",
-      modelDir,
-      "--db-path",
-      config.dbPath,
-    ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  const cmd = pythonCommand("scripts.predict_boat1", [
+    "--date",
+    date,
+    "--model-dir",
+    modelDir,
+    "--db-path",
+    config.dbPath,
+  ]);
+  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
 
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
