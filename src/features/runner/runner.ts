@@ -455,10 +455,25 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     `Starting runner for ${date} (${opts.dryRun ? "DRY RUN" : "LIVE"})`,
   );
 
-  // 1. Discover venues and scrape race lists
-  const venueCodes = discoverDateSchedule(yyyymmdd);
+  // 1. Discover venues (retry up to 30 min if schedule not yet published)
+  const DISCOVER_RETRY_INTERVAL_MS = 5 * 60_000;
+  const DISCOVER_MAX_RETRIES = 6;
+  let venueCodes: { stadiumCode: string; date: string }[] = [];
+
+  for (let attempt = 0; attempt <= DISCOVER_MAX_RETRIES; attempt++) {
+    venueCodes = discoverDateSchedule(yyyymmdd);
+    if (venueCodes.length > 0) break;
+
+    if (attempt < DISCOVER_MAX_RETRIES) {
+      logger.warn(
+        `No venues found yet (attempt ${attempt + 1}/${DISCOVER_MAX_RETRIES + 1}), retrying in 5 min...`,
+      );
+      await Bun.sleep(DISCOVER_RETRY_INTERVAL_MS);
+    }
+  }
+
   if (venueCodes.length === 0) {
-    logger.error("No venues found for today");
+    logger.error("No venues found after retries — no races today?");
     closeDatabase();
     return;
   }
