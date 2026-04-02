@@ -9,6 +9,7 @@
 | CLI・データ収集 | TypeScript, Bun, Cheerio |
 | データベース | SQLite (better-sqlite3, WAL), DuckDB (分析クエリ) |
 | ML | Python, uv, LightGBM (Binary / LambdaRank) |
+| デプロイ | Docker, GHCR, watchtower |
 
 ## セットアップ
 
@@ -97,13 +98,9 @@ bun run start run --live                      # LIVE モード（将来の自動
 ## ML 学習
 
 ```bash
-# 二値分類: single / wfcv / optuna
-uv run --directory ml python -m scripts.train_boat1_binary --mode wfcv
+uv run --directory ml python -m scripts.train_boat1_binary --mode wfcv     # 二値分類
 uv run --directory ml python -m scripts.train_boat1_binary --mode optuna --n-trials 100
-
-# ランキング: single / wfcv
-uv run --directory ml python -m scripts.train_eval --mode wfcv
-
+uv run --directory ml python -m scripts.train_eval --mode wfcv             # ランキング
 # サーバー Optuna
 ./scripts/server-tune.sh --model boat1 --trials 100  # 二値分類
 ./scripts/server-tune.sh --trials 100                 # ランキング
