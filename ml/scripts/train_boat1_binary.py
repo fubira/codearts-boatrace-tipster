@@ -26,12 +26,13 @@ from boatrace_tipster_ml.boat1_features import BOAT1_FEATURE_COLS, reshape_to_bo
 from boatrace_tipster_ml.boat1_model import (
     evaluate_boat1,
     find_best_threshold,
+    save_boat1_model,
     train_boat1_model,
 )
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
 from boatrace_tipster_ml.evaluate import _load_payouts
 from boatrace_tipster_ml.features import build_features_df
-from boatrace_tipster_ml.model import time_series_split, walk_forward_splits
+from boatrace_tipster_ml.model import save_model_meta, time_series_split, walk_forward_splits
 
 DB_PATH = DEFAULT_DB_PATH
 
@@ -253,6 +254,49 @@ def run_wfcv(args, X, y, meta) -> dict:
     return {"folds": fold_results}
 
 
+def run_save(args, X, y, meta, df) -> None:
+    """Train on all available data and save model for production use."""
+    # Use last 2 months as val for early stopping, rest as train
+    val_cutoff = df["race_date"].max()[:7]  # last month approx
+    dates = sorted(df["race_date"].unique())
+    # Find date ~2 months before end
+    end_date = dates[-1]
+    val_start_idx = max(0, len(dates) - 60)  # ~2 months of race-days
+    val_start = dates[val_start_idx]
+
+    b1_dates = meta["race_date"].values
+    val_mask = b1_dates >= val_start
+    train_mask = ~val_mask
+
+    X_train, y_train = X[train_mask], y[train_mask]
+    X_val, y_val = X[val_mask], y[val_mask]
+
+    print(f"Training for production save...")
+    print(f"  Train: {len(X_train)}R, Val: {len(X_val)}R")
+
+    model, metrics = train_boat1_model(
+        X_train, y_train, X_val, y_val,
+        n_estimators=args.n_estimators,
+        learning_rate=args.learning_rate,
+        extra_params=json.loads(args.params) if args.params else None,
+    )
+
+    if "val_auc" in metrics:
+        print(f"  Val AUC: {metrics['val_auc']:.4f}")
+
+    model_dir = args.model_dir
+    save_boat1_model(model, model_dir)
+    save_model_meta(
+        model_dir,
+        feature_columns=BOAT1_FEATURE_COLS,
+        hyperparameters={"n_estimators": args.n_estimators, "learning_rate": args.learning_rate},
+        training={"n_train": len(X_train), "n_val": len(X_val),
+                  "date_range": f"{dates[0]} ~ {end_date}",
+                  "val_auc": metrics.get("val_auc")},
+    )
+    print(f"\nModel saved to {model_dir}/")
+
+
 def run_optuna(args, X, y, meta) -> None:
     """Hyperparameter optimization with Optuna."""
     import optuna
@@ -290,7 +334,7 @@ def run_optuna(args, X, y, meta) -> None:
         n_estimators = trial.suggest_int("n_estimators", 100, 1500)
         learning_rate = trial.suggest_float("learning_rate", 0.005, 0.2, log=True)
 
-        best_rois = []
+        ev_rois = []
         for fold, payouts in zip(folds, fold_payouts):
             model, _ = train_boat1_model(
                 fold["train"]["X"], fold["train"]["y"],
@@ -303,12 +347,14 @@ def run_optuna(args, X, y, meta) -> None:
                 model, fold["test"]["X"], fold["test"]["y"], fold["test"]["meta"],
                 payouts_cache=payouts,
             )
-            best = find_best_threshold(result.get("thresholds", []), min_bets=100)
-            best_rois.append(best["roi"] if best else 0.0)
+            # Use EV≥0 ROI as objective (the actual deployment strategy)
+            ev_results = result.get("ev_analysis", [])
+            ev0 = [e for e in ev_results if e["ev_threshold"] == 0]
+            ev_rois.append(ev0[0]["roi"] if ev0 else 0.0)
 
-        mean_roi = float(np.mean(best_rois))
-        trial.set_user_attr("roi_std", float(np.std(best_rois)))
-        trial.set_user_attr("rois", [round(r, 4) for r in best_rois])
+        mean_roi = float(np.mean(ev_rois))
+        trial.set_user_attr("roi_std", float(np.std(ev_rois)))
+        trial.set_user_attr("rois", [round(r, 4) for r in ev_rois])
         return mean_roi
 
     study = optuna.create_study(
@@ -349,6 +395,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--params", default=None, help="Extra LightGBM params as JSON")
     parser.add_argument("--n-trials", type=int, default=100, help="Optuna trial count")
+    parser.add_argument("--save", action="store_true", help="Save model to --model-dir")
+    parser.add_argument("--model-dir", default="models/boat1", help="Model output dir")
     args = parser.parse_args()
 
     print("Boat 1 Binary Classifier")
@@ -370,7 +418,9 @@ def main():
     print(f"  Boat 1 win rate: {y.mean():.1%}")
     print()
 
-    if args.mode == "single":
+    if args.save:
+        run_save(args, X, y, meta, df)
+    elif args.mode == "single":
         run_single(args, X, y, meta)
     elif args.mode == "wfcv":
         run_wfcv(args, X, y, meta)

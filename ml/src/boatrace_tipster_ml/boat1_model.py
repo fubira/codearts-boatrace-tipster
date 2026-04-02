@@ -4,6 +4,9 @@ Predicts whether boat 1 (1号艇) wins a race. Used with selective betting:
 bet 単勝 on boat 1 only when the model is confident (prob >= threshold).
 """
 
+import pickle
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier
@@ -313,3 +316,26 @@ def find_best_threshold(thresholds: list[dict], min_bets: int = 500) -> dict | N
     if not candidates:
         return None
     return max(candidates, key=lambda t: t["roi"])
+
+
+# ---------------------------------------------------------------------------
+# Model persistence
+# ---------------------------------------------------------------------------
+
+
+def save_boat1_model(model: LGBMClassifier, output_dir: str) -> str:
+    """Save boat1 binary classifier to disk."""
+    path = Path(output_dir) / "model.pkl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        pickle.dump(model, f)
+    return str(path)
+
+
+def load_boat1_model(model_dir: str) -> LGBMClassifier:
+    """Load boat1 binary classifier from disk."""
+    path = Path(model_dir) / "model.pkl"
+    if not path.exists():
+        raise FileNotFoundError(f"Model not found: {path}")
+    with open(path, "rb") as f:
+        return pickle.load(f)

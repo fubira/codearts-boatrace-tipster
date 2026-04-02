@@ -459,6 +459,63 @@ def _add_tournament_features(df: pd.DataFrame) -> None:
     df["tourn_avg_position"] = _cumulative_mean(df, group, "_pos")
 
 
+def _add_prev_day_features(df: pd.DataFrame) -> None:
+    """Previous day exhibition delta within tournament.
+
+    Compares today's exhibition_time with the same racer's exhibition_time
+    from the previous day in the same tournament. More precise than
+    tourn_exhibition_delta (cumulative mean) — captures day-to-day motor tuning.
+
+    Negative = faster than yesterday = motor tuning improving.
+    NaN for first day of tournament.
+    """
+    daily = (
+        df.groupby(["racer_id", "tournament_id", "race_date"], sort=False)
+        .agg(_daily_ex=("exhibition_time", "mean"))
+        .reset_index()
+        .sort_values(["racer_id", "tournament_id", "race_date"])
+    )
+
+    g = daily.groupby(["racer_id", "tournament_id"], sort=False)
+    daily["_prev_ex"] = g["_daily_ex"].shift(1)
+
+    merge_keys = ["racer_id", "tournament_id", "race_date"]
+    merged = df[merge_keys].merge(
+        daily[merge_keys + ["_prev_ex"]],
+        on=merge_keys,
+        how="left",
+    )
+
+    df["prev_day_exhibition_delta"] = df["exhibition_time"] - merged["_prev_ex"].values
+
+
+def _add_motor_residual(df: pd.DataFrame) -> None:
+    """Motor quality residual: exhibition performance controlling for racer ability.
+
+    For each past race with this motor, compute:
+        residual = exhibition_time - racer's cumulative mean exhibition_time
+
+    Then take the cumulative mean of residuals per (stadium, motor).
+    Negative = this motor makes racers faster than expected = good motor.
+
+    Handles confounds:
+        - Racer skill: subtracted out via racer's own baseline
+        - Motor replacement (~6mo cycle): old history diluted by new data;
+          NaN at very start is natural
+    """
+    # Racer's expected exhibition time (their cumulative mean, leak-safe)
+    racer_avg_ex = _cumulative_mean(df, ["racer_id"], "exhibition_time")
+
+    # Residual: how much faster/slower than this racer's usual
+    df["_motor_residual"] = df["exhibition_time"] - racer_avg_ex
+
+    # Cumulative mean of residuals per motor (leak-safe)
+    df["motor_quality_residual"] = _cumulative_mean(
+        df, ["stadium_id", "motor_number"], "_motor_residual"
+    )
+    df.drop(columns="_motor_residual", inplace=True)
+
+
 def _add_self_comparison_features(df: pd.DataFrame) -> None:
     """B9: Self-comparison features (current vs own history).
 
@@ -635,6 +692,8 @@ def build_features_df(
     _add_st_stability(df)
     _add_rolling_features(df)
     _add_tournament_features(df)
+    _add_prev_day_features(df)
+    _add_motor_residual(df)
     _add_self_comparison_features(df)
     _add_leaked_features(df)
 

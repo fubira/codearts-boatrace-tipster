@@ -21,17 +21,17 @@ cd ml && uv sync
 
 ```bash
 # 1. データ収集
-bun run start scrape -m 202501           # 指定月の全会場
-bun run start scrape -d 2025-01-15 -s 04  # 平和島のみ
+bun run start scrape -m 202501                # レース + 展示タイム
+bun run start scrape-odds -m 202501           # オッズ
 
-# 2. モデル学習（単勝1号艇 二値分類）
-uv run --directory ml python -m scripts.train_boat1_binary --mode single
+# 2. モデル学習・保存
+uv run --directory ml python -m scripts.train_boat1_binary --save
 
-# 3. WF-CV 評価
-uv run --directory ml python -m scripts.train_boat1_binary --mode wfcv --n-folds 4
+# 3. 予測
+bun run start predict -d 2026-04-02
 
-# 4. ハイパラ探索
-uv run --directory ml python -m scripts.train_boat1_binary --mode optuna --n-trials 100
+# 4. バックテスト
+bun run start analyze --from 2026-03-19 --to 2026-04-03
 ```
 
 各コマンドの詳細は `--help` で確認できる。
@@ -67,7 +67,23 @@ bun run start backup              # ローカルバックアップ（7 世代保
 
 `data sync` / `data verify` には `.env` で `PRODUCT_SERVER` と `PRODUCT_DIR` を設定する。
 
-## ML コマンド
+## 予測・分析
+
+```bash
+# モデル保存（初回 or 再学習時）
+uv run --directory ml python -m scripts.train_boat1_binary --save
+
+# 指定日の予測
+bun run start predict -d 2026-04-02          # テーブル表示
+bun run start predict -d 2026-04-02 --json   # JSON 出力
+bun run start predict -d 2026-04-02 --all    # 全レース表示
+
+# 期間バックテスト
+bun run start analyze --from 2026-03-19 --to 2026-04-03
+bun run start analyze --from 2026-03-01 --to 2026-04-03 --bankroll 100000 --bet-cap 5000
+```
+
+## ML 学習
 
 ```bash
 # 単勝1号艇 二値分類（メインモデル）
@@ -79,15 +95,11 @@ uv run --directory ml python -m scripts.train_boat1_binary --mode optuna --n-tri
 uv run --directory ml python -m scripts.train_eval --mode single
 uv run --directory ml python -m scripts.train_eval --mode wfcv
 
-# 分析
-uv run --directory ml python -m scripts.analyze_boat1       # 1号艇飛びパターン分析
-uv run --directory ml python -m scripts.train_exacta_binary # 2連単/2連複パターン検証
-
 # サーバーでの Optuna 実行
-./scripts/server-tune.sh --trials 100       # nohup 実行（即座に返る）
-./scripts/server-tune.sh --watch            # ログ監視
-./scripts/server-tune.sh --status           # 進捗確認
-./scripts/server-tune.sh --fetch            # 結果取得
+./scripts/server-tune.sh --model boat1 --trials 100  # 二値分類
+./scripts/server-tune.sh --trials 100                 # ランキング
+./scripts/server-tune.sh --watch                      # ログ監視
+./scripts/server-tune.sh --fetch                      # 結果取得
 ```
 
 ## プロジェクト構造
@@ -100,6 +112,7 @@ src/
     database/       SQLite 管理（スキーマ、マイグレーション、整合性チェック）
   shared/           共有モジュール（ロガー、設定）
 ml/                 Python ML エンジン（uv 管理、LightGBM）
+  models/           保存済みモデル（boat1/model.pkl）
   src/boatrace_tipster_ml/
     features.py     特徴量パイプライン（leak-safe cumulative、ローリング）
     feature_config.py  特徴量定義、エンコーディング、相対/交互作用特徴量

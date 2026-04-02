@@ -2,7 +2,8 @@
 # server-tune.sh — Run Optuna hyperparameter tuning on a remote server via SSH
 #
 # Usage:
-#   ./scripts/server-tune.sh [options]          # デフォルト: サーバーでnohup実行（即座に返る）
+#   ./scripts/server-tune.sh --model boat1      # 二値分類モデルのOptuna（デフォルト: nohup）
+#   ./scripts/server-tune.sh --model ranking    # ランキングモデルのOptuna（デフォルト）
 #   ./scripts/server-tune.sh --watch            # ログ監視（tail -f、完了で自動終了）
 #   ./scripts/server-tune.sh --status           # 簡易進捗確認
 #   ./scripts/server-tune.sh --fetch            # 結果取得（ログをダウンロード）
@@ -34,6 +35,7 @@ if [ -f "$CONF" ]; then
 fi
 
 # --- Defaults ---
+MODEL="ranking"   # ranking | boat1
 TRIALS=100
 FOLDS=4
 FOLD_MONTHS=2
@@ -63,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --status) STATUS_ONLY=true; shift ;;
     --fetch) FETCH_ONLY=true; shift ;;
     --skip-sync) SKIP_SYNC=true; shift ;;
+    --model) MODEL="$2"; shift 2 ;;
     --trials) TRIALS="$2"; shift 2 ;;
     --folds) FOLDS="$2"; shift 2 ;;
     --fold-months) FOLD_MONTHS="$2"; shift 2 ;;
@@ -82,10 +85,11 @@ Modes:
   --setup           初回セットアップ（uv + workspace + deps）
 
 Optuna options:
+  --model M         モデル: ranking | boat1 (default: ranking)
   --trials N        trial数 (default: 100)
   --folds N         WF-CV fold数 (default: 4)
   --fold-months N   fold幅（月数、default: 2）
-  --relevance R     relevance scheme (default: top_heavy)
+  --relevance R     relevance scheme (default: top_heavy, ranking only)
   --seed N          random seed (default: 42)
   --train-start D   学習開始日 (default: all)
 
@@ -226,9 +230,22 @@ _fetch() {
 # Run (detach / foreground)
 # ============================================================
 _build_cmd() {
-  local cmd="uv run --directory ml python -m scripts.train_eval"
-  cmd+=" --mode optuna"
-  cmd+=" --relevance ${RELEVANCE}"
+  local cmd
+  case "$MODEL" in
+    ranking)
+      cmd="uv run --directory ml python -m scripts.train_eval"
+      cmd+=" --mode optuna"
+      cmd+=" --relevance ${RELEVANCE}"
+      ;;
+    boat1)
+      cmd="uv run --directory ml python -m scripts.train_boat1_binary"
+      cmd+=" --mode optuna"
+      ;;
+    *)
+      echo "ERROR: unknown model '${MODEL}' (use: ranking | boat1)" >&2
+      exit 1
+      ;;
+  esac
   cmd+=" --n-trials ${TRIALS}"
   cmd+=" --n-folds ${FOLDS}"
   cmd+=" --fold-months ${FOLD_MONTHS}"
@@ -276,7 +293,7 @@ EOF
   local pid
   pid=$(remote "cat ${REMOTE_PID_FILE}")
   log "Started on ${REMOTE_HOSTNAME} (PID: ${pid})"
-  log "  trials=${TRIALS} folds=${FOLDS} relevance=${RELEVANCE}"
+  log "  model=${MODEL} trials=${TRIALS} folds=${FOLDS}"
   log ""
   log "Check progress:  ./scripts/server-tune.sh --status"
   log "Watch log:       ./scripts/server-tune.sh --watch"
