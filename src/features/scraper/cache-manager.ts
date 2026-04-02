@@ -21,6 +21,10 @@ export function disableCacheRead(): void {
   cacheReadEnabled = false;
 }
 
+export function enableCacheRead(): void {
+  cacheReadEnabled = true;
+}
+
 export function isCacheEnabled(): boolean {
   return cacheEnabled;
 }

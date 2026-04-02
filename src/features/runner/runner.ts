@@ -11,7 +11,11 @@ import {
   saveRaces,
 } from "@/features/database";
 import type { OddsData } from "@/features/database";
-import { enableCache } from "@/features/scraper/cache-manager";
+import {
+  disableCacheRead,
+  enableCache,
+  enableCacheRead,
+} from "@/features/scraper/cache-manager";
 import { fetchPage } from "@/features/scraper/http-client";
 import { getScraper } from "@/features/scraper/registry";
 import {
@@ -461,7 +465,14 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   let venueCodes: { stadiumCode: string; date: string }[] = [];
 
   for (let attempt = 0; attempt <= DISCOVER_MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      // Bypass cache on retry — previous empty response may be cached
+      disableCacheRead();
+    }
     venueCodes = discoverDateSchedule(yyyymmdd);
+    if (attempt > 0) {
+      enableCacheRead();
+    }
     if (venueCodes.length > 0) break;
 
     if (attempt < DISCOVER_MAX_RETRIES) {
