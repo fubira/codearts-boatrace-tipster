@@ -262,6 +262,25 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   const now = Date.now();
   const actionable = getActionableRaces(schedule, now);
 
+  // Status log
+  const counts = {
+    waiting: 0,
+    before_info: 0,
+    predicted: 0,
+    result_pending: 0,
+    done: 0,
+  };
+  for (const s of schedule) counts[s.status]++;
+  const active =
+    actionable.beforeInfo.length +
+    actionable.predict.length +
+    actionable.results.length;
+  if (active > 0 || counts.done < schedule.length) {
+    logger.info(
+      `Status: ${schedule.length}R | wait:${counts.waiting} exh:${counts.before_info} pred:${counts.predicted + counts.result_pending} done:${counts.done} | action:${active}`,
+    );
+  }
+
   // 1. Scrape before-info for races approaching deadline
   for (const slot of actionable.beforeInfo) {
     try {

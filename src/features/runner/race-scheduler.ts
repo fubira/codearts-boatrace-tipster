@@ -29,6 +29,8 @@ const BEFORE_INFO_LEAD = 30;
 const PREDICT_LEAD = 7;
 // Minutes after deadline to check for results
 const RESULT_DELAY = 10;
+// If deadline passed by this many minutes and still "waiting", skip entirely
+const SKIP_THRESHOLD = 5;
 
 /**
  * Parse "HH:MM" deadline string to epoch ms for a given date (JST).
@@ -97,12 +99,17 @@ export function getActionableRaces(
 
     switch (slot.status) {
       case "waiting":
-        if (minutesToDeadline <= BEFORE_INFO_LEAD) {
+        if (minutesToDeadline <= -SKIP_THRESHOLD) {
+          // Late start: deadline already passed, skip this race
+          slot.status = "done";
+        } else if (minutesToDeadline <= BEFORE_INFO_LEAD) {
           beforeInfo.push(slot);
         }
         break;
       case "before_info":
-        if (minutesToDeadline <= PREDICT_LEAD) {
+        if (minutesToDeadline <= -SKIP_THRESHOLD) {
+          slot.status = "done";
+        } else if (minutesToDeadline <= PREDICT_LEAD) {
           predict.push(slot);
         }
         break;

@@ -136,6 +136,35 @@ describe("getActionableRaces", () => {
     expect(results).toHaveLength(0);
   });
 
+  test("skips waiting race when deadline passed by 5+ minutes (late start)", () => {
+    const slot = makeSlot({ deadlineMs, status: "waiting" });
+    const now = deadlineMs + 6 * 60_000; // 6 min after deadline
+
+    const { beforeInfo, predict, results } = getActionableRaces([slot], now);
+    expect(beforeInfo).toHaveLength(0);
+    expect(predict).toHaveLength(0);
+    expect(results).toHaveLength(0);
+    expect(slot.status).toBe("done");
+  });
+
+  test("skips before_info race when deadline passed by 5+ minutes", () => {
+    const slot = makeSlot({ deadlineMs, status: "before_info" });
+    const now = deadlineMs + 6 * 60_000;
+
+    const { predict } = getActionableRaces([slot], now);
+    expect(predict).toHaveLength(0);
+    expect(slot.status).toBe("done");
+  });
+
+  test("does not skip waiting race just after deadline (within 5 min)", () => {
+    const slot = makeSlot({ deadlineMs, status: "waiting" });
+    const now = deadlineMs + 3 * 60_000; // 3 min after deadline
+
+    const { beforeInfo } = getActionableRaces([slot], now);
+    expect(beforeInfo).toHaveLength(1);
+    expect(slot.status).toBe("waiting");
+  });
+
   test("handles result_pending same as predicted", () => {
     const slot = makeSlot({ deadlineMs, status: "result_pending" });
     const now = deadlineMs + 12 * 60_000;
