@@ -9,9 +9,19 @@ import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const EXEC_OPTIONS = {
-  env: { ...process.env, PATH: `${process.env.PATH}:/usr/bin:/usr/local/bin` },
-};
+/** Resolve curl binary path (snap-installed Bun may not have /usr/bin in PATH) */
+function findCurl(): string {
+  const { execSync: exec } = require("node:child_process");
+  for (const p of ["/usr/bin/curl", "/usr/local/bin/curl", "curl"]) {
+    try {
+      exec(`${p} --version`, { stdio: "pipe", timeout: 3_000 });
+      return p;
+    } catch {}
+  }
+  throw new Error("curl not found");
+}
+
+const CURL_BIN = findCurl();
 import { logger } from "@/shared/logger";
 import {
   hasCacheEntry,
@@ -64,11 +74,13 @@ export function fetchPage(
   const url = path.startsWith("http") ? path : `${BASE_URL}${path}`;
   logger.warn(`[HTTP] GET ${url}`);
 
-  const html = execSync(`curl -s --compressed ${CURL_HEADERS} "${url}"`, {
-    encoding: "utf-8",
-    timeout: 30_000,
-    ...EXEC_OPTIONS,
-  });
+  const html = execSync(
+    `${CURL_BIN} -s --compressed ${CURL_HEADERS} "${url}"`,
+    {
+      encoding: "utf-8",
+      timeout: 30_000,
+    },
+  );
 
   if (!html || html.length === 0) {
     throw new Error(`Empty response for ${url}`);
@@ -121,10 +133,9 @@ export function fetchPages(paths: string[]): (FetchPageResult | null)[] {
   const curlArgs = toFetch.map((f) => `-o "${f.tmpFile}" "${f.url}"`).join(" ");
 
   try {
-    execSync(`curl -s --compressed ${CURL_HEADERS} ${curlArgs}`, {
+    execSync(`${CURL_BIN} -s --compressed ${CURL_HEADERS} ${curlArgs}`, {
       timeout: 60_000 + toFetch.length * 5_000,
       stdio: ["pipe", "pipe", "pipe"],
-      ...EXEC_OPTIONS,
     });
 
     // Read results from temp files
