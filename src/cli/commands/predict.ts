@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { config } from "@/shared/config";
+import { pythonCommand } from "@/shared/python";
 import { Command } from "commander";
 
 interface Prediction {
@@ -48,24 +49,15 @@ export const predictCommand = new Command("predict")
       process.exit(1);
     }
 
-    const proc = Bun.spawn(
-      [
-        "uv",
-        "run",
-        "--directory",
-        resolve(config.projectRoot, "ml"),
-        "python",
-        "-m",
-        "scripts.predict_boat1",
-        "--date",
-        date,
-        "--model-dir",
-        modelDir,
-        "--db-path",
-        config.dbPath,
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
+    const { cmd, cwd } = pythonCommand("scripts.predict_boat1", [
+      "--date",
+      date,
+      "--model-dir",
+      modelDir,
+      "--db-path",
+      config.dbPath,
+    ]);
+    const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
 
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),

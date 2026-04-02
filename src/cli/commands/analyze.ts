@@ -1,5 +1,5 @@
-import { resolve } from "node:path";
 import { config } from "@/shared/config";
+import { pythonCommand } from "@/shared/python";
 import { Command } from "commander";
 
 interface EvEntry {
@@ -69,32 +69,23 @@ export const analyzeCommand = new Command("analyze")
       }
     }
 
-    const proc = Bun.spawn(
-      [
-        "uv",
-        "run",
-        "--directory",
-        resolve(config.projectRoot, "ml"),
-        "python",
-        "-m",
-        "scripts.backtest_boat1",
-        "--from",
-        opts.from,
-        "--to",
-        opts.to,
-        "--db-path",
-        config.dbPath,
-        "--bankroll",
-        String(opts.bankroll),
-        "--bet-cap",
-        String(opts.betCap),
-        "--kelly",
-        String(opts.kelly),
-        "--ev-threshold",
-        String(opts.evThreshold),
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
+    const { cmd, cwd } = pythonCommand("scripts.backtest_boat1", [
+      "--from",
+      opts.from,
+      "--to",
+      opts.to,
+      "--db-path",
+      config.dbPath,
+      "--bankroll",
+      String(opts.bankroll),
+      "--bet-cap",
+      String(opts.betCap),
+      "--kelly",
+      String(opts.kelly),
+      "--ev-threshold",
+      String(opts.evThreshold),
+    ]);
+    const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
 
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),

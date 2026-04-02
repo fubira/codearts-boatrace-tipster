@@ -1,45 +1,37 @@
-# Stage 1: Install TS dependencies (changes when package.json/bun.lock change)
-FROM oven/bun:1-debian AS install-ts
+FROM oven/bun:1 AS base
+
+# System deps: curl for scraping, python3 build tools, libgomp for LightGBM
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates make g++ python3 libgomp1 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.12 /uv /uvx /usr/local/bin/
+
+# Install Python via uv
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+RUN uv python install 3.13
 
 WORKDIR /app
+
+# Install TS dependencies
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production
+RUN bun install --frozen-lockfile
 
-# Stage 2: Install Python dependencies (changes when pyproject.toml/uv.lock change)
-FROM ghcr.io/astral-sh/uv:debian AS install-py
+# Install Python dependencies
+COPY ml/pyproject.toml ml/uv.lock ml/
+RUN cd ml && uv sync --frozen --python 3.13 && chown -R bun:bun .venv
 
-WORKDIR /app/ml
-COPY ml/pyproject.toml ml/uv.lock ./
-RUN uv sync --frozen --no-dev
-
-# Stage 3: Runtime
-FROM oven/bun:1-debian
-
-ENV TZ=Asia/Tokyo
-WORKDIR /app
-
-# System deps (rarely changes)
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 && rm -rf /var/lib/apt/lists/*
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-# Dependencies (changes only when lock files change)
-COPY --from=install-ts /app/node_modules ./node_modules
-COPY package.json ./
-COPY --from=install-py /app/ml/.venv ./ml/.venv
-COPY ml/pyproject.toml ml/uv.lock ./ml/
-
-# Runtime directories (rarely changes)
-RUN mkdir -p data ml/models && chown -R bun:bun data ml/models ml/.venv
-
-# Config files (rarely changes)
+# Copy source
+COPY src/ src/
+COPY ml/src/ ml/src/
+COPY ml/scripts/ ml/scripts/
 COPY tsconfig.json ./
 
-# Python source (changes with ML code updates)
-COPY ml/src ./ml/src
-COPY ml/scripts ./ml/scripts
+ENV TZ=Asia/Tokyo
+ENV NODE_ENV=production
 
-# TS source (changes most frequently)
-COPY src ./src
+RUN mkdir -p data ml/models && chown -R bun:bun .
 
 USER bun
 CMD ["bun", "run", "src/cli/index.ts", "run"]
