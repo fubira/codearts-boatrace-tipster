@@ -19,7 +19,6 @@ export function parseSchedulePage($: CheerioAPI, date: string): VenueDay[] {
   const venues: VenueDay[] = [];
   const seen = new Set<string>();
 
-  // Stadium links on the index page contain jcd parameter
   $("a[href*='jcd=']").each((_i, el) => {
     const href = $(el).attr("href") ?? "";
     const jcdMatch = href.match(/jcd=(\d{2})/);
@@ -36,13 +35,13 @@ export function parseSchedulePage($: CheerioAPI, date: string): VenueDay[] {
 }
 
 /** Discover venues for a specific date (YYYY-MM-DD or YYYYMMDD) */
-export async function discoverDateSchedule(date: string): Promise<VenueDay[]> {
+export function discoverDateSchedule(date: string): VenueDay[] {
   const yyyymmdd = date.replace(/-/g, "");
   if (yyyymmdd > todayYYYYMMDD()) {
     logger.warn(`Skip future date ${date}`);
     return [];
   }
-  const page = await fetchPage(dailyScheduleUrl(yyyymmdd));
+  const page = fetchPage(dailyScheduleUrl(yyyymmdd));
   if (!page) {
     logger.warn(`No schedule cache for ${date}`);
     return [];
@@ -70,9 +69,7 @@ function daysInMonth(yearMonth: string): number {
 }
 
 /** Discover all venue-days for a given month (YYYYMM) */
-export async function discoverMonthSchedule(
-  yearMonth: string,
-): Promise<VenueDay[]> {
+export function discoverMonthSchedule(yearMonth: string): VenueDay[] {
   const days = daysInMonth(yearMonth);
   const today = todayYYYYMMDD();
   const allVenues: VenueDay[] = [];
@@ -83,7 +80,7 @@ export async function discoverMonthSchedule(
       logger.debug(`Skip future date ${date}`);
       break;
     }
-    const venues = await discoverDateSchedule(date);
+    const venues = discoverDateSchedule(date);
     allVenues.push(...venues);
   }
 

@@ -42,10 +42,10 @@ interface ScrapeOneRaceResult {
   cacheMisses: number;
 }
 
-async function scrapeOneRace(
+function scrapeOneRace(
   params: RaceParams,
   shouldSkip?: ScraperOptions["shouldSkip"],
-): Promise<ScrapeOneRaceResult> {
+): ScrapeOneRaceResult {
   const stadiumId = Number.parseInt(params.stadiumCode, 10);
   const raceDate = buildRaceDate(params.date);
   const context: RaceContext = { params, raceDate };
@@ -64,12 +64,10 @@ async function scrapeOneRace(
     };
   }
 
-  // Fetch all 3 pages in parallel
-  const [raceListPage, beforeInfoPage, resultPage] = await Promise.all([
-    fetchPage(raceListUrl(params)),
-    fetchPage(beforeInfoUrl(params)),
-    fetchPage(raceResultUrl(params)),
-  ]);
+  // Fetch 3 pages sequentially (curl-based, synchronous)
+  const raceListPage = fetchPage(raceListUrl(params));
+  const beforeInfoPage = fetchPage(beforeInfoUrl(params));
+  const resultPage = fetchPage(raceResultUrl(params));
 
   // Count cache stats from non-null results
   const pages = [raceListPage, beforeInfoPage, resultPage];
@@ -83,7 +81,7 @@ async function scrapeOneRace(
   const result = resultPage ? parseRaceResult(resultPage.html, context) : null;
 
   const anyFetched = pages.some((p) => p !== null && !p.fromCache);
-  if (anyFetched) await Bun.sleep(COOLDOWN_BETWEEN_PAGES_MS);
+  if (anyFetched) Bun.sleepSync(COOLDOWN_BETWEEN_PAGES_MS);
 
   return { race, result, beforeInfo, skipped: false, cacheHits, cacheMisses };
 }
@@ -96,11 +94,11 @@ interface VenueDayResult extends ScraperResult {
 }
 
 /** Scrape all 12 races for a single venue-day */
-async function scrapeVenueDay(
+function scrapeVenueDay(
   stadiumCode: string,
   date: string,
   options: ScraperOptions,
-): Promise<VenueDayResult> {
+): VenueDayResult {
   const venueName = STADIUMS[stadiumCode] ?? stadiumCode;
   const races: RaceData[] = [];
   const results: RaceResultData[] = [];
@@ -112,7 +110,7 @@ async function scrapeVenueDay(
   for (let rno = 1; rno <= MAX_RACES_PER_VENUE; rno++) {
     if (options.raceNumbers && !options.raceNumbers.includes(rno)) continue;
     const params: RaceParams = { raceNumber: rno, stadiumCode, date };
-    const result = await scrapeOneRace(params, options.shouldSkip);
+    const result = scrapeOneRace(params, options.shouldSkip);
 
     cacheHits += result.cacheHits;
     cacheMisses += result.cacheMisses;
@@ -143,12 +141,12 @@ async function scrapeVenueDay(
   };
 }
 
-async function resolveVenueDays(
+function resolveVenueDays(
   options: ScraperOptions,
-): Promise<{ stadiumCode: string; date: string }[]> {
+): { stadiumCode: string; date: string }[] {
   if (options.date) {
     const yyyymmdd = options.date.replace(/-/g, "");
-    const venues = await discoverDateSchedule(options.date);
+    const venues = discoverDateSchedule(options.date);
 
     if (options.stadiumId) {
       return venues
@@ -159,7 +157,7 @@ async function resolveVenueDays(
   }
 
   if (options.month) {
-    const venues = await discoverMonthSchedule(options.month);
+    const venues = discoverMonthSchedule(options.month);
     if (options.stadiumId) {
       return venues.filter((v) => v.stadiumCode === options.stadiumId);
     }
@@ -174,9 +172,9 @@ async function resolveVenueDays(
     );
     for (const month of months) {
       logger.info(`Fetching schedule for ${month}...`);
-      const venues = await discoverMonthSchedule(month);
+      const venues = discoverMonthSchedule(month);
       allVenues.push(...venues);
-      if (!isCacheEnabled()) await Bun.sleep(COOLDOWN_BETWEEN_PAGES_MS);
+      if (!isCacheEnabled()) Bun.sleepSync(COOLDOWN_BETWEEN_PAGES_MS);
     }
     if (options.stadiumId) {
       return allVenues.filter((v) => v.stadiumCode === options.stadiumId);
@@ -189,38 +187,14 @@ async function resolveVenueDays(
   );
 }
 
-/** Run async tasks with concurrency limit */
-async function parallelMap<T, R>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = [];
-  let index = 0;
-
-  async function worker(): Promise<void> {
-    while (index < items.length) {
-      const i = index++;
-      results[i] = await fn(items[i]);
-    }
-  }
-
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    () => worker(),
-  );
-  await Promise.all(workers);
-  return results;
-}
-
 const PROGRESS_LOG_INTERVAL = 50;
 
 export const boatraceScraper: Scraper = {
   name: "boatrace",
   description: "boatrace.jp 公式サイト",
 
-  async scrape(options: ScraperOptions): Promise<ScraperResult> {
-    const venueDays = await resolveVenueDays(options);
+  scrape(options: ScraperOptions): ScraperResult {
+    const venueDays = resolveVenueDays(options);
 
     if (venueDays.length === 0) {
       logger.warn("No venues found for the specified period");
@@ -229,10 +203,9 @@ export const boatraceScraper: Scraper = {
 
     const totalRaces = venueDays.length * MAX_RACES_PER_VENUE;
     logger.info(
-      `Found ${venueDays.length} venue-day(s), up to ${totalRaces} races (concurrency: ${MAX_CONCURRENCY})`,
+      `Found ${venueDays.length} venue-day(s), up to ${totalRaces} races`,
     );
 
-    // Only accumulate results when no onBatchComplete callback (e.g. dry-run)
     const accumulate = !options.onBatchComplete;
     const allRaces: RaceData[] = [];
     const allResults: RaceResultData[] = [];
@@ -246,8 +219,8 @@ export const boatraceScraper: Scraper = {
       startTime: Date.now(),
     };
 
-    await parallelMap(venueDays, MAX_CONCURRENCY, async (vd) => {
-      const batch = await scrapeVenueDay(vd.stadiumCode, vd.date, options);
+    for (const vd of venueDays) {
+      const batch = scrapeVenueDay(vd.stadiumCode, vd.date, options);
 
       if (accumulate) {
         allRaces.push(...batch.races);
@@ -281,11 +254,10 @@ export const boatraceScraper: Scraper = {
         );
       }
 
-      // Cooldown between venues (per-worker)
       if (batch.scraped > 0 && !isCacheEnabled()) {
-        await Bun.sleep(COOLDOWN_BETWEEN_VENUES_MS);
+        Bun.sleepSync(COOLDOWN_BETWEEN_VENUES_MS);
       }
-    });
+    }
 
     const elapsed = ((Date.now() - stats.startTime) / 1000).toFixed(1);
     const total = stats.cacheHits + stats.cacheMisses;

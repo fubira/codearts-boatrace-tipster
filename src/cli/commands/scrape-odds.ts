@@ -40,23 +40,19 @@ const ODDS_PAGES = [
   { name: "odds3f", urlFn: odds3FUrl, parseFn: parseOdds3F },
 ] as const;
 
-async function scrapeOddsForRace(params: RaceParams): Promise<OddsEntry[]> {
+function scrapeOddsForRace(params: RaceParams): OddsEntry[] {
   const allEntries: OddsEntry[] = [];
 
-  const pages = await Promise.all(
-    ODDS_PAGES.map((p) => fetchPage(p.urlFn(params))),
-  );
-
   let anyFetched = false;
-  for (let i = 0; i < pages.length; i++) {
-    const page = pages[i];
+  for (const p of ODDS_PAGES) {
+    const page = fetchPage(p.urlFn(params));
     if (!page) continue;
     if (!page.fromCache) anyFetched = true;
-    const entries = ODDS_PAGES[i].parseFn(page.html);
+    const entries = p.parseFn(page.html);
     allEntries.push(...entries);
   }
 
-  if (anyFetched) await Bun.sleep(COOLDOWN_BETWEEN_PAGES_MS);
+  if (anyFetched) Bun.sleepSync(COOLDOWN_BETWEEN_PAGES_MS);
   return allEntries;
 }
 
@@ -73,7 +69,7 @@ export const scrapeOddsCommand = new Command("scrape-odds")
   .option("--dry-run", "parse only, do not save to DB")
   .option("--cache-only", "download HTML to cache without parsing")
   .option("--from-cache", "parse from cache only, never fetch from network")
-  .action(async (opts) => {
+  .action((opts) => {
     if (!opts.date && !opts.month && !opts.year) {
       console.error("Error: --date, --month, or --year is required");
       process.exit(1);
@@ -98,10 +94,10 @@ export const scrapeOddsCommand = new Command("scrape-odds")
 
     if (opts.date) {
       const yyyymmdd = opts.date.replace(/-/g, "");
-      const venues = await discoverDateSchedule(opts.date);
+      const venues = discoverDateSchedule(opts.date);
       venueDays = venues.map((v) => ({ ...v, date: yyyymmdd }));
     } else if (opts.month) {
-      venueDays = await discoverMonthSchedule(opts.month);
+      venueDays = discoverMonthSchedule(opts.month);
     } else if (opts.year) {
       const months = Array.from(
         { length: 12 },
@@ -109,7 +105,7 @@ export const scrapeOddsCommand = new Command("scrape-odds")
       );
       for (const month of months) {
         logger.info(`Fetching schedule for ${month}...`);
-        const venues = await discoverMonthSchedule(month);
+        const venues = discoverMonthSchedule(month);
         venueDays.push(...venues);
       }
     }
@@ -135,7 +131,7 @@ export const scrapeOddsCommand = new Command("scrape-odds")
           stadiumCode: vd.stadiumCode,
           date: vd.date,
         };
-        const entries = await scrapeOddsForRace(params);
+        const entries = scrapeOddsForRace(params);
         if (entries.length > 0) {
           batchOdds.push({
             stadiumId: Number.parseInt(vd.stadiumCode, 10),

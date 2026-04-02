@@ -28,7 +28,7 @@ export const scrapeCommand = new Command("scrape")
   .option("--force", "re-scrape even if already in DB")
   .option("--cache-only", "download HTML to cache without parsing")
   .option("--from-cache", "parse from cache only, never fetch from network")
-  .action(async (opts) => {
+  .action((opts) => {
     if (!opts.date && !opts.month && !opts.year) {
       console.error("Error: --date, --month, or --year is required");
       process.exit(1);
@@ -103,7 +103,7 @@ export const scrapeCommand = new Command("scrape")
         };
 
     try {
-      const result = await scraper.scrape({
+      const result = scraper.scrape({
         date: opts.date,
         month: opts.month,
         year: opts.year,

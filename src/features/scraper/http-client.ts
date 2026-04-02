@@ -1,8 +1,9 @@
 /**
  * HTTP client for boatrace.jp scraping.
- * No authentication needed — simplified from tateyamakun.
+ * Uses curl for HTTP/2 support (Akamai throttles HTTP/1.1 requests).
  */
 
+import { execSync } from "node:child_process";
 import { logger } from "@/shared/logger";
 import { isCacheRequired, readCache, writeCache } from "./cache-manager";
 
@@ -11,27 +12,16 @@ const USER_AGENT =
 
 const BASE_URL = "https://www.boatrace.jp";
 
-const BASE_HEADERS: Record<string, string> = {
-  "User-Agent": USER_AGENT,
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-  "Accept-Encoding": "gzip, deflate, br",
-  "Sec-Fetch-Dest": "document",
-  "Sec-Fetch-Mode": "navigate",
-  "Sec-Fetch-Site": "none",
-  "Sec-Fetch-User": "?1",
-};
-
 export interface FetchPageResult {
   html: string;
   status: number;
   fromCache: boolean;
 }
 
-export async function fetchPage(
+export function fetchPage(
   path: string,
   options?: { skipCache?: boolean },
-): Promise<FetchPageResult | null> {
+): FetchPageResult | null {
   if (!options?.skipCache) {
     const cached = readCache(path);
     if (cached) {
@@ -47,14 +37,16 @@ export async function fetchPage(
   const url = path.startsWith("http") ? path : `${BASE_URL}${path}`;
   logger.warn(`[HTTP] GET ${url}`);
 
-  const response = await fetch(url, { headers: BASE_HEADERS });
+  const html = execSync(
+    `curl -s --compressed -H "User-Agent: ${USER_AGENT}" -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" -H "Accept-Language: ja,en-US;q=0.9,en;q=0.8" -H "Accept-Encoding: gzip, deflate, br" -H "Sec-Fetch-Dest: document" -H "Sec-Fetch-Mode: navigate" -H "Sec-Fetch-Site: none" -H "Sec-Fetch-User: ?1" "${url}"`,
+    { encoding: "utf-8", timeout: 30_000 },
+  );
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} for ${url}`);
+  if (!html || html.length === 0) {
+    throw new Error(`Empty response for ${url}`);
   }
 
-  const html = await response.text();
   writeCache(path, html);
 
-  return { html, status: response.status, fromCache: false };
+  return { html, status: 200, fromCache: false };
 }

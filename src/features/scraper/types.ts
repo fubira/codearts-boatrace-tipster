@@ -15,7 +15,7 @@ export interface ScraperResult {
 export interface Scraper {
   readonly name: string;
   readonly description: string;
-  scrape(options: ScraperOptions): Promise<ScraperResult>;
+  scrape(options: ScraperOptions): ScraperResult;
 }
 
 export interface ScraperOptions {
