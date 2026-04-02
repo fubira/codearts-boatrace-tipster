@@ -51,9 +51,14 @@ FEATURE_COLS: list[str] = [
     "class_x_boat",
     "weight_x_boat",
     "wind_speed_x_boat",
-    # --- Rolling: course-specific recent form (1) ---
-    "rel_rolling_course_win",
 ]
+
+# Features with intentional intraday leakage.
+# At evaluation/prediction time, these are replaced with per-race mean
+# so LambdaRank cannot use them for within-race discrimination.
+# Currently empty — leaked features (gate_bias, upset_rate) are computed
+# but not yet effective enough to include in FEATURE_COLS.
+LEAKED_COLS: list[str] = []
 
 # Columns that need 0-fill (not NaN) for LightGBM categorical handling
 CATEGORICAL_FILL_COLS: list[str] = [
@@ -225,6 +230,31 @@ def _add_kado_features(df: pd.DataFrame) -> None:
     # Interaction: kado × relative exhibition time
     rel_ex = df.get("rel_exhibition_time", 0)
     df["kado_x_exhibition"] = is_kado * rel_ex
+
+
+# ---------------------------------------------------------------------------
+# Leaked feature neutralization
+# ---------------------------------------------------------------------------
+
+
+def neutralize_leaked_features(
+    X: pd.DataFrame, meta: pd.DataFrame
+) -> pd.DataFrame:
+    """Replace leaked features with per-race mean (no within-race signal).
+
+    Used at evaluation/prediction time so the model sees the same feature
+    count as training but without intraday leakage information.
+    All entries in the same race get the same value, so LambdaRank cannot
+    use these features for within-race discrimination.
+    """
+    if not LEAKED_COLS:
+        return X
+    X = X.copy()
+    race_ids = meta["race_id"]
+    for col in LEAKED_COLS:
+        if col in X.columns:
+            X[col] = X.groupby(race_ids)[col].transform("mean")
+    return X
 
 
 # ---------------------------------------------------------------------------

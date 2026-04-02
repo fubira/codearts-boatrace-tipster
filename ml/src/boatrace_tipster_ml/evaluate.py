@@ -12,6 +12,7 @@ import pandas as pd
 from lightgbm import LGBMRanker
 
 from .db import get_connection
+from .feature_config import neutralize_leaked_features
 
 # Permutation importance default settings
 PERM_N_REPEATS = 5
@@ -31,10 +32,14 @@ def evaluate_model(
 ) -> dict:
     """Evaluate model on a dataset, computing per-race metrics.
 
+    Automatically neutralizes leaked features (gate_bias, upset_rate) so
+    the model cannot use intraday leakage for within-race discrimination.
+
     Args:
         payouts_cache: Pre-loaded payouts dict to avoid DB queries.
         skip_confidence: Skip confidence analysis (faster for HPO).
     """
+    X = neutralize_leaked_features(X, meta)
     scores = model.predict(X)
 
     df = meta[["race_id", "boat_number"]].copy()

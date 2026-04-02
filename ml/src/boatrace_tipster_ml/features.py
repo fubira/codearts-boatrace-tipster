@@ -62,9 +62,14 @@ SELECT
     re.stabilizer,
     re.start_timing,
     re.finish_position,
+    odds.odds AS tansho_odds,
     EXTRACT(MONTH FROM CAST(r.race_date AS DATE)) AS race_month
 FROM db.races r
 JOIN db.race_entries re ON re.race_id = r.id
+LEFT JOIN db.race_odds odds
+    ON odds.race_id = r.id
+    AND odds.bet_type = '単勝'
+    AND odds.combination = CAST(re.boat_number AS TEXT)
 ORDER BY r.race_date, r.id, re.id
 """
 
@@ -81,12 +86,39 @@ def _load_all_data(conn) -> pd.DataFrame:
     race_counts = df.groupby("race_id").size()
     valid_races = race_counts[race_counts == 6].index
     df = df[df["race_id"].isin(valid_races)].reset_index(drop=True)
+    # Popularity (betting rank) from tansho odds: lowest odds = rank 1
+    # NaN for races without odds data
+    df["popularity"] = df.groupby("race_id")["tansho_odds"].rank(method="min").astype("Int64")
     return df
 
 
 # ---------------------------------------------------------------------------
 # Leak-safe cumulative helpers
 # ---------------------------------------------------------------------------
+
+
+def _cumulative_rate_intraday(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    value_col: str,
+) -> np.ndarray:
+    """Cumulative rate WITH intentional intraday leakage.
+
+    Includes same-day earlier races in the group (unlike _cumulative_rate).
+    Used for "thin leakage" features that improve tree structure during training,
+    then neutralized at evaluation/prediction time.
+
+    The leakage: at race 8, this feature knows outcomes of races 1-7 today
+    at the same (stadium, course) — subtly encodes today's conditions.
+    """
+    cum_all = df.groupby(group_cols, sort=False)[value_col].cumsum()
+    count_all = df.groupby(group_cols, sort=False).cumcount() + 1
+
+    # Subtract only current row (NOT same-day, so intraday data remains)
+    prior = cum_all - df[value_col]
+    prior_count = count_all - 1
+
+    return np.where(prior_count > 0, prior / prior_count, np.nan)
 
 
 def _cumulative_rate(
@@ -445,6 +477,56 @@ def _add_self_comparison_features(df: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Leaked features (thin leakage for tree structure improvement)
+# ---------------------------------------------------------------------------
+
+
+def _add_leaked_features(df: pd.DataFrame) -> None:
+    """Intentionally leaked features for training-time tree structure improvement.
+
+    These features include intraday race outcomes (same-day earlier races at
+    the same stadium), providing subtle hints about today's conditions.
+    At evaluation/prediction time, they are neutralized (replaced with per-race
+    mean) so LambdaRank cannot use them for within-race discrimination.
+
+    Pattern from tateyamakun: learn "what upsets look like" during training,
+    then force the model to approximate that knowledge from non-leaked features.
+    """
+    df["_is_win"] = (df["finish_position"] == 1).astype(int)
+
+    # gate_bias: win rate per (stadium, course) with intraday leakage
+    # Captures venue × course advantage INCLUDING today's pattern
+    df["gate_bias"] = _cumulative_rate_intraday(
+        df, ["stadium_id", "course_number"], "_is_win"
+    )
+
+    # upset_rate: 1番人気の敗北率 per (stadium_id, course_number) with intraday leakage
+    # Uses real odds-derived popularity when available, falls back to
+    # national_win_rate proxy for races without odds data.
+    has_odds = df["popularity"].notna()
+    is_fav_odds = (df["popularity"].fillna(0) == 1).astype(int)
+    # Fallback: highest national_win_rate in race = pseudo-favorite
+    n_races = len(df) // 6
+    nwr = df["national_win_rate"].fillna(0).values.reshape(n_races, 6)
+    is_fav_fallback = np.zeros(len(df), dtype=int)
+    is_fav_fallback[(np.arange(n_races) * 6 + np.argmax(nwr, axis=1))] = 1
+    # Use odds-based when available, fallback otherwise
+    df["_is_fav"] = np.where(has_odds, is_fav_odds, is_fav_fallback)
+    df["_fav_won"] = (df["_is_fav"] & (df["finish_position"] == 1)).astype(int)
+
+    # Per (stadium, course): cumulative favorite win rate with intraday leakage
+    group = ["stadium_id", "course_number"]
+    cum_fav_won = df.groupby(group, sort=False)["_fav_won"].cumsum()
+    cum_fav = df.groupby(group, sort=False)["_is_fav"].cumsum()
+    prior_fav_won = cum_fav_won - df["_fav_won"]
+    prior_fav = cum_fav - df["_is_fav"]
+    fav_wr = np.where(prior_fav > 0, prior_fav_won / prior_fav, 0.5)
+    df["upset_rate"] = 1.0 - fav_wr
+
+    df.drop(columns=["_is_fav", "_fav_won"], inplace=True)
+
+
+# ---------------------------------------------------------------------------
 # Course-taking (イン屋) features
 # ---------------------------------------------------------------------------
 
@@ -554,6 +636,7 @@ def build_features(
     _add_rolling_features(df)
     _add_tournament_features(df)
     _add_self_comparison_features(df)
+    _add_leaked_features(df)
 
     _cleanup_temp_cols(df)
     _encode_categoricals(df)
