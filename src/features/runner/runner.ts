@@ -527,6 +527,38 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   const schedule = buildSchedule(races, stadiumNames, date);
   logger.info(`Scheduled ${schedule.length} races`);
 
+  // Log today's schedule overview
+  const byStadium = new Map<
+    string,
+    { first: string; last: string; count: number }
+  >();
+  for (const s of schedule) {
+    const entry = byStadium.get(s.stadiumName);
+    if (!entry) {
+      byStadium.set(s.stadiumName, {
+        first: s.deadline,
+        last: s.deadline,
+        count: 1,
+      });
+    } else {
+      entry.last = s.deadline;
+      entry.count++;
+    }
+  }
+  logger.info("Today's schedule:");
+  for (const [name, info] of byStadium) {
+    logger.info(`  ${name}: ${info.count}R (${info.first} ~ ${info.last})`);
+  }
+  if (schedule.length > 0) {
+    logger.info(
+      `  First deadline: ${schedule[0].deadline} (${schedule[0].stadiumName} R${schedule[0].raceNumber})`,
+    );
+    const last = schedule[schedule.length - 1];
+    logger.info(
+      `  Last deadline:  ${last.deadline} (${last.stadiumName} R${last.raceNumber})`,
+    );
+  }
+
   // 3. Pre-load predictions (run Python once at startup)
   let predictionCache: PredictionCache | null = null;
   try {
