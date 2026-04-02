@@ -490,11 +490,27 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   const schedule = buildSchedule(races, stadiumNames, date);
   logger.info(`Scheduled ${schedule.length} races`);
 
+  // 3. Pre-load predictions (run Python once at startup)
+  let predictionCache: PredictionCache | null = null;
+  try {
+    logger.info("Running prediction for today...");
+    const predictions = await runPrediction(date, opts);
+    predictionCache = new Map();
+    for (const p of predictions) {
+      predictionCache.set(p.raceId, { prob: p.prob, odds: p.odds, ev: p.ev });
+    }
+    logger.info(`Cached ${predictionCache.size} predictions`);
+  } catch (err) {
+    logger.error(`Prediction failed at startup: ${err}`);
+    await notifyError("startup prediction", err);
+    // Continue without cache — poll will retry if needed
+  }
+
   const state: RunnerState = {
     schedule,
     bets: new Map(),
     results: new Map(),
-    predictionCache: null,
+    predictionCache,
     bankroll: opts.bankroll,
     date,
   };
