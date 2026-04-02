@@ -19,7 +19,7 @@ ENV TZ=Asia/Tokyo
 WORKDIR /app
 
 # System deps (rarely changes)
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Dependencies (changes only when lock files change)

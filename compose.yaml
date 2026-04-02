@@ -1,6 +1,6 @@
 services:
   runner:
-    image: ghcr.io/fubira/boatrace-tipster:latest
+    image: ghcr.io/fubira/codearts-boatrace-tipster:latest
     restart: unless-stopped
     env_file: .env
     environment:
