@@ -59,10 +59,16 @@ export interface RunnerOptions {
   slackWebhookUrl?: string;
 }
 
+type PredictionCache = Map<
+  number,
+  { prob: number; odds: number | null; ev: number | null }
+>;
+
 interface RunnerState {
   schedule: RaceSlot[];
   bets: Map<number, BetDecision>; // raceId → decision
   results: Map<number, { won: boolean; payout: number }>;
+  predictionCache: PredictionCache | null; // null = not yet loaded
   bankroll: number;
   date: string;
 }
@@ -286,24 +292,49 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       }
     }
 
-    // Run prediction for today (all races at once)
+    // Load predictions (cached: run Python only once per day)
     try {
-      const predictions = await runPrediction(state.date, opts);
+      if (!state.predictionCache) {
+        logger.info("Running prediction (first time today)...");
+        const predictions = await runPrediction(state.date, opts);
+        state.predictionCache = new Map();
+        for (const p of predictions) {
+          state.predictionCache.set(p.raceId, {
+            prob: p.prob,
+            odds: p.odds,
+            ev: p.ev,
+          });
+        }
+        logger.info(`Cached ${state.predictionCache.size} predictions`);
+      }
 
       for (const slot of actionable.predict) {
-        const pred = predictions.find((p) => p.raceId === slot.raceId);
-        if (!pred) {
+        const cached = state.predictionCache.get(slot.raceId);
+        if (!cached) {
           slot.status = "predicted";
           continue;
         }
 
-        const evPct = pred.ev ?? Number.NEGATIVE_INFINITY;
+        // Re-read latest odds from DB (may differ from cached odds)
+        const db = getDatabase();
+        const oddsRow = db
+          .query(
+            `SELECT odds FROM race_odds
+             WHERE race_id = ? AND bet_type = '単勝' AND combination = '1'`,
+          )
+          .get(slot.raceId) as { odds: number } | null;
+
+        const latestOdds = oddsRow?.odds ?? cached.odds;
+        const evPct =
+          latestOdds !== null
+            ? (cached.prob * latestOdds - 1) * 100
+            : Number.NEGATIVE_INFINITY;
         const isRecommended = evPct >= opts.evThreshold;
 
-        if (isRecommended && pred.odds !== null) {
+        if (isRecommended && latestOdds !== null) {
           const betAmount = calcKellyBet(
-            pred.prob,
-            pred.odds,
+            cached.prob,
+            latestOdds,
             state.bankroll,
             opts.kellyFraction,
             opts.betCap,
@@ -314,8 +345,8 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
               raceId: slot.raceId,
               stadiumName: slot.stadiumName,
               raceNumber: slot.raceNumber,
-              prob: pred.prob,
-              odds: pred.odds,
+              prob: cached.prob,
+              odds: latestOdds,
               ev: evPct,
               betAmount,
               recommend: true,
@@ -326,8 +357,8 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
               stadiumName: slot.stadiumName,
               raceNumber: slot.raceNumber,
               deadline: slot.deadline,
-              prob: pred.prob,
-              odds: pred.odds,
+              prob: cached.prob,
+              odds: latestOdds,
               ev: evPct,
               betAmount,
             });
@@ -463,6 +494,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     schedule,
     bets: new Map(),
     results: new Map(),
+    predictionCache: null,
     bankroll: opts.bankroll,
     date,
   };
