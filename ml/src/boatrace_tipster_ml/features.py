@@ -593,17 +593,17 @@ def _cleanup_temp_cols(df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_features(
+def build_features_df(
     db_path: str,
     *,
     start_date: str | None = None,
     end_date: str | None = None,
-) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
-    """Build the full feature matrix from the database.
+) -> pd.DataFrame:
+    """Build the full feature DataFrame with all columns retained.
 
-    Loads all data, computes historical features (leak-safe), encodes
-    categoricals, filters to date range, then computes relative and
-    interaction features.
+    Same pipeline as build_features() but returns the raw DataFrame
+    before FEATURE_COLS filtering. Used by boat1 binary classifier
+    which needs access to columns beyond the ranking model's feature set.
 
     Args:
         db_path: Path to the SQLite database.
@@ -611,7 +611,7 @@ def build_features(
         end_date: Include races before this date (YYYY-MM-DD).
 
     Returns:
-        (X, y, meta) tuple ready for model training.
+        DataFrame with all computed features (6 rows per race).
     """
     conn = get_connection(db_path)
 
@@ -653,4 +653,28 @@ def build_features(
     df = compute_relative_features(df)
     df = compute_interaction_features(df)
 
+    return df
+
+
+def build_features(
+    db_path: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+    """Build the full feature matrix from the database.
+
+    Loads all data, computes historical features (leak-safe), encodes
+    categoricals, filters to date range, then computes relative and
+    interaction features.
+
+    Args:
+        db_path: Path to the SQLite database.
+        start_date: Include races on or after this date (YYYY-MM-DD).
+        end_date: Include races before this date (YYYY-MM-DD).
+
+    Returns:
+        (X, y, meta) tuple ready for model training.
+    """
+    df = build_features_df(db_path, start_date=start_date, end_date=end_date)
     return prepare_feature_matrix(df)
