@@ -26,7 +26,7 @@ export interface BetDecision {
 
 // Minutes before deadline to trigger each action
 const BEFORE_INFO_LEAD = 30;
-const PREDICT_LEAD = 7;
+const PREDICT_LEAD = 3;
 // Minutes after deadline to check for results
 const RESULT_DELAY = 10;
 // If deadline passed by this many minutes and still "waiting", skip entirely
