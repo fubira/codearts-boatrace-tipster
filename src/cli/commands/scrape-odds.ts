@@ -8,7 +8,7 @@ import {
   enableCache,
   setCacheRequired,
 } from "@/features/scraper/cache-manager";
-import { fetchPage } from "@/features/scraper/http-client";
+import { fetchPage, fetchPages } from "@/features/scraper/http-client";
 import {
   COOLDOWN_BETWEEN_PAGES_MS,
   MAX_RACES_PER_VENUE,
@@ -34,26 +34,53 @@ import { logger } from "@/shared/logger";
 import { Command } from "commander";
 
 const ODDS_PAGES = [
-  { name: "oddstf", urlFn: oddsTfUrl, parseFn: parseOddsTf },
-  { name: "odds2tf", urlFn: odds2TfUrl, parseFn: parseOdds2Tf },
-  { name: "odds3t", urlFn: odds3TUrl, parseFn: parseOdds3T },
-  { name: "odds3f", urlFn: odds3FUrl, parseFn: parseOdds3F },
+  { urlFn: oddsTfUrl, parseFn: parseOddsTf },
+  { urlFn: odds2TfUrl, parseFn: parseOdds2Tf },
+  { urlFn: odds3TUrl, parseFn: parseOdds3T },
+  { urlFn: odds3FUrl, parseFn: parseOdds3F },
 ] as const;
 
-function scrapeOddsForRace(params: RaceParams): OddsEntry[] {
-  const allEntries: OddsEntry[] = [];
+/** Download odds cache for a venue-day using batch curl (48 URLs in 1 call) */
+function downloadVenueDayOdds(stadiumCode: string, date: string): void {
+  const allPaths: string[] = [];
+  for (let rno = 1; rno <= MAX_RACES_PER_VENUE; rno++) {
+    const params: RaceParams = { raceNumber: rno, stadiumCode, date };
+    allPaths.push(oddsTfUrl(params));
+    allPaths.push(odds2TfUrl(params));
+    allPaths.push(odds3TUrl(params));
+    allPaths.push(odds3FUrl(params));
+  }
+  const pages = fetchPages(allPaths);
+  const anyFetched = pages.some((p) => p !== null && !p.fromCache);
+  if (anyFetched) Bun.sleepSync(COOLDOWN_BETWEEN_PAGES_MS);
+}
 
-  let anyFetched = false;
-  for (const p of ODDS_PAGES) {
-    const page = fetchPage(p.urlFn(params));
-    if (!page) continue;
-    if (!page.fromCache) anyFetched = true;
-    const entries = p.parseFn(page.html);
-    allEntries.push(...entries);
+/** Scrape and parse odds for a venue-day (individual fetchPage for full HTML read) */
+function scrapeVenueDayOdds(
+  stadiumCode: string,
+  date: string,
+): { raceNumber: number; entries: OddsEntry[] }[] {
+  const results: { raceNumber: number; entries: OddsEntry[] }[] = [];
+
+  for (let rno = 1; rno <= MAX_RACES_PER_VENUE; rno++) {
+    const params: RaceParams = { raceNumber: rno, stadiumCode, date };
+    const entries: OddsEntry[] = [];
+    let anyFetched = false;
+
+    for (const p of ODDS_PAGES) {
+      const page = fetchPage(p.urlFn(params));
+      if (!page) continue;
+      if (!page.fromCache) anyFetched = true;
+      entries.push(...p.parseFn(page.html));
+    }
+
+    if (anyFetched) Bun.sleepSync(COOLDOWN_BETWEEN_PAGES_MS);
+    if (entries.length > 0) {
+      results.push({ raceNumber: rno, entries });
+    }
   }
 
-  if (anyFetched) Bun.sleepSync(COOLDOWN_BETWEEN_PAGES_MS);
-  return allEntries;
+  return results;
 }
 
 function buildRaceDate(yyyymmdd: string): string {
@@ -123,30 +150,24 @@ export const scrapeOddsCommand = new Command("scrape-odds")
     for (const vd of venueDays) {
       const venueName = STADIUMS[vd.stadiumCode] ?? vd.stadiumCode;
       const raceDate = buildRaceDate(vd.date);
-      const batchOdds: OddsData[] = [];
 
-      for (let rno = 1; rno <= MAX_RACES_PER_VENUE; rno++) {
-        const params: RaceParams = {
-          raceNumber: rno,
-          stadiumCode: vd.stadiumCode,
-          date: vd.date,
-        };
-        const entries = scrapeOddsForRace(params);
-        if (entries.length > 0) {
-          batchOdds.push({
-            stadiumId: Number.parseInt(vd.stadiumCode, 10),
-            raceDate,
-            raceNumber: rno,
-            entries,
-          });
+      if (opts.cacheOnly) {
+        downloadVenueDayOdds(vd.stadiumCode, vd.date);
+      } else {
+        const raceResults = scrapeVenueDayOdds(vd.stadiumCode, vd.date);
+        const batchOdds: OddsData[] = raceResults.map((r) => ({
+          stadiumId: Number.parseInt(vd.stadiumCode, 10),
+          raceDate,
+          raceNumber: r.raceNumber,
+          entries: r.entries,
+        }));
+
+        if (!opts.dryRun && batchOdds.length > 0) {
+          saveOdds(batchOdds);
         }
-      }
 
-      if (!opts.cacheOnly && !opts.dryRun && batchOdds.length > 0) {
-        saveOdds(batchOdds);
+        totalOdds += batchOdds.reduce((sum, o) => sum + o.entries.length, 0);
       }
-
-      totalOdds += batchOdds.reduce((sum, o) => sum + o.entries.length, 0);
       completedVenues++;
 
       if (completedVenues % 50 === 0) {
@@ -158,7 +179,7 @@ export const scrapeOddsCommand = new Command("scrape-odds")
       }
 
       logger.info(
-        `${venueName} ${raceDate}: ${batchOdds.reduce((s, o) => s + o.entries.length, 0)} odds`,
+        `${venueName} ${raceDate}: ${opts.cacheOnly ? "cached" : `${totalOdds} odds`}`,
       );
     }
 

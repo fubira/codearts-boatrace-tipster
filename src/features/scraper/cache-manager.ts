@@ -60,6 +60,12 @@ export function readCache(path: string): string | undefined {
   return html;
 }
 
+/** Check if a cache file exists without reading it. */
+export function hasCacheEntry(path: string): boolean {
+  if (!cacheEnabled || !cacheReadEnabled) return false;
+  return existsSync(cachePathFor(path));
+}
+
 export function writeCache(path: string, html: string): void {
   if (!cacheEnabled) return;
   const cachePath = cachePathFor(path);
