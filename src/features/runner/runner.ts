@@ -66,7 +66,12 @@ export interface RunnerOptions {
 
 type PredictionCache = Map<
   number,
-  { prob: number; odds: number | null; ev: number | null }
+  {
+    prob: number;
+    odds: number | null;
+    ev: number | null;
+    hasExhibition: boolean;
+  }
 >;
 
 interface RunnerState {
@@ -189,6 +194,7 @@ async function runPrediction(
     odds: number | null;
     ev: number | null;
     recommend: boolean;
+    hasExhibition: boolean;
   }[]
 > {
   const modelDir = resolve(config.projectRoot, "ml/models/boat1");
@@ -235,12 +241,14 @@ async function runPrediction(
       tansho_odds: number | null;
       ev: number | null;
       recommend: boolean;
+      has_exhibition: boolean;
     }) => ({
       raceId: p.race_id,
       prob: p.prob,
       odds: p.tansho_odds,
       ev: p.ev,
       recommend: p.recommend,
+      hasExhibition: p.has_exhibition,
     }),
   );
 }
@@ -337,6 +345,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             prob: p.prob,
             odds: p.odds,
             ev: p.ev,
+            hasExhibition: p.hasExhibition,
           });
         }
         logger.info(`Predicted ${state.predictionCache.size} races`);
@@ -364,6 +373,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             ? (cached.prob * latestOdds - 1) * 100
             : Number.NEGATIVE_INFINITY;
         const isRecommended = evPct >= opts.evThreshold;
+        const exhTag = cached.hasExhibition ? "" : " [no-exh]";
         const label = `${slot.stadiumName} R${slot.raceNumber}`;
         const probPct = (cached.prob * 100).toFixed(1);
         const oddsStr = latestOdds !== null ? latestOdds.toFixed(1) : "N/A";
@@ -395,7 +405,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             bets.set(slot.raceId, decision);
 
             logger.info(
-              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}`,
+              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}${exhTag}`,
             );
 
             await notifyPrediction({
@@ -412,12 +422,12 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             state.bankroll -= betAmount;
           } else {
             logger.info(
-              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP (bet=0)`,
+              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP (bet=0)${exhTag}`,
             );
           }
         } else {
           logger.info(
-            `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP`,
+            `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP${exhTag}`,
           );
         }
 

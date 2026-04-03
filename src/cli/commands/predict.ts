@@ -13,6 +13,7 @@ interface Prediction {
   tansho_odds: number | null;
   ev: number | null;
   recommend: boolean;
+  has_exhibition: boolean;
 }
 
 interface PredictResult {
@@ -132,7 +133,16 @@ function formatTable(result: PredictResult, showAll: boolean): void {
         ? `${p.ev >= 0 ? "+" : ""}${p.ev.toFixed(1)}%`.padStart(7)
         : "    N/A";
     const rec = p.recommend ? " ◎" : " -";
-    console.log(`  ${stadium} ${rn}  ${prob}  ${odds}  ${ev} ${rec}`);
+    const exh = p.has_exhibition ? "" : " *";
+    console.log(`  ${stadium} ${rn}  ${prob}  ${odds}  ${ev} ${rec}${exh}`);
+  }
+
+  // Footer notes
+  const noExhCount = sorted.filter((p) => !p.has_exhibition).length;
+  if (noExhCount > 0) {
+    console.log(
+      `\n  * ${noExhCount} race(s) without exhibition data (prediction based on historical stats only)`,
+    );
   }
 
   // Summary

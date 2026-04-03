@@ -144,10 +144,12 @@ def reshape_to_boat1(
     )
 
     # --- Meta ---
+    has_exhibition = b1["exhibition_time"].notna().values if "exhibition_time" in b1.columns else np.zeros(n_races, dtype=bool)
     meta_b1 = pd.DataFrame({
         "race_id": b1["race_id"].values,
         "race_date": b1["race_date"].values,
         "b1_tansho_odds": b1["tansho_odds"].values if "tansho_odds" in b1.columns else np.nan,
+        "has_exhibition": has_exhibition,
     })
 
     # Select final feature columns
