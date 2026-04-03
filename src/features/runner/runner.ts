@@ -770,17 +770,41 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   });
 
   // 3. Polling loop
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let shuttingDown = false;
-
-  async function shutdown(): Promise<void> {
-    if (shuttingDown) return;
-    shuttingDown = true;
-
+  function shutdown(): void {
     logger.info("Shutting down...");
-    if (timer) clearInterval(timer);
+    notifyShutdown()
+      .catch(() => {})
+      .finally(() => {
+        closeDatabase();
+        process.exit(0);
+      });
+  }
 
-    // Send daily summary if we have bets
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  // Main loop: run daily, sleep until next day when done
+  // biome-ignore lint/correctness/noConstantCondition: intentional daemon loop
+  while (true) {
+    // Immediate first poll
+    await poll(state, opts);
+
+    // Polling loop for the day
+    let dayDone = false;
+    while (!dayDone) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+      try {
+        await poll(state, opts);
+        if (allDone(schedule)) {
+          logger.info("All races done for today");
+          dayDone = true;
+        }
+      } catch (err) {
+        await notifyError("poll", err).catch(console.error);
+      }
+    }
+
+    // Daily summary + cleanup
     if (state.bets.size > 0) {
       let totalWagered = 0;
       let totalPayout = 0;
@@ -793,7 +817,6 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
           if (r.won) wins++;
         }
       }
-
       await notifyDailySummary({
         date: state.date,
         totalBets: state.bets.size,
@@ -804,33 +827,98 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
       });
     }
 
-    await notifyShutdown();
+    // Sleep until next day 7:00 JST
+    const nextStart = new Date();
+    nextStart.setHours(nextStart.getHours() + 9); // UTC → JST
+    const jstHour = nextStart.getHours();
+    // Calculate ms until tomorrow 7:00 JST
+    const tomorrow7 = new Date(nextStart);
+    tomorrow7.setDate(tomorrow7.getDate() + (jstHour >= 7 ? 1 : 0));
+    tomorrow7.setHours(7, 0, 0, 0);
+    tomorrow7.setHours(tomorrow7.getHours() - 9); // JST → UTC
+    const sleepMs = tomorrow7.getTime() - Date.now();
+
+    logger.info(
+      `Sleeping until tomorrow 07:00 JST (${Math.round(sleepMs / 3600_000)}h)`,
+    );
+    await Bun.sleep(sleepMs);
+
+    // Restart for next day
+    logger.info("New day starting...");
     closeDatabase();
-    process.exit(0);
-  }
+    initializeDatabase();
 
-  process.on("SIGINT", () => {
-    shutdown().catch(console.error);
-  });
-  process.on("SIGTERM", () => {
-    shutdown().catch(console.error);
-  });
+    const newDate = todayJST();
+    const newYYYYMMDD = todayYYYYMMDD();
 
-  // Immediate first poll
-  await poll(state, opts);
+    logger.info(
+      `Starting runner v${config.version} for ${newDate} (${opts.dryRun ? "DRY RUN" : "LIVE"})`,
+    );
 
-  timer = setInterval(async () => {
-    try {
-      await poll(state, opts);
-
-      if (allDone(schedule)) {
-        logger.info("All races done for today");
-        await shutdown();
+    // Re-discover venues
+    let newVenueCodes: { stadiumCode: string; date: string }[] = [];
+    for (let attempt = 0; attempt <= 6; attempt++) {
+      if (attempt > 0) disableCacheRead();
+      newVenueCodes = discoverDateSchedule(newYYYYMMDD);
+      if (attempt > 0) enableCacheRead();
+      if (newVenueCodes.length > 0) break;
+      if (attempt < 6) {
+        logger.warn(
+          `No venues found (attempt ${attempt + 1}/7), retrying in 5 min...`,
+        );
+        await Bun.sleep(5 * 60_000);
       }
-    } catch (err) {
-      await notifyError("poll", err).catch(console.error);
     }
-  }, POLL_INTERVAL_MS);
 
-  logger.info(`Polling every ${POLL_INTERVAL_MS / 1000}s — Ctrl+C to stop`);
+    if (newVenueCodes.length === 0) {
+      logger.warn("No venues found — no races today? Sleeping until tomorrow.");
+      continue;
+    }
+
+    logger.info(`Found ${newVenueCodes.length} venues, scraping race lists...`);
+    const newScraper = getScraper("boatrace");
+    if (newScraper) {
+      newScraper.scrape({
+        date: newYYYYMMDD,
+        onBatchComplete: (batch) => {
+          if (batch.races.length > 0) saveRaces(batch.races);
+          if (batch.results.length > 0) saveRaceResults(batch.results);
+          if (batch.beforeInfo.length > 0) saveBeforeInfo(batch.beforeInfo);
+        },
+      });
+    }
+
+    const newDb = getDatabase();
+    const newRaces = newDb
+      .query(
+        `SELECT id, stadium_id, race_number, deadline FROM races
+         WHERE race_date = ? ORDER BY deadline, stadium_id, race_number`,
+      )
+      .all(newDate) as {
+      id: number;
+      stadium_id: number;
+      race_number: number;
+      deadline: string | null;
+    }[];
+
+    const newSchedule = buildSchedule(newRaces, stadiumNames, newDate);
+    logger.info(`Scheduled ${newSchedule.length} races`);
+
+    // Reset state for new day
+    state.schedule = newSchedule;
+    state.bets = new Map();
+    state.results = new Map();
+    state.predictionCache = null;
+    state.date = newDate;
+    state.lastStatusLine = "";
+
+    await notifyStartup({
+      version: config.version,
+      date: newDate,
+      venues: newVenueCodes.length,
+      races: newSchedule.length,
+      dryRun: opts.dryRun,
+      evThreshold: opts.evThreshold,
+    });
+  }
 }
