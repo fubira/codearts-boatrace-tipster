@@ -35,3 +35,4 @@ logs/tune/
 
 # Misc
 .wrangler/
+CONTINUATION_PROMPT.md
