@@ -32,6 +32,10 @@ import {
   parseBeforeInfo,
   parseRaceResult,
 } from "@/features/scraper/sources/boatrace/parsers";
+import {
+  calcMaxBetForPool,
+  fetchTanshoPool,
+} from "@/features/scraper/sources/boatrace/pool-size";
 import type { PurchaseExecutor } from "@/features/teleboat";
 import { config } from "@/shared/config";
 import { logger } from "@/shared/logger";
@@ -414,13 +418,43 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             : "N/A";
 
         if (isRecommended && latestOdds !== null) {
-          const betAmount = calcKellyBet(
+          let betAmount = calcKellyBet(
             cached.prob,
             latestOdds,
             state.bankroll,
             opts.kellyFraction,
             opts.betCap,
           );
+
+          // Market impact 制限: プールサイズから post-bet EV > 0 の最大bet算出
+          let poolTag = "";
+          if (betAmount > 0) {
+            const pool = await fetchTanshoPool(
+              padStadiumCode(slot.stadiumId),
+              state.date,
+              slot.raceNumber,
+            );
+            if (pool && pool.totalVotes > 0) {
+              const { maxBet, estimatedPool } = calcMaxBetForPool(
+                cached.prob,
+                latestOdds,
+                pool,
+                opts.betCap,
+              );
+              poolTag = ` pool=${pool.totalVotes}票`;
+              if (maxBet < betAmount) {
+                poolTag += ` cap=${maxBet}`;
+                betAmount = maxBet;
+              }
+            } else {
+              // プール取得失敗: betCap の半分にフォールバック
+              const fallback = Math.floor(opts.betCap / 2 / 100) * 100;
+              if (fallback < betAmount) {
+                betAmount = fallback;
+                poolTag = " pool=N/A";
+              }
+            }
+          }
 
           if (betAmount > 0) {
             const decision: BetDecision = {
@@ -436,7 +470,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             bets.set(slot.raceId, decision);
 
             logger.info(
-              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}${exhTag}`,
+              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}${exhTag}${poolTag}`,
             );
 
             await notifyPrediction({
