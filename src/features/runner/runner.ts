@@ -109,7 +109,8 @@ function scrapeBeforeInfoForRace(slot: RaceSlot, date: string): boolean {
     date: date.replace(/-/g, ""),
   };
 
-  const page = fetchPage(beforeInfoUrl(params));
+  // Always skip cache — exhibition data changes up to race time
+  const page = fetchPage(beforeInfoUrl(params), { skipCache: true });
   if (!page) return false;
 
   const context = { params, raceDate: date };
@@ -127,7 +128,8 @@ function scrapeTanshoOddsForRace(slot: RaceSlot, date: string): boolean {
     date: date.replace(/-/g, ""),
   };
 
-  const page = fetchPage(oddsTfUrl(params));
+  // Always skip cache — odds change continuously
+  const page = fetchPage(oddsTfUrl(params), { skipCache: true });
   if (!page) return false;
 
   const entries = parseOddsTf(page.html);
@@ -158,7 +160,8 @@ function scrapeResultForRace(
     date: date.replace(/-/g, ""),
   };
 
-  const page = fetchPage(raceResultUrl(params));
+  // Always skip cache — result page only available after race
+  const page = fetchPage(raceResultUrl(params), { skipCache: true });
   if (!page) return null;
 
   const context = { params, raceDate: date };
@@ -321,6 +324,29 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
   // 2. Scrape odds + predict for races near deadline
   if (actionable.predict.length > 0) {
+    // Re-scrape before-info if exhibition data is missing
+    for (const slot of actionable.predict) {
+      const db = getDatabase();
+      const hasExh = db
+        .query(
+          `SELECT COUNT(*) as cnt FROM race_entries
+           WHERE race_id = ? AND exhibition_time IS NOT NULL`,
+        )
+        .get(slot.raceId) as { cnt: number };
+      if (hasExh.cnt === 0) {
+        logger.info(
+          `Re-scraping before-info (exhibition missing): ${slot.stadiumName} R${slot.raceNumber}`,
+        );
+        try {
+          scrapeBeforeInfoForRace(slot, state.date);
+        } catch (err) {
+          logger.warn(
+            `Failed to re-scrape before-info: ${slot.stadiumName} R${slot.raceNumber}: ${err}`,
+          );
+        }
+      }
+    }
+
     // Scrape tansho odds for each race
     for (const slot of actionable.predict) {
       try {
