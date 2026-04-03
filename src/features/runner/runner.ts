@@ -200,19 +200,32 @@ async function runPrediction(
     "--db-path",
     config.dbPath,
   ]);
+  const PREDICTION_TIMEOUT_MS = 30_000;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
 
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => {
+      proc.kill();
+      reject(
+        new Error(`predict timed out after ${PREDICTION_TIMEOUT_MS / 1000}s`),
+      );
+    }, PREDICTION_TIMEOUT_MS),
+  );
 
-  if (stderr) logger.debug(stderr.trim());
+  const run = async () => {
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    if (stderr) logger.debug(stderr.trim());
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      throw new Error(`predict failed (exit ${exitCode}): ${stderr}`);
+    }
+    return stdout;
+  };
 
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    throw new Error(`predict failed (exit ${exitCode}): ${stderr}`);
-  }
+  const stdout = await Promise.race([run(), timeout]);
 
   const result = JSON.parse(stdout);
   return result.predictions.map(
@@ -310,10 +323,13 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       }
     }
 
-    // Load predictions (cached: run Python only once per day)
+    // Rebuild prediction cache only when a new race needs prediction
+    const needsRebuild = actionable.predict.some(
+      (s) => !state.predictionCache?.has(s.raceId),
+    );
     try {
-      if (!state.predictionCache) {
-        logger.info("Running prediction (first time today)...");
+      if (needsRebuild) {
+        logger.info("Running prediction (new exhibition data available)...");
         const predictions = await runPrediction(state.date, opts);
         state.predictionCache = new Map();
         for (const p of predictions) {
@@ -323,11 +339,11 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             ev: p.ev,
           });
         }
-        logger.info(`Cached ${state.predictionCache.size} predictions`);
+        logger.info(`Predicted ${state.predictionCache.size} races`);
       }
 
       for (const slot of actionable.predict) {
-        const cached = state.predictionCache.get(slot.raceId);
+        const cached = state.predictionCache?.get(slot.raceId);
         if (!cached) {
           slot.status = "predicted";
           continue;
@@ -581,21 +597,9 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     );
   }
 
-  // 3. Pre-load predictions (run Python once at startup)
-  let predictionCache: PredictionCache | null = null;
-  try {
-    logger.info("Running prediction for today...");
-    const predictions = await runPrediction(date, opts);
-    predictionCache = new Map();
-    for (const p of predictions) {
-      predictionCache.set(p.raceId, { prob: p.prob, odds: p.odds, ev: p.ev });
-    }
-    logger.info(`Cached ${predictionCache.size} predictions`);
-  } catch (err) {
-    logger.error(`Prediction failed at startup: ${err}`);
-    await notifyError("startup prediction", err);
-    // Continue without cache — poll will retry if needed
-  }
+  // Prediction cache is built on-demand when races reach "predict" state
+  // (after exhibition data has been scraped)
+  const predictionCache: PredictionCache | null = null;
 
   const state: RunnerState = {
     schedule,
