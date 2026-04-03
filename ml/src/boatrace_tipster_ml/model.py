@@ -230,6 +230,7 @@ def save_model_meta(
     feature_columns: list[str],
     hyperparameters: dict,
     training: dict,
+    feature_means: dict[str, float] | None = None,
 ) -> str:
     """Save model metadata for inference-time feature compatibility."""
     meta = {
@@ -238,6 +239,8 @@ def save_model_meta(
         "training": training,
         "created_at": dt.now(timezone(timedelta(hours=9))).isoformat(),
     }
+    if feature_means is not None:
+        meta["feature_means"] = feature_means
     path = Path(output_dir) / "model_meta.json"
     with open(path, "w") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)

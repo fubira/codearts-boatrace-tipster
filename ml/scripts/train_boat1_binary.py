@@ -282,6 +282,9 @@ def run_save(args, X, y, meta, df) -> None:
     if "val_auc" in metrics:
         print(f"  Val AUC: {metrics['val_auc']:.4f}")
 
+    # Compute feature means for NaN fallback at prediction time
+    feature_means = {c: float(X[c].astype("float64").mean()) for c in BOAT1_FEATURE_COLS}
+
     model_dir = args.model_dir
     save_boat1_model(model, model_dir)
     save_model_meta(
@@ -291,6 +294,7 @@ def run_save(args, X, y, meta, df) -> None:
         training={"n_train": len(X_train), "n_val": len(X_val),
                   "date_range": f"{dates[0]} ~ {end_date}",
                   "val_auc": metrics.get("val_auc")},
+        feature_means=feature_means,
     )
     print(f"\nModel saved to {model_dir}/")
 

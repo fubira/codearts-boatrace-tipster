@@ -54,18 +54,13 @@ def predict_boat1(date: str, model_dir: str, db_path: str) -> dict:
     X = X.astype("float64")
     nan_cols = [c for c in X.columns if X[c].isna().any()]
     if nan_cols:
-        # Build reference means from recent training data
-        ref_end = date
-        ref_start = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
-        with contextlib.redirect_stdout(sys.stderr):
-            ref_df = build_features_df(db_path, start_date=ref_start, end_date=ref_end)
-        if len(ref_df) > 0:
-            ref_X, _, _ = reshape_to_boat1(ref_df)
-            ref_X = ref_X.astype("float64")
+        feature_means = model_meta.get("feature_means") if model_meta else None
+        if feature_means:
             for c in nan_cols:
-                fill_val = ref_X[c].mean()
-                X[c] = X[c].fillna(fill_val)
-            n_no_exh = (~meta["has_exhibition"]).sum()
+                if c in feature_means:
+                    X[c] = X[c].fillna(feature_means[c])
+        n_no_exh = (~meta["has_exhibition"]).sum()
+        if n_no_exh > 0:
             print(f"Filled NaN features for {n_no_exh} race(s) without exhibition data: {nan_cols}", file=sys.stderr)
 
     # Predict
