@@ -59,7 +59,7 @@ import {
   setSlackWebhook,
 } from "./slack";
 
-const POLL_INTERVAL_MS = 60_000;
+const POLL_INTERVAL_MS = 30_000;
 
 export interface RunnerOptions {
   dryRun: boolean;
@@ -125,35 +125,6 @@ function scrapeBeforeInfoForRace(slot: RaceSlot, date: string): boolean {
   if (!data) return false;
 
   saveBeforeInfo([data]);
-  return true;
-}
-
-function scrapeTanshoOddsForRace(slot: RaceSlot, date: string): boolean {
-  const params: RaceParams = {
-    raceNumber: slot.raceNumber,
-    stadiumCode: padStadiumCode(slot.stadiumId),
-    date: date.replace(/-/g, ""),
-  };
-
-  // Always skip cache — odds change continuously
-  const page = fetchPage(oddsTfUrl(params), { skipCache: true });
-  if (!page) return false;
-
-  const entries = parseOddsTf(page.html);
-  if (entries.length === 0) return false;
-
-  const oddsData: OddsData = {
-    stadiumId: slot.stadiumId,
-    raceDate: date,
-    raceNumber: slot.raceNumber,
-    entries: entries.map((e) => ({
-      betType: e.betType,
-      combination: e.combination,
-      odds: e.odds,
-    })),
-  };
-
-  saveOdds([oddsData]);
   return true;
 }
 
@@ -297,6 +268,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     waiting: 0,
     before_info: 0,
     predicted: 0,
+    decided: 0,
     result_pending: 0,
     done: 0,
   };
@@ -304,11 +276,12 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   const active =
     actionable.beforeInfo.length +
     actionable.predict.length +
+    actionable.odds.length +
     actionable.results.length;
-  const statusLine = `${counts.waiting}/${counts.before_info}/${counts.predicted + counts.result_pending}/${counts.done}`;
+  const statusLine = `${counts.waiting}/${counts.before_info}/${counts.predicted + counts.decided + counts.result_pending}/${counts.done}`;
   if (statusLine !== state.lastStatusLine) {
     logger.info(
-      `Status: ${schedule.length}R | wait:${counts.waiting} exh:${counts.before_info} pred:${counts.predicted + counts.result_pending} done:${counts.done} | action:${active}`,
+      `Status: ${schedule.length}R | wait:${counts.waiting} exh:${counts.before_info} pred:${counts.predicted} bet:${counts.decided + counts.result_pending} done:${counts.done} | action:${active}`,
     );
     state.lastStatusLine = statusLine;
   }
@@ -356,19 +329,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       }
     }
 
-    // Scrape tansho odds for each race
-    for (const slot of actionable.predict) {
-      try {
-        logger.info(`Scraping odds: ${slot.stadiumName} R${slot.raceNumber}`);
-        scrapeTanshoOddsForRace(slot, state.date);
-      } catch (err) {
-        await notifyError(`odds ${slot.stadiumName} R${slot.raceNumber}`, err);
-      }
-    }
-
-    // Rebuild prediction cache when:
-    // 1. A race is not in cache yet, OR
-    // 2. A cached race had no exhibition data (may be available now after re-scrape)
+    // Rebuild prediction cache (ML only — no odds needed)
     const needsRebuild = actionable.predict.some(
       (s) =>
         !state.predictionCache?.has(s.raceId) ||
@@ -392,145 +353,11 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
       for (const slot of actionable.predict) {
         const cached = state.predictionCache?.get(slot.raceId);
-        if (!cached) {
-          slot.status = "predicted";
-          continue;
-        }
-
-        // Re-read latest odds from DB (may differ from cached odds)
-        const db = getDatabase();
-        const oddsRow = db
-          .query(
-            `SELECT odds FROM race_odds
-             WHERE race_id = ? AND bet_type = '単勝' AND combination = '1'`,
-          )
-          .get(slot.raceId) as { odds: number } | null;
-
-        const latestOdds = oddsRow?.odds ?? cached.odds;
-        const evPct =
-          latestOdds !== null
-            ? (cached.prob * latestOdds - 1) * 100
-            : Number.NEGATIVE_INFINITY;
-        const isRecommended = evPct >= opts.evThreshold;
-        const exhTag = cached.hasExhibition ? "" : " [no-exh]";
-        const label = `${slot.stadiumName} R${slot.raceNumber}`;
-        const probPct = (cached.prob * 100).toFixed(1);
-        const oddsStr = latestOdds !== null ? latestOdds.toFixed(1) : "N/A";
-        const evStr =
-          evPct > Number.NEGATIVE_INFINITY
-            ? `${evPct >= 0 ? "+" : ""}${evPct.toFixed(1)}%`
-            : "N/A";
-
-        if (isRecommended && latestOdds !== null) {
-          let betAmount = calcKellyBet(
-            cached.prob,
-            latestOdds,
-            state.bankroll,
-            opts.kellyFraction,
-            opts.betCap,
-          );
-
-          // Market impact 制限: プールサイズから post-bet EV > 0 の最大bet算出
-          let poolTag = "";
-          if (betAmount > 0) {
-            const pool = await fetchTanshoPool(
-              padStadiumCode(slot.stadiumId),
-              state.date,
-              slot.raceNumber,
-            );
-            if (pool && pool.totalVotes > 0) {
-              const { maxBet, estimatedPool } = calcMaxBetForPool(
-                cached.prob,
-                latestOdds,
-                pool,
-                opts.betCap,
-              );
-              poolTag = ` pool=${pool.totalVotes}票`;
-              if (maxBet < betAmount) {
-                poolTag += ` cap=${maxBet}`;
-                betAmount = maxBet;
-              }
-            } else {
-              // プール取得失敗: betCap の半分にフォールバック
-              const fallback = Math.floor(opts.betCap / 2 / 100) * 100;
-              if (fallback < betAmount) {
-                betAmount = fallback;
-                poolTag = " pool=N/A";
-              }
-            }
-          }
-
-          if (betAmount > 0) {
-            const decision: BetDecision = {
-              raceId: slot.raceId,
-              stadiumName: slot.stadiumName,
-              raceNumber: slot.raceNumber,
-              prob: cached.prob,
-              odds: latestOdds,
-              ev: evPct,
-              betAmount,
-              recommend: true,
-            };
-            bets.set(slot.raceId, decision);
-
-            logger.info(
-              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}${exhTag}${poolTag}`,
-            );
-
-            await notifyPrediction({
-              stadiumName: slot.stadiumName,
-              raceNumber: slot.raceNumber,
-              deadline: slot.deadline,
-              prob: cached.prob,
-              odds: latestOdds,
-              ev: evPct,
-              betAmount,
-            });
-
-            // Execute purchase if configured
-            if (opts.purchaseExecutor?.isConfigured()) {
-              const purchaseResult = await opts.purchaseExecutor.execute({
-                stadiumCode: padStadiumCode(slot.stadiumId),
-                stadiumName: slot.stadiumName,
-                raceNumber: slot.raceNumber,
-                boatNumber: 1,
-                betType: "tansho",
-                amount: betAmount,
-              });
-              savePurchaseRecord({
-                raceId: slot.raceId,
-                stadiumName: slot.stadiumName,
-                raceNumber: slot.raceNumber,
-                raceDate: state.date,
-                boatNumber: 1,
-                betType: "単勝",
-                amount: betAmount,
-                dryRun: purchaseResult.dryRun,
-                success: purchaseResult.success,
-                error: purchaseResult.error,
-                screenshotPath: purchaseResult.screenshotPath,
-              });
-              if (!purchaseResult.success) {
-                await notifyError(
-                  `purchase ${slot.stadiumName} R${slot.raceNumber}`,
-                  purchaseResult.error,
-                );
-              }
-            }
-
-            // Deduct from virtual bankroll
-            state.bankroll -= betAmount;
-          } else {
-            logger.info(
-              `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP (bet=0)${exhTag}`,
-            );
-          }
-        } else {
-          logger.info(
-            `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP${exhTag}`,
-          );
-        }
-
+        const exhTag = cached?.hasExhibition ? "" : " [no-exh]";
+        const probPct = cached ? (cached.prob * 100).toFixed(1) : "N/A";
+        logger.info(
+          `Predicted: ${slot.stadiumName} R${slot.raceNumber} | prob=${probPct}%${exhTag}`,
+        );
         slot.status = "predicted";
       }
     } catch (err) {
@@ -541,7 +368,192 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     }
   }
 
-  // 3. Check results for finished races
+  // 3. Fetch live odds + EV decision + purchase (as late as possible, T-1min)
+  for (const slot of actionable.odds) {
+    const cached = state.predictionCache?.get(slot.raceId);
+    if (!cached) {
+      slot.status = "decided";
+      continue;
+    }
+
+    const label = `${slot.stadiumName} R${slot.raceNumber}`;
+    const exhTag = cached.hasExhibition ? "" : " [no-exh]";
+    const probPct = (cached.prob * 100).toFixed(1);
+    const stadiumCode = padStadiumCode(slot.stadiumId);
+
+    try {
+      // Fetch live odds from boatrace.jp (real-time, CDN MISS confirmed)
+      const params: RaceParams = {
+        raceNumber: slot.raceNumber,
+        stadiumCode,
+        date: state.date.replace(/-/g, ""),
+      };
+
+      logger.info(`Scraping odds (T-1min): ${label}`);
+      const page = fetchPage(oddsTfUrl(params), { skipCache: true });
+      if (!page) {
+        logger.info(
+          `EV判定: ${label} | prob=${probPct}% odds=N/A → SKIP (fetch failed)${exhTag}`,
+        );
+        slot.status = "decided";
+        continue;
+      }
+
+      const entries = parseOddsTf(page.html);
+      if (entries.length > 0) {
+        const oddsData: OddsData = {
+          stadiumId: slot.stadiumId,
+          raceDate: state.date,
+          raceNumber: slot.raceNumber,
+          entries: entries.map((e) => ({
+            betType: e.betType,
+            combination: e.combination,
+            odds: e.odds,
+          })),
+        };
+        saveOdds([oddsData]);
+      }
+
+      // Read tansho odds for boat 1
+      const db = getDatabase();
+      const oddsRow = db
+        .query(
+          `SELECT odds FROM race_odds
+           WHERE race_id = ? AND bet_type = '単勝' AND combination = '1'`,
+        )
+        .get(slot.raceId) as { odds: number } | null;
+
+      const latestOdds = oddsRow?.odds ?? null;
+      if (latestOdds === null || latestOdds <= 0) {
+        logger.info(
+          `EV判定: ${label} | prob=${probPct}% odds=N/A → SKIP (no odds)${exhTag}`,
+        );
+        slot.status = "decided";
+        continue;
+      }
+
+      const evPct = (cached.prob * latestOdds - 1) * 100;
+      const isRecommended = evPct >= opts.evThreshold;
+      const oddsStr = latestOdds.toFixed(1);
+      const evStr = `${evPct >= 0 ? "+" : ""}${evPct.toFixed(1)}%`;
+
+      if (isRecommended) {
+        let betAmount = calcKellyBet(
+          cached.prob,
+          latestOdds,
+          state.bankroll,
+          opts.kellyFraction,
+          opts.betCap,
+        );
+
+        // Market impact 制限: プールサイズから post-bet EV > 0 の最大bet算出
+        let poolTag = "";
+        if (betAmount > 0) {
+          const pool = await fetchTanshoPool(
+            stadiumCode,
+            state.date,
+            slot.raceNumber,
+          );
+          if (pool && pool.totalVotes > 0) {
+            const { maxBet } = calcMaxBetForPool(
+              cached.prob,
+              latestOdds,
+              pool,
+              opts.betCap,
+            );
+            poolTag = ` pool=${pool.totalVotes}票`;
+            if (maxBet < betAmount) {
+              poolTag += ` cap=${maxBet}`;
+              betAmount = maxBet;
+            }
+          } else {
+            // プール取得失敗: betCap の半分にフォールバック
+            const fallback = Math.floor(opts.betCap / 2 / 100) * 100;
+            if (fallback < betAmount) {
+              betAmount = fallback;
+              poolTag = " pool=N/A";
+            }
+          }
+        }
+
+        if (betAmount > 0) {
+          const decision: BetDecision = {
+            raceId: slot.raceId,
+            stadiumName: slot.stadiumName,
+            raceNumber: slot.raceNumber,
+            prob: cached.prob,
+            odds: latestOdds,
+            ev: evPct,
+            betAmount,
+            recommend: true,
+          };
+          bets.set(slot.raceId, decision);
+
+          logger.info(
+            `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}${exhTag}${poolTag}`,
+          );
+
+          await notifyPrediction({
+            stadiumName: slot.stadiumName,
+            raceNumber: slot.raceNumber,
+            deadline: slot.deadline,
+            prob: cached.prob,
+            odds: latestOdds,
+            ev: evPct,
+            betAmount,
+          });
+
+          // Execute purchase if configured
+          if (opts.purchaseExecutor?.isConfigured()) {
+            const purchaseResult = await opts.purchaseExecutor.execute({
+              stadiumCode,
+              stadiumName: slot.stadiumName,
+              raceNumber: slot.raceNumber,
+              boatNumber: 1,
+              betType: "tansho",
+              amount: betAmount,
+            });
+            savePurchaseRecord({
+              raceId: slot.raceId,
+              stadiumName: slot.stadiumName,
+              raceNumber: slot.raceNumber,
+              raceDate: state.date,
+              boatNumber: 1,
+              betType: "単勝",
+              amount: betAmount,
+              dryRun: purchaseResult.dryRun,
+              success: purchaseResult.success,
+              error: purchaseResult.error,
+              screenshotPath: purchaseResult.screenshotPath,
+            });
+            if (!purchaseResult.success) {
+              await notifyError(
+                `purchase ${slot.stadiumName} R${slot.raceNumber}`,
+                purchaseResult.error,
+              );
+            }
+          }
+
+          // Deduct from virtual bankroll
+          state.bankroll -= betAmount;
+        } else {
+          logger.info(
+            `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP (bet=0)${exhTag}`,
+          );
+        }
+      } else {
+        logger.info(
+          `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP${exhTag}`,
+        );
+      }
+    } catch (err) {
+      await notifyError(`odds ${label}`, err);
+    }
+
+    slot.status = "decided";
+  }
+
+  // 4. Check results for finished races
   for (const slot of actionable.results) {
     try {
       const bet = bets.get(slot.raceId);

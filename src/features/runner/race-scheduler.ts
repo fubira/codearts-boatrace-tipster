@@ -9,7 +9,13 @@ export interface RaceSlot {
   raceNumber: number;
   deadline: string; // "HH:MM" JST
   deadlineMs: number; // epoch ms (JST deadline converted to UTC epoch)
-  status: "waiting" | "before_info" | "predicted" | "result_pending" | "done";
+  status:
+    | "waiting"
+    | "before_info"
+    | "predicted"
+    | "decided"
+    | "result_pending"
+    | "done";
 }
 
 /** Bet decision stored during prediction. */
@@ -26,7 +32,8 @@ export interface BetDecision {
 
 // Minutes before deadline to trigger each action
 const BEFORE_INFO_LEAD = 10;
-const PREDICT_LEAD = 2;
+const PREDICT_LEAD = 5; // ML prediction after exhibition data (no odds needed)
+const ODDS_LEAD = 1; // boatcast odds fetch + EV decision (as late as possible)
 // Minutes after deadline to check for results
 const RESULT_DELAY = 10;
 // If deadline passed by this many minutes and still "waiting", skip entirely
@@ -80,6 +87,7 @@ export function buildSchedule(
 export interface ActionableRaces {
   beforeInfo: RaceSlot[];
   predict: RaceSlot[];
+  odds: RaceSlot[];
   results: RaceSlot[];
 }
 
@@ -92,6 +100,7 @@ export function getActionableRaces(
 ): ActionableRaces {
   const beforeInfo: RaceSlot[] = [];
   const predict: RaceSlot[] = [];
+  const odds: RaceSlot[] = [];
   const results: RaceSlot[] = [];
 
   for (const slot of schedule) {
@@ -100,7 +109,6 @@ export function getActionableRaces(
     switch (slot.status) {
       case "waiting":
         if (minutesToDeadline <= -SKIP_THRESHOLD) {
-          // Late start: deadline already passed, skip this race
           slot.status = "done";
         } else if (minutesToDeadline <= BEFORE_INFO_LEAD) {
           beforeInfo.push(slot);
@@ -114,8 +122,14 @@ export function getActionableRaces(
         }
         break;
       case "predicted":
+        if (minutesToDeadline <= -SKIP_THRESHOLD) {
+          slot.status = "done";
+        } else if (minutesToDeadline <= ODDS_LEAD) {
+          odds.push(slot);
+        }
+        break;
+      case "decided":
       case "result_pending":
-        // Check for results after deadline + delay
         if (minutesToDeadline <= -RESULT_DELAY) {
           results.push(slot);
         }
@@ -123,7 +137,7 @@ export function getActionableRaces(
     }
   }
 
-  return { beforeInfo, predict, results };
+  return { beforeInfo, predict, odds, results };
 }
 
 /**

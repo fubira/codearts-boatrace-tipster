@@ -9,9 +9,9 @@ export const runCommand = new Command("run")
   .option("--live", "LIVE mode (execute real purchases)")
   .option(
     "--ev-threshold <n>",
-    "EV threshold for bets",
+    "EV threshold for bets (pre-deadline odds are approximate)",
     (v: string) => Number(v),
-    20,
+    0,
   )
   .option("--bet-cap <n>", "max bet per race", (v: string) => Number(v), 4000)
   .option("--kelly <f>", "Kelly fraction", (v: string) => Number(v), 0.25)

@@ -14,6 +14,7 @@
 import { logger } from "@/shared/logger";
 
 const BOATCAST_BASE = "https://race.boatcast.jp/txt";
+const BOATCAST_REFERER = "https://race.boatcast.jp/";
 const FETCH_TIMEOUT = 5_000;
 
 /** パリミュチュエル控除率（25%） */
@@ -28,6 +29,11 @@ export interface TanshoPoolInfo {
   poolSize: number;
   /** 各艇の票数 [1号艇, 2号艇, ..., 6号艇] */
   votesByBoat: number[];
+}
+
+export interface TanshoOddsInfo {
+  /** 各艇の単勝オッズ [1号艇, 2号艇, ..., 6号艇]。0.0 = 投票なし */
+  oddsByBoat: number[];
 }
 
 /**
@@ -47,7 +53,10 @@ export async function fetchTanshoPool(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
 
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { Referer: BOATCAST_REFERER },
+    });
     clearTimeout(timeout);
 
     if (!res.ok) {
@@ -61,6 +70,76 @@ export async function fetchTanshoPool(
     logger.debug(`Pool size fetch error: ${err}`);
     return null;
   }
+}
+
+/**
+ * boatcast od1 から単勝オッズを取得する。
+ * 取得失敗時は null を返す。
+ */
+export async function fetchTanshoOdds(
+  stadiumCode: string,
+  date: string,
+  raceNumber: number,
+): Promise<TanshoOddsInfo | null> {
+  const dateStr = date.replace(/-/g, "");
+  const raceStr = String(raceNumber).padStart(2, "0");
+  const url = `${BOATCAST_BASE}/${stadiumCode}/bc_smt_od1_${dateStr}_${stadiumCode}_${raceStr}.txt`;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { Referer: BOATCAST_REFERER },
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      logger.debug(`Odds fetch failed: ${res.status} ${url}`);
+      return null;
+    }
+
+    const text = await res.text();
+    return parseTanshoOdds(text);
+  } catch (err) {
+    logger.debug(`Odds fetch error: ${err}`);
+    return null;
+  }
+}
+
+/**
+ * od1 テキストから単勝オッズをパースする。
+ *
+ * 構造（data= と先頭フラグ行を除いた後）:
+ *   Line 0: 3連単オッズ（20値）
+ *   Line 1: 複勝オッズ範囲（min～max ペア）
+ *   Line 2: 単勝オッズ（6艇） + 6ゼロ  ← ここ
+ *   Line 3: 複勝オッズ（6艇） + 6ゼロ
+ *   Line 4: 選手名
+ *   Line 5: 複勝オッズ範囲
+ */
+export function parseTanshoOdds(text: string): TanshoOddsInfo | null {
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("data="));
+
+  // Skip first line (flag: "1" or "2")
+  const dataLines = lines.slice(1);
+
+  // 単勝オッズは3行目（0-indexed: 2）
+  if (dataLines.length < 3) return null;
+
+  const cols = dataLines[2]
+    .split("\t")
+    .filter((c) => c.length > 0)
+    .slice(0, 6)
+    .map((v) => Number.parseFloat(v) || 0);
+
+  if (cols.length < 6) return null;
+
+  return { oddsByBoat: cols };
 }
 
 /**
