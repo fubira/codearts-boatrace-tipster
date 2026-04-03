@@ -126,17 +126,17 @@ describe("getActionableRaces", () => {
     expect(odds).toHaveLength(0);
   });
 
-  test("returns results 10 min after deadline for decided races", () => {
+  test("returns results 12 min after deadline for decided races", () => {
     const slot = makeSlot({ deadlineMs, status: "decided" });
-    const now = deadlineMs + 12 * 60_000; // 12 min after
+    const now = deadlineMs + 13 * 60_000; // 13 min after
 
     const { results } = getActionableRaces([slot], now);
     expect(results).toHaveLength(1);
   });
 
-  test("does not return results before 10 min after deadline", () => {
+  test("does not return results before 12 min after deadline", () => {
     const slot = makeSlot({ deadlineMs, status: "decided" });
-    const now = deadlineMs + 5 * 60_000; // 5 min after
+    const now = deadlineMs + 10 * 60_000; // 10 min after
 
     const { results } = getActionableRaces([slot], now);
     expect(results).toHaveLength(0);

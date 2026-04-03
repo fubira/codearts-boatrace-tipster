@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LOG_LEVELS: Record<LogLevel, number> = {
@@ -8,9 +11,16 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 };
 
 let currentLevel: LogLevel = "info";
+let logDir: string | null = null;
 
 export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
+}
+
+/** Enable file logging to the specified directory (daily rotation). */
+export function enableFileLog(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  logDir = dir;
 }
 
 function shouldLog(level: LogLevel): boolean {
@@ -24,25 +34,42 @@ function formatMessage(level: LogLevel, message: string): string {
   return `[${timestamp}] [${level.toUpperCase()}] ${message}`;
 }
 
+function writeToFile(formatted: string): void {
+  if (!logDir) return;
+  const date = new Date()
+    .toLocaleDateString("sv-SE", { timeZone: "Asia/Tokyo" })
+    .replace(/\//g, "-");
+  const filePath = resolve(logDir, `runner-${date}.log`);
+  appendFileSync(filePath, `${formatted}\n`);
+}
+
 export const logger = {
   debug(message: string): void {
     if (shouldLog("debug")) {
-      console.debug(formatMessage("debug", message));
+      const formatted = formatMessage("debug", message);
+      console.debug(formatted);
+      writeToFile(formatted);
     }
   },
   info(message: string): void {
     if (shouldLog("info")) {
-      console.info(formatMessage("info", message));
+      const formatted = formatMessage("info", message);
+      console.info(formatted);
+      writeToFile(formatted);
     }
   },
   warn(message: string): void {
     if (shouldLog("warn")) {
-      console.warn(formatMessage("warn", message));
+      const formatted = formatMessage("warn", message);
+      console.warn(formatted);
+      writeToFile(formatted);
     }
   },
   error(message: string): void {
     if (shouldLog("error")) {
-      console.error(formatMessage("error", message));
+      const formatted = formatMessage("error", message);
+      console.error(formatted);
+      writeToFile(formatted);
     }
   },
 };

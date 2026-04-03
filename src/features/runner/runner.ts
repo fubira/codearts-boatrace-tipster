@@ -38,7 +38,7 @@ import {
 } from "@/features/scraper/sources/boatrace/pool-size";
 import type { PurchaseExecutor } from "@/features/teleboat";
 import { config } from "@/shared/config";
-import { logger } from "@/shared/logger";
+import { enableFileLog, logger } from "@/shared/logger";
 import { pythonCommand } from "@/shared/python";
 import {
   type ActionableRaces,
@@ -627,6 +627,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
 export async function runDaemon(opts: RunnerOptions): Promise<void> {
   setSlackWebhook(opts.slackWebhookUrl);
+  enableFileLog(resolve(config.dataDir, "logs"));
   enableCache();
   initializeDatabase();
 

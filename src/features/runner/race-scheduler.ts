@@ -36,7 +36,7 @@ const BEFORE_INFO_LEAD = 10;
 const PREDICT_LEAD = 5; // ML prediction after exhibition data (no odds needed)
 const ODDS_LEAD = 1; // boatcast odds fetch + EV decision (as late as possible)
 // Minutes after deadline to check for results
-const RESULT_DELAY = 10;
+const RESULT_DELAY = 12;
 // If deadline passed by this many minutes and still "waiting", skip entirely
 const SKIP_THRESHOLD = 5;
 
