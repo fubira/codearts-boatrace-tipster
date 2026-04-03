@@ -17,13 +17,13 @@ describe("parseTanshoPool", () => {
   test("parses tansho total votes", () => {
     const result = parseTanshoPool(sampleData);
     expect(result).not.toBeNull();
-    expect(result!.totalVotes).toBe(57);
-    expect(result!.poolSize).toBe(5700);
+    expect(result?.totalVotes).toBe(57);
+    expect(result?.poolSize).toBe(5700);
   });
 
   test("parses per-boat votes", () => {
     const result = parseTanshoPool(sampleData);
-    expect(result!.votesByBoat).toEqual([45, 0, 1, 6, 2, 3]);
+    expect(result?.votesByBoat).toEqual([45, 0, 1, 6, 2, 3]);
   });
 
   test("returns null for empty data", () => {
@@ -37,33 +37,53 @@ describe("parseTanshoPool", () => {
 
 describe("calcMaxBetForPool", () => {
   test("limits bet for small pool", () => {
-    const pool = { totalVotes: 57, poolSize: 5700, votesByBoat: [45, 0, 1, 6, 2, 3] };
+    const pool = {
+      totalVotes: 57,
+      poolSize: 5700,
+      votesByBoat: [45, 0, 1, 6, 2, 3],
+    };
     const { maxBet } = calcMaxBetForPool(0.65, 2.0, pool, 4000);
     expect(maxBet).toBeLessThan(4000);
     expect(maxBet).toBeGreaterThanOrEqual(0);
   });
 
   test("allows full bet for large pool", () => {
-    const pool = { totalVotes: 5000, poolSize: 500000, votesByBoat: [2500, 500, 500, 500, 500, 500] };
+    const pool = {
+      totalVotes: 5000,
+      poolSize: 500000,
+      votesByBoat: [2500, 500, 500, 500, 500, 500],
+    };
     const { maxBet } = calcMaxBetForPool(0.65, 2.0, pool, 4000);
     expect(maxBet).toBe(4000);
   });
 
   test("returns 0 when EV would go negative at any bet", () => {
     // odds = 1.0, prob = 0.5 → EV already negative, no bet makes sense
-    const pool = { totalVotes: 100, poolSize: 10000, votesByBoat: [90, 2, 2, 2, 2, 2] };
+    const pool = {
+      totalVotes: 100,
+      poolSize: 10000,
+      votesByBoat: [90, 2, 2, 2, 2, 2],
+    };
     const { maxBet } = calcMaxBetForPool(0.5, 1.0, pool, 4000);
     expect(maxBet).toBe(0);
   });
 
   test("caps at betCap even if pool allows more", () => {
-    const pool = { totalVotes: 50000, poolSize: 5000000, votesByBoat: [10000, 10000, 10000, 10000, 5000, 5000] };
+    const pool = {
+      totalVotes: 50000,
+      poolSize: 5000000,
+      votesByBoat: [10000, 10000, 10000, 10000, 5000, 5000],
+    };
     const { maxBet } = calcMaxBetForPool(0.7, 2.0, pool, 4000);
     expect(maxBet).toBe(4000);
   });
 
   test("rounds down to 100 yen units", () => {
-    const pool = { totalVotes: 200, poolSize: 20000, votesByBoat: [100, 20, 20, 20, 20, 20] };
+    const pool = {
+      totalVotes: 200,
+      poolSize: 20000,
+      votesByBoat: [100, 20, 20, 20, 20, 20],
+    };
     const { maxBet } = calcMaxBetForPool(0.65, 2.0, pool, 4000);
     expect(maxBet % 100).toBe(0);
   });

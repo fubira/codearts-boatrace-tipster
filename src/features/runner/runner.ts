@@ -366,9 +366,13 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       }
     }
 
-    // Rebuild prediction cache only when a new race needs prediction
+    // Rebuild prediction cache when:
+    // 1. A race is not in cache yet, OR
+    // 2. A cached race had no exhibition data (may be available now after re-scrape)
     const needsRebuild = actionable.predict.some(
-      (s) => !state.predictionCache?.has(s.raceId),
+      (s) =>
+        !state.predictionCache?.has(s.raceId) ||
+        !state.predictionCache?.get(s.raceId)?.hasExhibition,
     );
     try {
       if (needsRebuild) {
