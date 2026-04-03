@@ -75,9 +75,9 @@ describe("buildSchedule", () => {
 describe("getActionableRaces", () => {
   const deadlineMs = new Date("2026-04-03T15:00:00+09:00").getTime();
 
-  test("returns beforeInfo when within 30 min of deadline", () => {
+  test("returns beforeInfo when within 15 min of deadline", () => {
     const slot = makeSlot({ deadlineMs, status: "waiting" });
-    const now = deadlineMs - 25 * 60_000; // 25 min before
+    const now = deadlineMs - 10 * 60_000; // 10 min before
 
     const { beforeInfo, predict, results } = getActionableRaces([slot], now);
     expect(beforeInfo).toHaveLength(1);
@@ -85,9 +85,9 @@ describe("getActionableRaces", () => {
     expect(results).toHaveLength(0);
   });
 
-  test("does not return beforeInfo when more than 30 min before deadline", () => {
+  test("does not return beforeInfo when more than 15 min before deadline", () => {
     const slot = makeSlot({ deadlineMs, status: "waiting" });
-    const now = deadlineMs - 35 * 60_000; // 35 min before
+    const now = deadlineMs - 20 * 60_000; // 20 min before
 
     const { beforeInfo } = getActionableRaces([slot], now);
     expect(beforeInfo).toHaveLength(0);
