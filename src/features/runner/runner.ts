@@ -76,6 +76,7 @@ interface RunnerState {
   predictionCache: PredictionCache | null; // null = not yet loaded
   bankroll: number;
   date: string;
+  lastStatusLine: string;
 }
 
 function todayJST(): string {
@@ -271,10 +272,12 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     actionable.beforeInfo.length +
     actionable.predict.length +
     actionable.results.length;
-  if (active > 0 || counts.done < schedule.length) {
+  const statusLine = `${counts.waiting}/${counts.before_info}/${counts.predicted + counts.result_pending}/${counts.done}`;
+  if (statusLine !== state.lastStatusLine) {
     logger.info(
       `Status: ${schedule.length}R | wait:${counts.waiting} exh:${counts.before_info} pred:${counts.predicted + counts.result_pending} done:${counts.done} | action:${active}`,
     );
+    state.lastStatusLine = statusLine;
   }
 
   // 1. Scrape before-info for races approaching deadline
@@ -467,7 +470,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   const yyyymmdd = todayYYYYMMDD();
 
   logger.info(
-    `Starting runner for ${date} (${opts.dryRun ? "DRY RUN" : "LIVE"})`,
+    `Starting runner v${config.version} for ${date} (${opts.dryRun ? "DRY RUN" : "LIVE"})`,
   );
 
   // 1. Discover venues (retry up to 30 min if schedule not yet published)
@@ -601,9 +604,11 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     predictionCache,
     bankroll: opts.bankroll,
     date,
+    lastStatusLine: "",
   };
 
   await notifyStartup({
+    version: config.version,
     date,
     venues: venueCodes.length,
     races: schedule.length,

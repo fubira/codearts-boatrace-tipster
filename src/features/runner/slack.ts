@@ -49,6 +49,7 @@ async function send(payload: SlackPayload): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export interface StartupInfo {
+  version: string;
   date: string;
   venues: number;
   races: number;
@@ -59,11 +60,14 @@ export interface StartupInfo {
 export async function notifyStartup(info: StartupInfo): Promise<void> {
   const mode = info.dryRun ? "DRY RUN" : "LIVE";
   await send({
-    text: `[boatrace] ${mode} started: ${info.date}`,
+    text: `[boatrace] ${mode} started: ${info.date} (v${info.version})`,
     blocks: [
       {
         type: "header",
-        text: { type: "plain_text", text: `🏁 boatrace-tipster ${mode}` },
+        text: {
+          type: "plain_text",
+          text: `🏁 boatrace-tipster v${info.version} ${mode}`,
+        },
       },
       {
         type: "section",
