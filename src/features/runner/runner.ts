@@ -7,6 +7,7 @@ import {
   initializeDatabase,
   saveBeforeInfo,
   saveOdds,
+  savePurchaseRecord,
   saveRaceResults,
   saveRaces,
 } from "@/features/database";
@@ -31,6 +32,7 @@ import {
   parseBeforeInfo,
   parseRaceResult,
 } from "@/features/scraper/sources/boatrace/parsers";
+import type { PurchaseExecutor } from "@/features/teleboat";
 import { config } from "@/shared/config";
 import { logger } from "@/shared/logger";
 import { pythonCommand } from "@/shared/python";
@@ -62,6 +64,7 @@ export interface RunnerOptions {
   kellyFraction: number;
   bankroll: number;
   slackWebhookUrl?: string;
+  purchaseExecutor?: PurchaseExecutor | null;
 }
 
 type PredictionCache = Map<
@@ -446,7 +449,38 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
               betAmount,
             });
 
-            // DRY_RUN: deduct from virtual bankroll
+            // Execute purchase if configured
+            if (opts.purchaseExecutor?.isConfigured()) {
+              const purchaseResult = await opts.purchaseExecutor.execute({
+                stadiumCode: padStadiumCode(slot.stadiumId),
+                stadiumName: slot.stadiumName,
+                raceNumber: slot.raceNumber,
+                boatNumber: 1,
+                betType: "tansho",
+                amount: betAmount,
+              });
+              savePurchaseRecord({
+                raceId: slot.raceId,
+                stadiumName: slot.stadiumName,
+                raceNumber: slot.raceNumber,
+                raceDate: state.date,
+                boatNumber: 1,
+                betType: "単勝",
+                amount: betAmount,
+                dryRun: purchaseResult.dryRun,
+                success: purchaseResult.success,
+                error: purchaseResult.error,
+                screenshotPath: purchaseResult.screenshotPath,
+              });
+              if (!purchaseResult.success) {
+                await notifyError(
+                  `purchase ${slot.stadiumName} R${slot.raceNumber}`,
+                  purchaseResult.error,
+                );
+              }
+            }
+
+            // Deduct from virtual bankroll
             state.bankroll -= betAmount;
           } else {
             logger.info(

@@ -522,6 +522,46 @@ export function saveOdds(oddsList: OddsData[], db?: Database): void {
   logger.info(`Saved odds for ${oddsList.length} race(s)`);
 }
 
+export interface PurchaseRecordData {
+  raceId: number;
+  stadiumName: string;
+  raceNumber: number;
+  raceDate: string;
+  boatNumber: number;
+  betType: string;
+  amount: number;
+  dryRun: boolean;
+  success: boolean;
+  error?: string;
+  screenshotPath?: string;
+}
+
+export function savePurchaseRecord(
+  record: PurchaseRecordData,
+  db?: Database,
+): void {
+  const database = db ?? getDatabase();
+  database
+    .query(
+      `INSERT INTO purchase_records
+       (race_id, stadium_name, race_number, race_date, boat_number, bet_type, amount, dry_run, success, error, screenshot_path)
+       VALUES ($raceId, $stadiumName, $raceNumber, $raceDate, $boatNumber, $betType, $amount, $dryRun, $success, $error, $screenshotPath)`,
+    )
+    .run({
+      $raceId: record.raceId,
+      $stadiumName: record.stadiumName,
+      $raceNumber: record.raceNumber,
+      $raceDate: record.raceDate,
+      $boatNumber: record.boatNumber,
+      $betType: record.betType,
+      $amount: record.amount,
+      $dryRun: record.dryRun ? 1 : 0,
+      $success: record.success ? 1 : 0,
+      $error: record.error ?? null,
+      $screenshotPath: record.screenshotPath ?? null,
+    });
+}
+
 /** Check if a race has already been scraped (has finish_position data) */
 export function isRaceScraped(
   stadiumId: number,

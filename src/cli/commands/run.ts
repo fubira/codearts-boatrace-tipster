@@ -1,4 +1,6 @@
 import { runDaemon } from "@/features/runner/runner";
+import { createPurchaseExecutor } from "@/features/teleboat";
+import { loadTelebotCredentials } from "@/shared/config";
 import { Command } from "commander";
 
 export const runCommand = new Command("run")
@@ -24,6 +26,15 @@ export const runCommand = new Command("run")
       );
     }
 
+    const credentials = loadTelebotCredentials();
+    const purchaseExecutor = credentials
+      ? createPurchaseExecutor({ credentials, dryRun })
+      : null;
+
+    if (credentials) {
+      console.log(`Teleboat: configured (${dryRun ? "DRY RUN" : "LIVE"})`);
+    }
+
     await runDaemon({
       dryRun,
       evThreshold: opts.evThreshold,
@@ -31,5 +42,6 @@ export const runCommand = new Command("run")
       kellyFraction: opts.kelly,
       bankroll: opts.bankroll,
       slackWebhookUrl,
+      purchaseExecutor,
     });
   });

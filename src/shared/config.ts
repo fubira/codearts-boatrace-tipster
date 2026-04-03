@@ -14,3 +14,15 @@ export const config = {
   cacheDir: resolve(PROJECT_ROOT, "data/cache"),
   dbPath: resolve(PROJECT_ROOT, "data/boatrace-tipster.db"),
 } as const;
+
+export function loadTelebotCredentials(): {
+  subscriberNumber: string;
+  pin: string;
+  password: string;
+} | null {
+  const subscriberNumber = process.env.TELEBOAT_SUBSCRIBER_NUMBER;
+  const pin = process.env.TELEBOAT_PIN;
+  const password = process.env.TELEBOAT_PASSWORD;
+  if (!subscriberNumber || !pin || !password) return null;
+  return { subscriberNumber, pin, password };
+}
