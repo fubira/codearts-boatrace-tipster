@@ -71,6 +71,11 @@ export interface RunnerOptions {
   purchaseExecutor?: PurchaseExecutor | null;
 }
 
+interface AntiFavorite {
+  boatNumber: number;
+  rankProb: number;
+}
+
 type PredictionCache = Map<
   number,
   {
@@ -78,6 +83,7 @@ type PredictionCache = Map<
     odds: number | null;
     ev: number | null;
     hasExhibition: boolean;
+    antiFavorite: AntiFavorite | null;
   }
 >;
 
@@ -131,7 +137,10 @@ function scrapeBeforeInfoForRace(slot: RaceSlot, date: string): boolean {
 function scrapeResultForRace(
   slot: RaceSlot,
   date: string,
-): { won: boolean; payout: number } | null {
+): {
+  entries: { boatNumber: number; finishPosition?: number }[];
+  payouts?: { betType: string; combination: string; payout: number }[];
+} | null {
   const params: RaceParams = {
     raceNumber: slot.raceNumber,
     stadiumCode: padStadiumCode(slot.stadiumId),
@@ -148,17 +157,7 @@ function scrapeResultForRace(
 
   saveRaceResults([data]);
 
-  // Check if boat 1 won
-  const boat1 = data.entries.find((e) => e.boatNumber === 1);
-  const won = boat1?.finishPosition === 1;
-
-  // Get tansho payout for boat 1
-  const tansho = data.payouts?.find(
-    (p) => p.betType === "単勝" && p.combination === "1",
-  );
-  const payout = won && tansho ? tansho.payout : 0;
-
-  return { won, payout };
+  return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,14 +175,18 @@ async function runPrediction(
     ev: number | null;
     recommend: boolean;
     hasExhibition: boolean;
+    antiFavorite: AntiFavorite | null;
   }[]
 > {
   const modelDir = resolve(config.projectRoot, "ml/models/boat1");
+  const rankingModelDir = resolve(config.projectRoot, "ml/models/ranking");
   const { cmd, cwd } = pythonCommand("scripts.predict_boat1", [
     "--date",
     date,
     "--model-dir",
     modelDir,
+    "--ranking-model-dir",
+    rankingModelDir,
     "--db-path",
     config.dbPath,
   ]);
@@ -225,6 +228,7 @@ async function runPrediction(
       ev: number | null;
       recommend: boolean;
       has_exhibition: boolean;
+      anti_favorite?: { boat_number: number; rank_prob: number };
     }) => ({
       raceId: p.race_id,
       prob: p.prob,
@@ -232,6 +236,12 @@ async function runPrediction(
       ev: p.ev,
       recommend: p.recommend,
       hasExhibition: p.has_exhibition,
+      antiFavorite: p.anti_favorite
+        ? {
+            boatNumber: p.anti_favorite.boat_number,
+            rankProb: p.anti_favorite.rank_prob,
+          }
+        : null,
     }),
   );
 }
@@ -346,6 +356,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             odds: p.odds,
             ev: p.ev,
             hasExhibition: p.hasExhibition,
+            antiFavorite: p.antiFavorite,
           });
         }
         logger.info(`Predicted ${state.predictionCache.size} races`);
@@ -378,11 +389,17 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
     const label = `${slot.stadiumName} R${slot.raceNumber}`;
     const exhTag = cached.hasExhibition ? "" : " [no-exh]";
-    const probPct = (cached.prob * 100).toFixed(1);
+    const b1ProbPct = (cached.prob * 100).toFixed(1);
     const stadiumCode = padStadiumCode(slot.stadiumId);
 
+    // Determine strategy: anti-favorite or boat1
+    const af = cached.antiFavorite;
+    const targetBoat = af ? af.boatNumber : 1;
+    const targetProb = af ? af.rankProb : cached.prob;
+    const strategyTag = af ? `[AF boat${targetBoat}]` : "[B1]";
+
     try {
-      // Fetch live odds from boatrace.jp (real-time, CDN MISS confirmed)
+      // Fetch live odds from boatrace.jp (real-time)
       const params: RaceParams = {
         raceNumber: slot.raceNumber,
         stadiumCode,
@@ -393,7 +410,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       const page = fetchPage(oddsTfUrl(params), { skipCache: true });
       if (!page) {
         logger.info(
-          `EV判定: ${label} | prob=${probPct}% odds=N/A → SKIP (fetch failed)${exhTag}`,
+          `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% → SKIP (fetch failed)${exhTag}`,
         );
         slot.status = "decided";
         continue;
@@ -401,54 +418,56 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
       const entries = parseOddsTf(page.html);
       if (entries.length > 0) {
-        const oddsData: OddsData = {
-          stadiumId: slot.stadiumId,
-          raceDate: state.date,
-          raceNumber: slot.raceNumber,
-          entries: entries.map((e) => ({
-            betType: e.betType,
-            combination: e.combination,
-            odds: e.odds,
-          })),
-        };
-        saveOdds([oddsData]);
+        saveOdds([
+          {
+            stadiumId: slot.stadiumId,
+            raceDate: state.date,
+            raceNumber: slot.raceNumber,
+            entries: entries.map((e) => ({
+              betType: e.betType,
+              combination: e.combination,
+              odds: e.odds,
+            })),
+          },
+        ]);
       }
 
-      // Read tansho odds for boat 1
+      // Read tansho odds for target boat
       const db = getDatabase();
       const oddsRow = db
         .query(
           `SELECT odds FROM race_odds
-           WHERE race_id = ? AND bet_type = '単勝' AND combination = '1'`,
+           WHERE race_id = ? AND bet_type = '単勝' AND combination = ?`,
         )
-        .get(slot.raceId) as { odds: number } | null;
+        .get(slot.raceId, String(targetBoat)) as { odds: number } | null;
 
       const latestOdds = oddsRow?.odds ?? null;
       if (latestOdds === null || latestOdds <= 0) {
         logger.info(
-          `EV判定: ${label} | prob=${probPct}% odds=N/A → SKIP (no odds)${exhTag}`,
+          `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% odds=N/A → SKIP${exhTag}`,
         );
         slot.status = "decided";
         continue;
       }
 
-      const evPct = (cached.prob * latestOdds - 1) * 100;
+      const evPct = (targetProb * latestOdds - 1) * 100;
       const isRecommended = evPct >= opts.evThreshold;
+      const probPct = (targetProb * 100).toFixed(1);
       const oddsStr = latestOdds.toFixed(1);
       const evStr = `${evPct >= 0 ? "+" : ""}${evPct.toFixed(1)}%`;
 
       if (isRecommended) {
         let betAmount = calcKellyBet(
-          cached.prob,
+          targetProb,
           latestOdds,
           state.bankroll,
           opts.kellyFraction,
           opts.betCap,
         );
 
-        // Market impact 制限: プールサイズから post-bet EV > 0 の最大bet算出
+        // Market impact 制限 (skip for high-odds anti-favorite — pool impact is negligible)
         let poolTag = "";
-        if (betAmount > 0) {
+        if (betAmount > 0 && !af) {
           const pool = await fetchTanshoPool(
             stadiumCode,
             state.date,
@@ -456,7 +475,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
           );
           if (pool && pool.totalVotes > 0) {
             const { maxBet } = calcMaxBetForPool(
-              cached.prob,
+              targetProb,
               latestOdds,
               pool,
               opts.betCap,
@@ -467,7 +486,6 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
               betAmount = maxBet;
             }
           } else {
-            // プール取得失敗: betCap の半分にフォールバック
             const fallback = Math.floor(opts.betCap / 2 / 100) * 100;
             if (fallback < betAmount) {
               betAmount = fallback;
@@ -481,7 +499,8 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             raceId: slot.raceId,
             stadiumName: slot.stadiumName,
             raceNumber: slot.raceNumber,
-            prob: cached.prob,
+            boatNumber: targetBoat,
+            prob: targetProb,
             odds: latestOdds,
             ev: evPct,
             betAmount,
@@ -490,26 +509,26 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
           bets.set(slot.raceId, decision);
 
           logger.info(
-            `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}${exhTag}${poolTag}`,
+            `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}${exhTag}${poolTag}`,
           );
 
           await notifyPrediction({
             stadiumName: slot.stadiumName,
             raceNumber: slot.raceNumber,
             deadline: slot.deadline,
-            prob: cached.prob,
+            prob: targetProb,
             odds: latestOdds,
             ev: evPct,
             betAmount,
           });
 
-          // Execute purchase if configured
+          // Execute purchase
           if (opts.purchaseExecutor?.isConfigured()) {
             const purchaseResult = await opts.purchaseExecutor.execute({
               stadiumCode,
               stadiumName: slot.stadiumName,
               raceNumber: slot.raceNumber,
-              boatNumber: 1,
+              boatNumber: targetBoat,
               betType: "tansho",
               amount: betAmount,
             });
@@ -518,7 +537,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
               stadiumName: slot.stadiumName,
               raceNumber: slot.raceNumber,
               raceDate: state.date,
-              boatNumber: 1,
+              boatNumber: targetBoat,
               betType: "単勝",
               amount: betAmount,
               dryRun: purchaseResult.dryRun,
@@ -534,16 +553,15 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             }
           }
 
-          // Deduct from virtual bankroll
           state.bankroll -= betAmount;
         } else {
           logger.info(
-            `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP (bet=0)${exhTag}`,
+            `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP (bet=0)${exhTag}`,
           );
         }
       } else {
         logger.info(
-          `EV判定: ${label} | prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP${exhTag}`,
+          `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP${exhTag}`,
         );
       }
     } catch (err) {
@@ -563,25 +581,33 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       }
 
       logger.info(`Checking result: ${slot.stadiumName} R${slot.raceNumber}`);
-      const result = scrapeResultForRace(slot, state.date);
+      const raceResult = scrapeResultForRace(slot, state.date);
 
-      if (result === null) {
+      if (raceResult === null) {
         // Result not yet available, try again later
         slot.status = "result_pending";
         continue;
       }
 
-      // result.payout is per 100 yen; scale to actual bet amount
-      const payout = result.won
-        ? Math.round((bet.betAmount / 100) * result.payout)
-        : 0;
+      // Check if bet target boat won
+      const targetEntry = raceResult.entries.find(
+        (e) => e.boatNumber === bet.boatNumber,
+      );
+      const won = targetEntry?.finishPosition === 1;
+
+      // Get tansho payout for target boat
+      const tansho = raceResult.payouts?.find(
+        (p) => p.betType === "単勝" && p.combination === String(bet.boatNumber),
+      );
+      const payoutPer100 = won && tansho ? tansho.payout : 0;
+      const payout = won ? Math.round((bet.betAmount / 100) * payoutPer100) : 0;
       state.bankroll += payout;
-      results.set(slot.raceId, { won: result.won, payout });
+      results.set(slot.raceId, { won, payout });
 
       await notifyResult({
         stadiumName: slot.stadiumName,
         raceNumber: slot.raceNumber,
-        won: result.won,
+        won,
         betAmount: bet.betAmount,
         payout,
         bankroll: state.bankroll,

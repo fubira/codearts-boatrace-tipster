@@ -23,6 +23,7 @@ export interface BetDecision {
   raceId: number;
   stadiumName: string;
   raceNumber: number;
+  boatNumber: number;
   prob: number;
   odds: number;
   ev: number;
