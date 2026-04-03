@@ -93,25 +93,41 @@ describe("getActionableRaces", () => {
     expect(beforeInfo).toHaveLength(0);
   });
 
-  test("returns predict when within 2 min of deadline", () => {
+  test("returns predict when within 5 min of deadline", () => {
     const slot = makeSlot({ deadlineMs, status: "before_info" });
-    const now = deadlineMs - 1 * 60_000; // 1 min before
+    const now = deadlineMs - 4 * 60_000; // 4 min before
 
     const { beforeInfo, predict } = getActionableRaces([slot], now);
     expect(beforeInfo).toHaveLength(0);
     expect(predict).toHaveLength(1);
   });
 
-  test("does not return predict when more than 2 min before deadline", () => {
+  test("does not return predict when more than 5 min before deadline", () => {
     const slot = makeSlot({ deadlineMs, status: "before_info" });
-    const now = deadlineMs - 3 * 60_000; // 3 min before
+    const now = deadlineMs - 6 * 60_000; // 6 min before
 
     const { predict } = getActionableRaces([slot], now);
     expect(predict).toHaveLength(0);
   });
 
-  test("returns results 10 min after deadline for predicted races", () => {
+  test("returns odds when within 1 min of deadline for predicted races", () => {
     const slot = makeSlot({ deadlineMs, status: "predicted" });
+    const now = deadlineMs - 0.5 * 60_000; // 30 sec before
+
+    const { odds } = getActionableRaces([slot], now);
+    expect(odds).toHaveLength(1);
+  });
+
+  test("does not return odds when more than 1 min before deadline", () => {
+    const slot = makeSlot({ deadlineMs, status: "predicted" });
+    const now = deadlineMs - 2 * 60_000; // 2 min before
+
+    const { odds } = getActionableRaces([slot], now);
+    expect(odds).toHaveLength(0);
+  });
+
+  test("returns results 10 min after deadline for decided races", () => {
+    const slot = makeSlot({ deadlineMs, status: "decided" });
     const now = deadlineMs + 12 * 60_000; // 12 min after
 
     const { results } = getActionableRaces([slot], now);
@@ -119,7 +135,7 @@ describe("getActionableRaces", () => {
   });
 
   test("does not return results before 10 min after deadline", () => {
-    const slot = makeSlot({ deadlineMs, status: "predicted" });
+    const slot = makeSlot({ deadlineMs, status: "decided" });
     const now = deadlineMs + 5 * 60_000; // 5 min after
 
     const { results } = getActionableRaces([slot], now);
@@ -165,7 +181,7 @@ describe("getActionableRaces", () => {
     expect(slot.status).toBe("waiting");
   });
 
-  test("handles result_pending same as predicted", () => {
+  test("handles result_pending same as decided", () => {
     const slot = makeSlot({ deadlineMs, status: "result_pending" });
     const now = deadlineMs + 12 * 60_000;
 
@@ -173,12 +189,21 @@ describe("getActionableRaces", () => {
     expect(results).toHaveLength(1);
   });
 
+  test("skips predicted race when deadline passed by 5+ minutes", () => {
+    const slot = makeSlot({ deadlineMs, status: "predicted" });
+    const now = deadlineMs + 6 * 60_000;
+
+    const { odds } = getActionableRaces([slot], now);
+    expect(odds).toHaveLength(0);
+    expect(slot.status).toBe("done");
+  });
+
   test("handles mixed statuses across multiple races", () => {
     const slots = [
       makeSlot({
         raceId: 1,
         deadlineMs: deadlineMs - 40 * 60_000,
-        status: "predicted",
+        status: "decided",
       }),
       makeSlot({ raceId: 2, deadlineMs, status: "waiting" }),
       makeSlot({
@@ -190,7 +215,7 @@ describe("getActionableRaces", () => {
     const now = deadlineMs - 5 * 60_000; // 5 min before race 2
 
     const { beforeInfo, predict, results } = getActionableRaces(slots, now);
-    // Race 1: predicted, deadline was 40 min ago → 35 min after → results
+    // Race 1: decided, deadline was 40 min ago → 35 min after → results
     expect(results).toHaveLength(1);
     expect(results[0].raceId).toBe(1);
     // Race 2: waiting, 5 min before → beforeInfo
