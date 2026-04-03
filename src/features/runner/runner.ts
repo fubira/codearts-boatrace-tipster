@@ -212,29 +212,31 @@ async function runPrediction(
   const PREDICTION_TIMEOUT_MS = 30_000;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
 
-  const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => {
-      proc.kill();
+  const exited = new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      proc.kill(9); // SIGKILL to ensure termination
       reject(
         new Error(`predict timed out after ${PREDICTION_TIMEOUT_MS / 1000}s`),
       );
-    }, PREDICTION_TIMEOUT_MS),
-  );
+    }, PREDICTION_TIMEOUT_MS);
 
-  const run = async () => {
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    if (stderr) logger.debug(stderr.trim());
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) {
-      throw new Error(`predict failed (exit ${exitCode}): ${stderr}`);
-    }
-    return stdout;
-  };
+    (async () => {
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      clearTimeout(timer);
+      if (stderr) logger.debug(stderr.trim());
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) {
+        reject(new Error(`predict failed (exit ${exitCode}): ${stderr}`));
+      } else {
+        resolve(stdout);
+      }
+    })();
+  });
 
-  const stdout = await Promise.race([run(), timeout]);
+  const stdout = await exited;
 
   const result = JSON.parse(stdout);
   return result.predictions.map(
