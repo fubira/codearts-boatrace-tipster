@@ -7,6 +7,7 @@ services:
       TZ: Asia/Tokyo
     volumes:
       - ./data:/app/data
+      - ./logs:/app/logs
       - ./ml/models:/app/ml/models
     labels:
       - "com.centurylinklabs.watchtower.scope=boatrace-tipster"

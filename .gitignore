@@ -9,7 +9,6 @@ data/*.db-wal
 data/*.db-journal
 data/cache/
 data/content/
-data/logs/
 data/backups/
 
 # Environment
@@ -29,9 +28,11 @@ ml/src/**/__pycache__/
 *.pyc
 *.pkl
 
+# Logs
+logs/
+
 # Server tune
 scripts/server-tune.conf
-logs/tune/
 
 # Misc
 .wrangler/

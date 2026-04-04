@@ -627,7 +627,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
 export async function runDaemon(opts: RunnerOptions): Promise<void> {
   setSlackWebhook(opts.slackWebhookUrl);
-  enableFileLog(resolve(config.dataDir, "logs"));
+  enableFileLog(resolve(config.projectRoot, "logs"));
   enableCache();
   initializeDatabase();
 
