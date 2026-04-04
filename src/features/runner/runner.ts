@@ -959,6 +959,9 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
       );
     }
 
+    // Build stats snapshot for new day
+    const newSnapshotPath = await buildStatsSnapshot(newDate);
+
     // Reset state for new day
     state.schedule = newSchedule;
     state.bets = new Map();
@@ -966,6 +969,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     state.predictionCache = null;
     state.date = newDate;
     state.lastStatusLine = "";
+    state.snapshotPath = newSnapshotPath;
 
     await notifyStartup({
       version: config.version,
