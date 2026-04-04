@@ -221,6 +221,25 @@ EV >= 10 のレースで購入
 - WF-CV 4フォールドで ROI 99-113%（EV>=10 で全フォールド 100%超）
 - ベット数: ~2,200/fold
 
+## Stats Snapshot（推論高速化）
+
+累積統計を事前計算し、予測時の DB フルスキャン（~30-60 秒）を ~4 秒に短縮する。runner 起動時に自動構築される。
+
+```bash
+# snapshot 構築（through-date = 予測日の前日）
+uv run --directory ml python -m scripts.build_snapshot --through-date 2026-04-01
+
+# snapshot を使った高速予測
+uv run --directory ml python -m scripts.predict_trifecta --date 2026-04-02 \
+  --snapshot data/stats-snapshots/2026-04-01.db
+
+# snapshot の正確性検証（フルパイプラインと全カラム比較）
+uv run --directory ml python -m scripts.verify_snapshot --date 2026-04-02 \
+  --snapshot data/stats-snapshots/2026-04-01.db
+```
+
+snapshot は `data/stats-snapshots/YYYY-MM-DD.db`（~51 MB）に日付別保存。30 日ローテーション。
+
 ## 開発コマンド
 
 ```bash
