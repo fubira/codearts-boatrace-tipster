@@ -45,6 +45,7 @@ interface ScrapeOneRaceResult {
 function scrapeOneRace(
   params: RaceParams,
   shouldSkip?: ScraperOptions["shouldSkip"],
+  skipResults?: boolean,
 ): ScrapeOneRaceResult {
   const stadiumId = Number.parseInt(params.stadiumCode, 10);
   const raceDate = buildRaceDate(params.date);
@@ -64,10 +65,10 @@ function scrapeOneRace(
     };
   }
 
-  // Fetch 3 pages sequentially (curl-based, synchronous)
+  // Fetch pages sequentially (curl-based, synchronous)
   const raceListPage = fetchPage(raceListUrl(params));
   const beforeInfoPage = fetchPage(beforeInfoUrl(params));
-  const resultPage = fetchPage(raceResultUrl(params));
+  const resultPage = skipResults ? null : fetchPage(raceResultUrl(params));
 
   // Count cache stats from non-null results
   const pages = [raceListPage, beforeInfoPage, resultPage];
@@ -110,7 +111,11 @@ function scrapeVenueDay(
   for (let rno = 1; rno <= MAX_RACES_PER_VENUE; rno++) {
     if (options.raceNumbers && !options.raceNumbers.includes(rno)) continue;
     const params: RaceParams = { raceNumber: rno, stadiumCode, date };
-    const result = scrapeOneRace(params, options.shouldSkip);
+    const result = scrapeOneRace(
+      params,
+      options.shouldSkip,
+      options.skipResults,
+    );
 
     cacheHits += result.cacheHits;
     cacheMisses += result.cacheMisses;

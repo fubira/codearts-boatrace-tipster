@@ -644,6 +644,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   let totalScraped = 0;
   scraper.scrape({
     date: yyyymmdd,
+    skipResults: true, // Don't cache empty result pages for today's races
     onBatchComplete: (batch) => {
       if (batch.races.length > 0) saveRaces(batch.races);
       if (batch.results.length > 0) saveRaceResults(batch.results);
@@ -821,6 +822,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     if (newScraper) {
       newScraper.scrape({
         date: newYYYYMMDD,
+        skipResults: true,
         onBatchComplete: (batch) => {
           if (batch.races.length > 0) saveRaces(batch.races);
           if (batch.results.length > 0) saveRaceResults(batch.results);

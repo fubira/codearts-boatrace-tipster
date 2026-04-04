@@ -33,4 +33,6 @@ export interface ScraperOptions {
   ) => boolean;
   /** Called after each venue-day group completes for incremental saving */
   onBatchComplete?: (batch: ScraperResult) => void;
+  /** Skip fetching result pages (avoids caching empty results for today's races) */
+  skipResults?: boolean;
 }
