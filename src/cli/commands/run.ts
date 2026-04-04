@@ -9,13 +9,17 @@ export const runCommand = new Command("run")
   .option("--live", "LIVE mode (execute real purchases)")
   .option(
     "--ev-threshold <n>",
-    "EV threshold for bets (pre-deadline odds are approximate)",
+    "EV threshold as fraction (e.g. 0.33 = 33%)",
     (v: string) => Number(v),
-    0,
+    0.33,
   )
-  .option("--bet-cap <n>", "max bet per race", (v: string) => Number(v), 4000)
-  .option("--kelly <f>", "Kelly fraction", (v: string) => Number(v), 0.25)
-  .option("--bankroll <n>", "initial bankroll", (v: string) => Number(v), 50000)
+  .option(
+    "--bet-cap <n>",
+    "max unit per ticket (¥)",
+    (v: string) => Number(v),
+    2000,
+  )
+  .option("--bankroll <n>", "initial bankroll", (v: string) => Number(v), 70000)
   .action(async (opts) => {
     const dryRun = !opts.live;
     const slackWebhookUrl = process.env.SLACK_WEBHOOK_URL;
@@ -39,7 +43,6 @@ export const runCommand = new Command("run")
       dryRun,
       evThreshold: opts.evThreshold,
       betCap: opts.betCap,
-      kellyFraction: opts.kelly,
       bankroll: opts.bankroll,
       slackWebhookUrl,
       purchaseExecutor,

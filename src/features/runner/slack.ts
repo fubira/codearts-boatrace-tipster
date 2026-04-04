@@ -75,7 +75,10 @@ export async function notifyStartup(info: StartupInfo): Promise<void> {
           { type: "mrkdwn", text: `*Date:* ${info.date}` },
           { type: "mrkdwn", text: `*Venues:* ${info.venues}` },
           { type: "mrkdwn", text: `*Races:* ${info.races}` },
-          { type: "mrkdwn", text: `*EV≥:* +${info.evThreshold}%` },
+          {
+            type: "mrkdwn",
+            text: `*EV≥:* +${(info.evThreshold * 100).toFixed(0)}%`,
+          },
         ],
       },
     ],
@@ -102,8 +105,8 @@ export async function notifyPrediction(p: PredictionInfo): Promise<void> {
           type: "mrkdwn",
           text:
             `*${p.stadiumName} ${p.raceNumber}R* (締切 ${p.deadline})\n` +
-            `予測 *${(p.prob * 100).toFixed(1)}%* × odds *${p.odds.toFixed(1)}* = EV *+${p.ev.toFixed(1)}%*\n` +
-            `→ 単勝1号艇 *¥${p.betAmount.toLocaleString()}*`,
+            `EV *+${p.ev.toFixed(1)}%* | prob *${(p.prob * 100).toFixed(1)}%*\n` +
+            `→ 3連単 *¥${p.betAmount.toLocaleString()}*`,
         },
       },
     ],

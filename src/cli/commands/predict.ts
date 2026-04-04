@@ -3,34 +3,41 @@ import { config } from "@/shared/config";
 import { pythonCommand } from "@/shared/python";
 import { Command } from "commander";
 
-interface Prediction {
+interface TrifectaPrediction {
   race_id: number;
   race_date: string;
   stadium_id: number;
   stadium_name: string;
   race_number: number;
-  prob: number;
-  tansho_odds: number | null;
-  ev: number | null;
-  recommend: boolean;
+  winner_pick: number;
+  b1_prob: number;
+  winner_prob: number;
+  ev: number;
+  tickets: string[];
   has_exhibition: boolean;
 }
 
 interface PredictResult {
   date: string;
   model_dir: string;
-  model_meta: { training?: { val_auc?: number; date_range?: string } } | null;
+  b1_threshold: number;
+  ev_threshold: number;
   n_races: number;
-  predictions: Prediction[];
+  predictions: TrifectaPrediction[];
   error?: string;
 }
 
 export const predictCommand = new Command("predict")
-  .description("Predict boat 1 win probability and bet recommendations")
+  .description("Predict trifecta X-noB1-noB1 strategy")
   .option("-d, --date <date>", "target date (YYYY-MM-DD)")
   .option("--json", "output raw JSON")
-  .option("--all", "show all races (not just recommendations)")
-  .option("--model-dir <dir>", "model directory", "ml/models/boat1")
+  .option("--model-dir <dir>", "model directory", "ml/models/trifecta_v1")
+  .option(
+    "--ev-threshold <n>",
+    "EV threshold as fraction (e.g. 0.33 = 33%)",
+    (v: string) => Number(v),
+    0.33,
+  )
   .action(async (opts) => {
     const date = opts.date ?? new Date().toISOString().slice(0, 10);
 
@@ -40,23 +47,22 @@ export const predictCommand = new Command("predict")
     }
 
     const modelDir = resolve(config.projectRoot, opts.modelDir);
-    const modelPath = resolve(modelDir, "model.pkl");
-    const modelFile = Bun.file(modelPath);
-    if (!(await modelFile.exists())) {
-      console.error(`Error: No trained model at ${modelPath}`);
-      console.error(
-        "Run: uv run --directory ml python -m scripts.train_boat1_binary --save",
-      );
+    const b1ModelPath = resolve(modelDir, "boat1/model.pkl");
+    const b1File = Bun.file(b1ModelPath);
+    if (!(await b1File.exists())) {
+      console.error(`Error: No trained model at ${b1ModelPath}`);
       process.exit(1);
     }
 
-    const { cmd, cwd } = pythonCommand("scripts.predict_boat1", [
+    const { cmd, cwd } = pythonCommand("scripts.predict_trifecta", [
       "--date",
       date,
       "--model-dir",
       modelDir,
       "--db-path",
       config.dbPath,
+      "--ev-threshold",
+      String(opts.evThreshold),
     ]);
     const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
 
@@ -85,73 +91,55 @@ export const predictCommand = new Command("predict")
       return;
     }
 
-    formatTable(result, opts.all ?? false);
+    formatTrifectaTable(result);
   });
 
-function formatTable(result: PredictResult, showAll: boolean): void {
+function formatTrifectaTable(result: PredictResult): void {
   const { predictions } = result;
-  const recs = predictions.filter((p) => p.recommend);
-  const withOdds = predictions.filter((p) => p.tansho_odds !== null);
 
-  // Header
-  const meta = result.model_meta;
-  const trainInfo = meta?.training?.date_range ?? "unknown";
-  console.log(`Boat 1 Predictions: ${result.date}`);
-  console.log(`Model: boat1 (${trainInfo})`);
+  console.log(`Trifecta Predictions: ${result.date}`);
   console.log(
-    `Races: ${result.n_races} | With odds: ${withOdds.length} | Bets (EV>0): ${recs.length}`,
+    `Model: trifecta_v1 | b1<${(result.b1_threshold * 100).toFixed(0)}% EV>=${(result.ev_threshold * 100).toFixed(0)}%`,
   );
+  console.log(`Qualifying races: ${result.n_races}`);
   console.log();
 
-  // Select rows to display
-  const rows = showAll ? predictions : recs;
-  if (rows.length === 0) {
-    console.log("No recommendations.");
+  if (predictions.length === 0) {
+    console.log("No qualifying races.");
     return;
   }
 
-  // Sort by EV descending (nulls last)
-  const sorted = [...rows].sort(
-    (a, b) =>
-      (b.ev ?? Number.NEGATIVE_INFINITY) - (a.ev ?? Number.NEGATIVE_INFINITY),
-  );
+  const sorted = [...predictions].sort((a, b) => b.ev - a.ev);
 
-  // Table
   console.log(
-    `  ${"場".padEnd(8)} ${"R#".padStart(3)}  ${"予測".padStart(5)}  ${"odds".padStart(5)}  ${"EV".padStart(7)}  推奨`,
+    `  ${"場".padEnd(8)} ${"R#".padStart(3)}  ${"1着".padStart(4)}  ${"b1%".padStart(5)}  ${"EV".padStart(7)}  ${"pt".padStart(3)}  買い目`,
   );
-  console.log(`  ${"─".repeat(42)}`);
+  console.log(`  ${"─".repeat(60)}`);
 
   for (const p of sorted) {
     const stadium = p.stadium_name.padEnd(6);
     const rn = String(p.race_number).padStart(3);
-    const prob = `${(p.prob * 100).toFixed(1)}%`.padStart(5);
-    const odds =
-      p.tansho_odds !== null ? p.tansho_odds.toFixed(1).padStart(5) : "  N/A";
-    const ev =
-      p.ev !== null
-        ? `${p.ev >= 0 ? "+" : ""}${p.ev.toFixed(1)}%`.padStart(7)
-        : "    N/A";
-    const rec = p.recommend ? " ◎" : " -";
+    const winner = String(p.winner_pick).padStart(4);
+    const b1 = `${(p.b1_prob * 100).toFixed(0)}%`.padStart(5);
+    const ev = `+${(p.ev * 100).toFixed(1)}%`.padStart(7);
+    const pt = String(p.tickets.length).padStart(3);
+    const ticketStr = p.tickets.slice(0, 3).join(" ");
+    const more = p.tickets.length > 3 ? ` +${p.tickets.length - 3}` : "";
     const exh = p.has_exhibition ? "" : " *";
-    console.log(`  ${stadium} ${rn}  ${prob}  ${odds}  ${ev} ${rec}${exh}`);
+    console.log(
+      `  ${stadium} ${rn}  ${winner}  ${b1}  ${ev}  ${pt}  ${ticketStr}${more}${exh}`,
+    );
   }
 
-  // Footer notes
   const noExhCount = sorted.filter((p) => !p.has_exhibition).length;
   if (noExhCount > 0) {
-    console.log(
-      `\n  * ${noExhCount} race(s) without exhibition data (prediction based on historical stats only)`,
-    );
+    console.log(`\n  * ${noExhCount} race(s) without exhibition data`);
   }
 
-  // Summary
-  if (recs.length > 0) {
-    const avgEv = recs.reduce((s, p) => s + (p.ev ?? 0), 0) / recs.length;
-    const totalBet = recs.length * 100;
-    console.log();
-    console.log(
-      `${recs.length} bets | Avg EV: +${avgEv.toFixed(1)}% | Total: ¥${totalBet.toLocaleString()} (@¥100)`,
-    );
-  }
+  const totalTickets = predictions.reduce((s, p) => s + p.tickets.length, 0);
+  const avgEv = predictions.reduce((s, p) => s + p.ev, 0) / predictions.length;
+  console.log();
+  console.log(
+    `${predictions.length} races | ${totalTickets} tickets | Avg EV: +${(avgEv * 100).toFixed(1)}% | Total: ¥${(totalTickets * 100).toLocaleString()} (@¥100)`,
+  );
 }

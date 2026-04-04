@@ -7,11 +7,9 @@ import {
   initializeDatabase,
   saveBeforeInfo,
   saveOdds,
-  savePurchaseRecord,
   saveRaceResults,
   saveRaces,
 } from "@/features/database";
-import type { OddsData } from "@/features/database";
 import {
   disableCacheRead,
   enableCache,
@@ -32,16 +30,11 @@ import {
   parseBeforeInfo,
   parseRaceResult,
 } from "@/features/scraper/sources/boatrace/parsers";
-import {
-  calcMaxBetForPool,
-  fetchTanshoPool,
-} from "@/features/scraper/sources/boatrace/pool-size";
 import type { PurchaseExecutor } from "@/features/teleboat";
 import { config } from "@/shared/config";
 import { enableFileLog, logger } from "@/shared/logger";
 import { pythonCommand } from "@/shared/python";
 import {
-  type ActionableRaces,
   type BetDecision,
   type RaceSlot,
   allDone,
@@ -49,7 +42,6 @@ import {
   getActionableRaces,
 } from "./race-scheduler";
 import {
-  type DailySummaryInfo,
   notifyDailySummary,
   notifyError,
   notifyPrediction,
@@ -65,27 +57,22 @@ export interface RunnerOptions {
   dryRun: boolean;
   evThreshold: number;
   betCap: number;
-  kellyFraction: number;
   bankroll: number;
   slackWebhookUrl?: string;
   purchaseExecutor?: PurchaseExecutor | null;
 }
 
-interface AntiFavorite {
-  boatNumber: number;
-  rankProb: number;
+/** Trifecta prediction: X-noB1-noB1 (12-ticket fixed 1st) */
+interface TrifectaPrediction {
+  winnerPick: number;
+  b1Prob: number;
+  winnerProb: number;
+  ev: number;
+  tickets: string[];
+  hasExhibition: boolean;
 }
 
-type PredictionCache = Map<
-  number,
-  {
-    prob: number;
-    odds: number | null;
-    ev: number | null;
-    hasExhibition: boolean;
-    antiFavorite: AntiFavorite | null;
-  }
->;
+type PredictionCache = Map<number, TrifectaPrediction>;
 
 interface RunnerState {
   schedule: RaceSlot[];
@@ -170,32 +157,31 @@ async function runPrediction(
 ): Promise<
   {
     raceId: number;
-    prob: number;
-    odds: number | null;
-    ev: number | null;
-    recommend: boolean;
+    winnerPick: number;
+    b1Prob: number;
+    winnerProb: number;
+    ev: number;
+    tickets: string[];
     hasExhibition: boolean;
-    antiFavorite: AntiFavorite | null;
   }[]
 > {
-  const modelDir = resolve(config.projectRoot, "ml/models/boat1");
-  const rankingModelDir = resolve(config.projectRoot, "ml/models/ranking");
-  const { cmd, cwd } = pythonCommand("scripts.predict_boat1", [
+  const modelDir = resolve(config.projectRoot, "ml/models/trifecta_v1");
+  const { cmd, cwd } = pythonCommand("scripts.predict_trifecta", [
     "--date",
     date,
     "--model-dir",
     modelDir,
-    "--ranking-model-dir",
-    rankingModelDir,
     "--db-path",
     config.dbPath,
+    "--ev-threshold",
+    "0", // Return all EV>0 candidates; runner filters by opts.evThreshold
   ]);
-  const PREDICTION_TIMEOUT_MS = 30_000;
+  const PREDICTION_TIMEOUT_MS = 60_000;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
 
   const exited = new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
-      proc.kill(9); // SIGKILL to ensure termination
+      proc.kill(9);
       reject(
         new Error(`predict timed out after ${PREDICTION_TIMEOUT_MS / 1000}s`),
       );
@@ -223,45 +209,34 @@ async function runPrediction(
   return result.predictions.map(
     (p: {
       race_id: number;
-      prob: number;
-      tansho_odds: number | null;
-      ev: number | null;
-      recommend: boolean;
+      winner_pick: number;
+      b1_prob: number;
+      winner_prob: number;
+      ev: number;
+      tickets: string[];
       has_exhibition: boolean;
-      anti_favorite?: { boat_number: number; rank_prob: number };
     }) => ({
       raceId: p.race_id,
-      prob: p.prob,
-      odds: p.tansho_odds,
+      winnerPick: p.winner_pick,
+      b1Prob: p.b1_prob,
+      winnerProb: p.winner_prob,
       ev: p.ev,
-      recommend: p.recommend,
+      tickets: p.tickets,
       hasExhibition: p.has_exhibition,
-      antiFavorite: p.anti_favorite
-        ? {
-            boatNumber: p.anti_favorite.boat_number,
-            rankProb: p.anti_favorite.rank_prob,
-          }
-        : null,
     }),
   );
 }
 
-export function calcKellyBet(
-  prob: number,
-  odds: number,
-  bankroll: number,
-  kellyFraction: number,
-  betCap: number,
-): number {
-  const edge = prob * odds - 1;
-  if (edge <= 0 || odds <= 1) return 0;
-  const kellyFull = edge / (odds - 1);
-  const frac = Math.min(kellyFull * kellyFraction, 0.05);
-  let bet = Math.floor((bankroll * frac) / 100) * 100;
-  bet = Math.max(bet, 100);
-  bet = Math.min(bet, betCap);
-  if (bet > bankroll) bet = Math.floor(bankroll / 100) * 100;
-  return bet < 100 ? 0 : bet;
+/**
+ * Calculate bet unit for trifecta strategy.
+ * Rule: bankroll / 800, rounded down to ¥100, MIN ¥100, MAX betCap.
+ */
+export function calcTrifectaUnit(bankroll: number, betCap: number): number {
+  let unit = Math.floor(bankroll / 800 / 100) * 100;
+  unit = Math.max(unit, 100);
+  unit = Math.min(unit, betCap);
+  if (unit > bankroll) return 0;
+  return unit;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,28 +272,33 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   }
 
   // 1. Scrape before-info for races approaching deadline
-  for (const slot of actionable.beforeInfo) {
-    try {
-      logger.info(
-        `Scraping before-info: ${slot.stadiumName} R${slot.raceNumber}`,
-      );
-      const ok = scrapeBeforeInfoForRace(slot, state.date);
-      if (ok) {
-        slot.status = "before_info";
+  if (actionable.beforeInfo.length > 0) {
+    let scraped = 0;
+    for (const slot of actionable.beforeInfo) {
+      try {
+        const ok = scrapeBeforeInfoForRace(slot, state.date);
+        if (ok) {
+          slot.status = "before_info";
+          scraped++;
+        }
+      } catch (err) {
+        await notifyError(
+          `before-info ${slot.stadiumName} R${slot.raceNumber}`,
+          err,
+        );
       }
-    } catch (err) {
-      await notifyError(
-        `before-info ${slot.stadiumName} R${slot.raceNumber}`,
-        err,
-      );
     }
+    logger.info(
+      `Before-info: ${scraped}/${actionable.beforeInfo.length} scraped`,
+    );
   }
 
-  // 2. Scrape odds + predict for races near deadline
+  // 2. Predict for races near deadline (trifecta strategy)
   if (actionable.predict.length > 0) {
     // Re-scrape before-info if exhibition data is missing
+    const db = getDatabase();
+    let rescraped = 0;
     for (const slot of actionable.predict) {
-      const db = getDatabase();
       const hasExh = db
         .query(
           `SELECT COUNT(*) as cnt FROM race_entries
@@ -326,20 +306,19 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         )
         .get(slot.raceId) as { cnt: number };
       if (hasExh.cnt === 0) {
-        logger.info(
-          `Re-scraping before-info (exhibition missing): ${slot.stadiumName} R${slot.raceNumber}`,
-        );
         try {
           scrapeBeforeInfoForRace(slot, state.date);
-        } catch (err) {
-          logger.warn(
-            `Failed to re-scrape before-info: ${slot.stadiumName} R${slot.raceNumber}: ${err}`,
-          );
+          rescraped++;
+        } catch (_err) {
+          // Prediction will proceed without exhibition data
         }
       }
     }
+    if (rescraped > 0) {
+      logger.info(`Re-scraped exhibition data for ${rescraped} race(s)`);
+    }
 
-    // Rebuild prediction cache (ML only — no odds needed)
+    // Rebuild prediction cache (trifecta: b1 binary + LambdaRank + EV)
     const needsRebuild = actionable.predict.some(
       (s) =>
         !state.predictionCache?.has(s.raceId) ||
@@ -347,28 +326,25 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     );
     try {
       if (needsRebuild) {
-        logger.info("Running prediction (new exhibition data available)...");
+        logger.info("Running trifecta prediction...");
         const predictions = await runPrediction(state.date, opts);
         state.predictionCache = new Map();
         for (const p of predictions) {
           state.predictionCache.set(p.raceId, {
-            prob: p.prob,
-            odds: p.odds,
+            winnerPick: p.winnerPick,
+            b1Prob: p.b1Prob,
+            winnerProb: p.winnerProb,
             ev: p.ev,
+            tickets: p.tickets,
             hasExhibition: p.hasExhibition,
-            antiFavorite: p.antiFavorite,
           });
         }
-        logger.info(`Predicted ${state.predictionCache.size} races`);
+        logger.info(
+          `Trifecta predictions: ${state.predictionCache.size} qualifying races`,
+        );
       }
 
       for (const slot of actionable.predict) {
-        const cached = state.predictionCache?.get(slot.raceId);
-        const exhTag = cached?.hasExhibition ? "" : " [no-exh]";
-        const probPct = cached ? (cached.prob * 100).toFixed(1) : "N/A";
-        logger.info(
-          `Predicted: ${slot.stadiumName} R${slot.raceNumber} | prob=${probPct}%${exhTag}`,
-        );
         slot.status = "predicted";
       }
     } catch (err) {
@@ -379,7 +355,10 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     }
   }
 
-  // 3. Fetch live odds + EV decision + purchase (as late as possible, T-1min)
+  // 3. Trifecta bet decision at T-1min
+  // EV is pre-computed by predict_trifecta.py using DB trifecta odds.
+  // 3連単 pool is ~¥93M so pre-computed EV is stable enough.
+  // We still fetch oddsTf to update DB, but EV decision uses cached value.
   for (const slot of actionable.odds) {
     const cached = state.predictionCache?.get(slot.raceId);
     if (!cached) {
@@ -389,179 +368,95 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
     const label = `${slot.stadiumName} R${slot.raceNumber}`;
     const exhTag = cached.hasExhibition ? "" : " [no-exh]";
-    const b1ProbPct = (cached.prob * 100).toFixed(1);
     const stadiumCode = padStadiumCode(slot.stadiumId);
 
-    // Determine strategy: anti-favorite or boat1
-    const af = cached.antiFavorite;
-    const targetBoat = af ? af.boatNumber : 1;
-    const targetProb = af ? af.rankProb : cached.prob;
-    const strategyTag = af ? `[AF boat${targetBoat}]` : "[B1]";
-
     try {
-      // Fetch live odds from boatrace.jp (real-time)
+      // Fetch latest oddsTf to keep DB up-to-date
       const params: RaceParams = {
         raceNumber: slot.raceNumber,
         stadiumCode,
         date: state.date.replace(/-/g, ""),
       };
-
-      logger.info(`Scraping odds (T-1min): ${label}`);
       const page = fetchPage(oddsTfUrl(params), { skipCache: true });
-      if (!page) {
-        logger.info(
-          `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% → SKIP (fetch failed)${exhTag}`,
-        );
-        slot.status = "decided";
-        continue;
-      }
-
-      const entries = parseOddsTf(page.html);
-      if (entries.length > 0) {
-        saveOdds([
-          {
-            stadiumId: slot.stadiumId,
-            raceDate: state.date,
-            raceNumber: slot.raceNumber,
-            entries: entries.map((e) => ({
-              betType: e.betType,
-              combination: e.combination,
-              odds: e.odds,
-            })),
-          },
-        ]);
-      }
-
-      // Read tansho odds for target boat
-      const db = getDatabase();
-      const oddsRow = db
-        .query(
-          `SELECT odds FROM race_odds
-           WHERE race_id = ? AND bet_type = '単勝' AND combination = ?`,
-        )
-        .get(slot.raceId, String(targetBoat)) as { odds: number } | null;
-
-      const latestOdds = oddsRow?.odds ?? null;
-      if (latestOdds === null || latestOdds <= 0) {
-        logger.info(
-          `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% odds=N/A → SKIP${exhTag}`,
-        );
-        slot.status = "decided";
-        continue;
-      }
-
-      const evPct = (targetProb * latestOdds - 1) * 100;
-      const isRecommended = evPct >= opts.evThreshold;
-      const probPct = (targetProb * 100).toFixed(1);
-      const oddsStr = latestOdds.toFixed(1);
-      const evStr = `${evPct >= 0 ? "+" : ""}${evPct.toFixed(1)}%`;
-
-      if (isRecommended) {
-        let betAmount = calcKellyBet(
-          targetProb,
-          latestOdds,
-          state.bankroll,
-          opts.kellyFraction,
-          opts.betCap,
-        );
-
-        // Market impact 制限 (skip for high-odds anti-favorite — pool impact is negligible)
-        let poolTag = "";
-        if (betAmount > 0 && !af) {
-          const pool = await fetchTanshoPool(
-            stadiumCode,
-            state.date,
-            slot.raceNumber,
-          );
-          if (pool && pool.totalVotes > 0) {
-            const { maxBet } = calcMaxBetForPool(
-              targetProb,
-              latestOdds,
-              pool,
-              opts.betCap,
-            );
-            poolTag = ` pool=${pool.totalVotes}票`;
-            if (maxBet < betAmount) {
-              poolTag += ` cap=${maxBet}`;
-              betAmount = maxBet;
-            }
-          } else {
-            const fallback = Math.floor(opts.betCap / 2 / 100) * 100;
-            if (fallback < betAmount) {
-              betAmount = fallback;
-              poolTag = " pool=N/A";
-            }
-          }
+      if (page) {
+        const entries = parseOddsTf(page.html);
+        if (entries.length > 0) {
+          saveOdds([
+            {
+              stadiumId: slot.stadiumId,
+              raceDate: state.date,
+              raceNumber: slot.raceNumber,
+              entries: entries.map((e) => ({
+                betType: e.betType,
+                combination: e.combination,
+                odds: e.odds,
+              })),
+            },
+          ]);
         }
+      }
 
-        if (betAmount > 0) {
+      const evFrac = cached.ev;
+      const evPct = evFrac * 100;
+      const evThresholdPct = opts.evThreshold * 100;
+      const isBet = evFrac >= opts.evThreshold;
+
+      // Build threshold tag for non-bet races: show which thresholds it would pass
+      let thresholdTag = "";
+      if (!isBet) {
+        const wouldPass = [10, 20, 30].filter((t) => evPct >= t);
+        thresholdTag =
+          wouldPass.length > 0
+            ? ` (would buy ≥${wouldPass[wouldPass.length - 1]}%)`
+            : "";
+      }
+
+      const base = `${label} | ${cached.winnerPick}号艇1着 | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct.toFixed(1)}% | ${cached.tickets.length}pt`;
+
+      if (isBet) {
+        const unit = calcTrifectaUnit(state.bankroll, opts.betCap);
+        const totalWager = unit * cached.tickets.length;
+
+        if (unit > 0 && totalWager <= state.bankroll) {
           const decision: BetDecision = {
             raceId: slot.raceId,
             stadiumName: slot.stadiumName,
             raceNumber: slot.raceNumber,
-            boatNumber: targetBoat,
-            prob: targetProb,
-            odds: latestOdds,
+            boatNumber: cached.winnerPick,
+            prob: cached.winnerProb,
+            odds: 0,
             ev: evPct,
-            betAmount,
+            betAmount: totalWager,
             recommend: true,
           };
           bets.set(slot.raceId, decision);
 
+          const ticketStr = cached.tickets.slice(0, 3).join(", ");
+          const moreStr =
+            cached.tickets.length > 3 ? ` +${cached.tickets.length - 3}` : "";
           logger.info(
-            `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% prob=${probPct}% odds=${oddsStr} EV=${evStr} → BET ¥${betAmount.toLocaleString()}${exhTag}${poolTag}`,
+            `[TRI] BET: ${base} | ¥${unit}×${cached.tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}${moreStr}${exhTag}`,
           );
 
           await notifyPrediction({
             stadiumName: slot.stadiumName,
             raceNumber: slot.raceNumber,
             deadline: slot.deadline,
-            prob: targetProb,
-            odds: latestOdds,
+            prob: cached.winnerProb,
+            odds: 0,
             ev: evPct,
-            betAmount,
+            betAmount: totalWager,
           });
 
-          // Execute purchase
-          if (opts.purchaseExecutor?.isConfigured()) {
-            const purchaseResult = await opts.purchaseExecutor.execute({
-              stadiumCode,
-              stadiumName: slot.stadiumName,
-              raceNumber: slot.raceNumber,
-              boatNumber: targetBoat,
-              betType: "tansho",
-              amount: betAmount,
-            });
-            savePurchaseRecord({
-              raceId: slot.raceId,
-              stadiumName: slot.stadiumName,
-              raceNumber: slot.raceNumber,
-              raceDate: state.date,
-              boatNumber: targetBoat,
-              betType: "単勝",
-              amount: betAmount,
-              dryRun: purchaseResult.dryRun,
-              success: purchaseResult.success,
-              error: purchaseResult.error,
-              screenshotPath: purchaseResult.screenshotPath,
-            });
-            if (!purchaseResult.success) {
-              await notifyError(
-                `purchase ${slot.stadiumName} R${slot.raceNumber}`,
-                purchaseResult.error,
-              );
-            }
-          }
+          // TODO: teleboat purchase for trifecta (Phase 2)
 
-          state.bankroll -= betAmount;
+          state.bankroll -= totalWager;
         } else {
-          logger.info(
-            `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP (bet=0)${exhTag}`,
-          );
+          logger.info(`[TRI] SKIP: ${base} | bankroll insufficient${exhTag}`);
         }
       } else {
         logger.info(
-          `EV判定: ${label} ${strategyTag} | b1=${b1ProbPct}% prob=${probPct}% odds=${oddsStr} EV=${evStr} → SKIP${exhTag}`,
+          `[TRI] ---: ${base} | <${evThresholdPct.toFixed(0)}%${thresholdTag}${exhTag}`,
         );
       }
     } catch (err) {
@@ -571,7 +466,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     slot.status = "decided";
   }
 
-  // 4. Check results for finished races
+  // 4. Check results for finished races (trifecta)
   for (const slot of actionable.results) {
     try {
       const bet = bets.get(slot.raceId);
@@ -580,29 +475,58 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         continue;
       }
 
-      logger.info(`Checking result: ${slot.stadiumName} R${slot.raceNumber}`);
       const raceResult = scrapeResultForRace(slot, state.date);
 
       if (raceResult === null) {
-        // Result not yet available, try again later
         slot.status = "result_pending";
         continue;
       }
 
-      // Check if bet target boat won
-      const targetEntry = raceResult.entries.find(
-        (e) => e.boatNumber === bet.boatNumber,
-      );
-      const won = targetEntry?.finishPosition === 1;
+      // Find actual finishing order
+      const entries = raceResult.entries
+        .filter((e) => e.finishPosition != null)
+        .sort((a, b) => (a.finishPosition ?? 99) - (b.finishPosition ?? 99));
 
-      // Get tansho payout for target boat
-      const tansho = raceResult.payouts?.find(
-        (p) => p.betType === "単勝" && p.combination === String(bet.boatNumber),
-      );
-      const payoutPer100 = won && tansho ? tansho.payout : 0;
-      const payout = won ? Math.round((bet.betAmount / 100) * payoutPer100) : 0;
+      const actual1st = entries[0]?.boatNumber;
+      const actual2nd = entries[1]?.boatNumber;
+      const actual3rd = entries[2]?.boatNumber;
+
+      // Check if any of our trifecta tickets hit
+      const cached = state.predictionCache?.get(slot.raceId);
+      const tickets = cached?.tickets ?? [];
+      const hitCombo =
+        actual1st && actual2nd && actual3rd
+          ? `${actual1st}-${actual2nd}-${actual3rd}`
+          : null;
+      const won = hitCombo != null && tickets.includes(hitCombo);
+
+      // Get trifecta payout from race_payouts
+      let payout = 0;
+      if (won) {
+        const trifectaPayout = raceResult.payouts?.find(
+          (p) => p.betType === "3連単" && p.combination === hitCombo,
+        );
+        if (trifectaPayout) {
+          // betAmount = unit × nTickets. unit = betAmount / nTickets
+          const unit = tickets.length > 0 ? bet.betAmount / tickets.length : 0;
+          payout = Math.round((unit / 100) * trifectaPayout.payout);
+        }
+      }
+
       state.bankroll += payout;
       results.set(slot.raceId, { won, payout });
+
+      // Log result with finishing order detail
+      const resultStr = hitCombo ?? "N/A";
+      const pickHit = actual1st === bet.boatNumber ? "1着○" : "1着×";
+      const pl = payout - bet.betAmount;
+      const plStr =
+        pl >= 0
+          ? `+¥${pl.toLocaleString()}`
+          : `-¥${Math.abs(pl).toLocaleString()}`;
+      logger.info(
+        `[TRI] ${won ? "WIN" : "LOSE"}: ${slot.stadiumName} R${slot.raceNumber} | 結果${resultStr} | 予想${bet.boatNumber}号艇${pickHit} | ${plStr} (残¥${state.bankroll.toLocaleString()})`,
+      );
 
       await notifyResult({
         stadiumName: slot.stadiumName,
@@ -712,38 +636,15 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   );
 
   const schedule = buildSchedule(races, stadiumNames, date);
-  logger.info(`Scheduled ${schedule.length} races`);
-
-  // Log today's schedule overview
-  const byStadium = new Map<
-    string,
-    { first: string; last: string; count: number }
-  >();
-  for (const s of schedule) {
-    const entry = byStadium.get(s.stadiumName);
-    if (!entry) {
-      byStadium.set(s.stadiumName, {
-        first: s.deadline,
-        last: s.deadline,
-        count: 1,
-      });
-    } else {
-      entry.last = s.deadline;
-      entry.count++;
-    }
-  }
-  logger.info("Today's schedule:");
-  for (const [name, info] of byStadium) {
-    logger.info(`  ${name}: ${info.count}R (${info.first} ~ ${info.last})`);
-  }
   if (schedule.length > 0) {
-    logger.info(
-      `  First deadline: ${schedule[0].deadline} (${schedule[0].stadiumName} R${schedule[0].raceNumber})`,
-    );
+    const venues = new Set(schedule.map((s) => s.stadiumName));
+    const first = schedule[0];
     const last = schedule[schedule.length - 1];
     logger.info(
-      `  Last deadline:  ${last.deadline} (${last.stadiumName} R${last.raceNumber})`,
+      `Schedule: ${schedule.length}R / ${venues.size} venues | ${first.deadline} ~ ${last.deadline}`,
     );
+  } else {
+    logger.info("Schedule: 0 races");
   }
 
   // Prediction cache is built on-demand when races reach "predict" state
@@ -784,7 +685,6 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   process.on("SIGTERM", shutdown);
 
   // Main loop: run daily, sleep until next day when done
-  // biome-ignore lint/correctness/noConstantCondition: intentional daemon loop
   while (true) {
     // Immediate first poll
     await poll(state, opts);
@@ -903,7 +803,14 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     }[];
 
     const newSchedule = buildSchedule(newRaces, stadiumNames, newDate);
-    logger.info(`Scheduled ${newSchedule.length} races`);
+    if (newSchedule.length > 0) {
+      const newVenues = new Set(newSchedule.map((s) => s.stadiumName));
+      const newFirst = newSchedule[0];
+      const newLast = newSchedule[newSchedule.length - 1];
+      logger.info(
+        `Schedule: ${newSchedule.length}R / ${newVenues.size} venues | ${newFirst.deadline} ~ ${newLast.deadline}`,
+      );
+    }
 
     // Reset state for new day
     state.schedule = newSchedule;
