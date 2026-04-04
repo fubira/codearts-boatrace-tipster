@@ -344,7 +344,79 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         );
       }
 
+      // Bet decision at T-5min (trifecta EV is pre-computed, no live odds needed)
+      const evThresholdPct = opts.evThreshold * 100;
       for (const slot of actionable.predict) {
+        const cached = state.predictionCache?.get(slot.raceId);
+        if (!cached) {
+          slot.status = "predicted";
+          continue;
+        }
+
+        const label = `${slot.stadiumName} R${slot.raceNumber}`;
+        const exhTag = cached.hasExhibition ? "" : " [no-exh]";
+        const evFrac = cached.ev;
+        const evPct = evFrac * 100;
+        const isBet = evFrac >= opts.evThreshold;
+
+        let thresholdTag = "";
+        if (!isBet) {
+          const wouldPass = [10, 20, 30].filter((t) => evPct >= t);
+          thresholdTag =
+            wouldPass.length > 0
+              ? ` (would buy ≥${wouldPass[wouldPass.length - 1]}%)`
+              : "";
+        }
+
+        const base = `${label} | ${cached.winnerPick}号艇1着 | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct.toFixed(1)}% | ${cached.tickets.length}pt`;
+
+        if (isBet) {
+          const unit = calcTrifectaUnit(state.bankroll, opts.betCap);
+          const totalWager = unit * cached.tickets.length;
+
+          if (unit > 0 && totalWager <= state.bankroll) {
+            const decision: BetDecision = {
+              raceId: slot.raceId,
+              stadiumName: slot.stadiumName,
+              raceNumber: slot.raceNumber,
+              boatNumber: cached.winnerPick,
+              prob: cached.winnerProb,
+              odds: 0,
+              ev: evPct,
+              betAmount: totalWager,
+              recommend: true,
+            };
+            bets.set(slot.raceId, decision);
+
+            const ticketStr = cached.tickets.slice(0, 3).join(", ");
+            const moreStr =
+              cached.tickets.length > 3 ? ` +${cached.tickets.length - 3}` : "";
+            logger.info(
+              `[TRI] BET: ${base} | ¥${unit}×${cached.tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}${moreStr}${exhTag}`,
+            );
+
+            await notifyPrediction({
+              stadiumName: slot.stadiumName,
+              raceNumber: slot.raceNumber,
+              deadline: slot.deadline,
+              prob: cached.winnerProb,
+              odds: 0,
+              ev: evPct,
+              betAmount: totalWager,
+            });
+
+            // TODO: teleboat purchase for trifecta (Phase 2)
+
+            state.bankroll -= totalWager;
+          } else {
+            logger.info(`[TRI] SKIP: ${base} | bankroll insufficient${exhTag}`);
+          }
+        } else {
+          logger.info(
+            `[TRI] ---: ${base} | <${evThresholdPct.toFixed(0)}%${thresholdTag}${exhTag}`,
+          );
+        }
+
         slot.status = "predicted";
       }
     } catch (err) {
@@ -355,23 +427,10 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     }
   }
 
-  // 3. Trifecta bet decision at T-1min
-  // EV is pre-computed by predict_trifecta.py using DB trifecta odds.
-  // 3連単 pool is ~¥93M so pre-computed EV is stable enough.
-  // We still fetch oddsTf to update DB, but EV decision uses cached value.
+  // 3. Fetch oddsTf at T-1min for DB update only (bet decision already made at T-5)
   for (const slot of actionable.odds) {
-    const cached = state.predictionCache?.get(slot.raceId);
-    if (!cached) {
-      slot.status = "decided";
-      continue;
-    }
-
-    const label = `${slot.stadiumName} R${slot.raceNumber}`;
-    const exhTag = cached.hasExhibition ? "" : " [no-exh]";
     const stadiumCode = padStadiumCode(slot.stadiumId);
-
     try {
-      // Fetch latest oddsTf to keep DB up-to-date
       const params: RaceParams = {
         raceNumber: slot.raceNumber,
         stadiumCode,
@@ -395,74 +454,11 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
           ]);
         }
       }
-
-      const evFrac = cached.ev;
-      const evPct = evFrac * 100;
-      const evThresholdPct = opts.evThreshold * 100;
-      const isBet = evFrac >= opts.evThreshold;
-
-      // Build threshold tag for non-bet races: show which thresholds it would pass
-      let thresholdTag = "";
-      if (!isBet) {
-        const wouldPass = [10, 20, 30].filter((t) => evPct >= t);
-        thresholdTag =
-          wouldPass.length > 0
-            ? ` (would buy ≥${wouldPass[wouldPass.length - 1]}%)`
-            : "";
-      }
-
-      const base = `${label} | ${cached.winnerPick}号艇1着 | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct.toFixed(1)}% | ${cached.tickets.length}pt`;
-
-      if (isBet) {
-        const unit = calcTrifectaUnit(state.bankroll, opts.betCap);
-        const totalWager = unit * cached.tickets.length;
-
-        if (unit > 0 && totalWager <= state.bankroll) {
-          const decision: BetDecision = {
-            raceId: slot.raceId,
-            stadiumName: slot.stadiumName,
-            raceNumber: slot.raceNumber,
-            boatNumber: cached.winnerPick,
-            prob: cached.winnerProb,
-            odds: 0,
-            ev: evPct,
-            betAmount: totalWager,
-            recommend: true,
-          };
-          bets.set(slot.raceId, decision);
-
-          const ticketStr = cached.tickets.slice(0, 3).join(", ");
-          const moreStr =
-            cached.tickets.length > 3 ? ` +${cached.tickets.length - 3}` : "";
-          logger.info(
-            `[TRI] BET: ${base} | ¥${unit}×${cached.tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}${moreStr}${exhTag}`,
-          );
-
-          await notifyPrediction({
-            stadiumName: slot.stadiumName,
-            raceNumber: slot.raceNumber,
-            deadline: slot.deadline,
-            prob: cached.winnerProb,
-            odds: 0,
-            ev: evPct,
-            betAmount: totalWager,
-          });
-
-          // TODO: teleboat purchase for trifecta (Phase 2)
-
-          state.bankroll -= totalWager;
-        } else {
-          logger.info(`[TRI] SKIP: ${base} | bankroll insufficient${exhTag}`);
-        }
-      } else {
-        logger.info(
-          `[TRI] ---: ${base} | <${evThresholdPct.toFixed(0)}%${thresholdTag}${exhTag}`,
-        );
-      }
     } catch (err) {
-      await notifyError(`odds ${label}`, err);
+      logger.warn(
+        `Failed to fetch odds: ${slot.stadiumName} R${slot.raceNumber}: ${err}`,
+      );
     }
-
     slot.status = "decided";
   }
 

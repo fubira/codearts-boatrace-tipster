@@ -32,9 +32,9 @@ export interface BetDecision {
 }
 
 // Minutes before deadline to trigger each action
-const BEFORE_INFO_LEAD = 5; // exhibition data may not be ready until ~5min before deadline
-const PREDICT_LEAD = 3; // ML prediction (re-scrapes exhibition if missing)
-const ODDS_LEAD = 1; // boatcast odds fetch + EV decision (as late as possible)
+const BEFORE_INFO_LEAD = 7; // exhibition data fetch
+const PREDICT_LEAD = 5; // ML prediction + EV decision + Slack notification (5min for manual purchase)
+const ODDS_LEAD = 1; // oddsTf DB update only (no bet decision)
 // Minutes after deadline to check for results
 const RESULT_DELAY = 12;
 // If deadline passed by this many minutes and still "waiting", skip entirely

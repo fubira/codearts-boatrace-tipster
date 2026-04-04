@@ -85,26 +85,26 @@ describe("getActionableRaces", () => {
     expect(results).toHaveLength(0);
   });
 
-  test("does not return beforeInfo when more than 5 min before deadline", () => {
+  test("does not return beforeInfo when more than 7 min before deadline", () => {
     const slot = makeSlot({ deadlineMs, status: "waiting" });
-    const now = deadlineMs - 6 * 60_000; // 6 min before
+    const now = deadlineMs - 8 * 60_000; // 8 min before
 
     const { beforeInfo } = getActionableRaces([slot], now);
     expect(beforeInfo).toHaveLength(0);
   });
 
-  test("returns predict when within 3 min of deadline", () => {
+  test("returns predict when within 5 min of deadline", () => {
     const slot = makeSlot({ deadlineMs, status: "before_info" });
-    const now = deadlineMs - 2 * 60_000; // 2 min before
+    const now = deadlineMs - 4 * 60_000; // 4 min before
 
     const { beforeInfo, predict } = getActionableRaces([slot], now);
     expect(beforeInfo).toHaveLength(0);
     expect(predict).toHaveLength(1);
   });
 
-  test("does not return predict when more than 3 min before deadline", () => {
+  test("does not return predict when more than 5 min before deadline", () => {
     const slot = makeSlot({ deadlineMs, status: "before_info" });
-    const now = deadlineMs - 4 * 60_000; // 4 min before
+    const now = deadlineMs - 6 * 60_000; // 6 min before
 
     const { predict } = getActionableRaces([slot], now);
     expect(predict).toHaveLength(0);
