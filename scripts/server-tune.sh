@@ -241,8 +241,11 @@ _build_cmd() {
       cmd="uv run --directory ml python -m scripts.train_boat1_binary"
       cmd+=" --mode optuna"
       ;;
+    trifecta)
+      cmd="uv run --directory ml python -m scripts.tune_trifecta"
+      ;;
     *)
-      echo "ERROR: unknown model '${MODEL}' (use: ranking | boat1)" >&2
+      echo "ERROR: unknown model '${MODEL}' (use: ranking | boat1 | trifecta)" >&2
       exit 1
       ;;
   esac
