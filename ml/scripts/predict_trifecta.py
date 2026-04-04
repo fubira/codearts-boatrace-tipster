@@ -28,6 +28,7 @@ from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
 from boatrace_tipster_ml.feature_config import prepare_feature_matrix
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import load_model, load_model_meta
+from boatrace_tipster_ml.snapshot_features import build_features_from_snapshot
 
 FIELD_SIZE = 6
 DEFAULT_B1_THRESHOLD = 0.482
@@ -84,14 +85,19 @@ def predict_trifecta(
     db_path: str,
     b1_threshold: float | None = None,
     ev_threshold: float | None = None,
+    snapshot_path: str | None = None,
 ) -> dict:
     next_day = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime(
         "%Y-%m-%d"
     )
 
-    # Build features
+    # Build features (fast path with snapshot, or full pipeline)
     with contextlib.redirect_stdout(sys.stderr):
-        df = build_features_df(db_path, start_date=date, end_date=next_day)
+        if snapshot_path:
+            print(f"Using snapshot: {snapshot_path}")
+            df = build_features_from_snapshot(db_path, snapshot_path, date)
+        else:
+            df = build_features_df(db_path, start_date=date, end_date=next_day)
 
     if len(df) == 0:
         return {
@@ -260,12 +266,15 @@ def main():
                         help="Override b1_threshold (default: from model_meta)")
     parser.add_argument("--ev-threshold", type=float, default=None,
                         help="Override ev_threshold (default: from model_meta)")
+    parser.add_argument("--snapshot", default=None,
+                        help="Stats snapshot path for fast inference")
     args = parser.parse_args()
 
     result = predict_trifecta(
         args.date, args.model_dir, args.db_path,
         b1_threshold=args.b1_threshold,
         ev_threshold=args.ev_threshold,
+        snapshot_path=args.snapshot,
     )
     json.dump(result, sys.stdout, ensure_ascii=False, default=str)
 

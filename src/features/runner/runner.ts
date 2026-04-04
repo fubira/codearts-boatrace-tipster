@@ -1,5 +1,6 @@
 /** Daemon that automates scrape → predict → notify cycle. */
 
+import { existsSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   closeDatabase,
@@ -86,6 +87,7 @@ interface RunnerState {
   bankroll: number;
   date: string;
   lastStatusLine: string;
+  snapshotPath?: string; // stats snapshot for fast inference
 }
 
 function todayJST(): string {
@@ -152,12 +154,95 @@ function scrapeResultForRace(
 }
 
 // ---------------------------------------------------------------------------
+// Stats snapshot
+// ---------------------------------------------------------------------------
+
+const SNAPSHOTS_DIR = resolve(config.projectRoot, "data/stats-snapshots");
+const SNAPSHOT_RETENTION_DAYS = 30;
+
+async function buildStatsSnapshot(date: string): Promise<string | undefined> {
+  // through_date = yesterday (exclude today for leak-safe stats)
+  const yesterday = new Date(date);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const throughDate = yesterday.toISOString().slice(0, 10);
+
+  const snapshotPath = resolve(SNAPSHOTS_DIR, `${throughDate}.db`);
+
+  // Skip if already exists (e.g., restart on same day)
+  if (existsSync(snapshotPath)) {
+    logger.info(`Snapshot already exists: ${throughDate}.db`);
+    rotateSnapshots();
+    return snapshotPath;
+  }
+
+  logger.info(`Building stats snapshot through ${throughDate}...`);
+  mkdirSync(SNAPSHOTS_DIR, { recursive: true });
+
+  const { cmd, cwd } = pythonCommand("scripts.build_snapshot", [
+    "--through-date",
+    throughDate,
+    "--db-path",
+    config.dbPath,
+    "--output",
+    snapshotPath,
+  ]);
+
+  const SNAPSHOT_TIMEOUT_MS = 120_000;
+  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
+
+  try {
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const exitCode = await proc.exited;
+    if (stdout) logger.debug(stdout.trim());
+    if (stderr) logger.debug(stderr.trim());
+    if (exitCode !== 0) {
+      logger.error(`Snapshot build failed (exit ${exitCode}): ${stderr}`);
+      return undefined;
+    }
+    logger.info(`Snapshot built: ${throughDate}.db`);
+    rotateSnapshots();
+    return snapshotPath;
+  } catch {
+    proc.kill(9);
+    logger.error(
+      `Snapshot build timed out after ${SNAPSHOT_TIMEOUT_MS / 1000}s`,
+    );
+    return undefined;
+  }
+}
+
+function rotateSnapshots(): void {
+  try {
+    const files = readdirSync(SNAPSHOTS_DIR)
+      .filter((f) => f.endsWith(".db"))
+      .sort();
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - SNAPSHOT_RETENTION_DAYS);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+    for (const f of files) {
+      const dateStr = f.replace(".db", "");
+      if (dateStr < cutoffStr) {
+        unlinkSync(resolve(SNAPSHOTS_DIR, f));
+        logger.debug(`Rotated old snapshot: ${f}`);
+      }
+    }
+  } catch {
+    // Ignore rotation errors
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Prediction
 // ---------------------------------------------------------------------------
 
 async function runPrediction(
   date: string,
   opts: RunnerOptions,
+  snapshotPath?: string,
 ): Promise<
   {
     raceId: number;
@@ -170,7 +255,7 @@ async function runPrediction(
   }[]
 > {
   const modelDir = resolve(config.projectRoot, "ml/models/trifecta_v1");
-  const { cmd, cwd } = pythonCommand("scripts.predict_trifecta", [
+  const args = [
     "--date",
     date,
     "--model-dir",
@@ -179,7 +264,11 @@ async function runPrediction(
     config.dbPath,
     "--ev-threshold",
     "0", // Return all EV>0 candidates; runner filters by opts.evThreshold
-  ]);
+  ];
+  if (snapshotPath) {
+    args.push("--snapshot", snapshotPath);
+  }
+  const { cmd, cwd } = pythonCommand("scripts.predict_trifecta", args);
   const PREDICTION_TIMEOUT_MS = 60_000;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
 
@@ -371,7 +460,11 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     try {
       if (needsRebuild) {
         logger.info("Running trifecta prediction...");
-        const predictions = await runPrediction(state.date, opts);
+        const predictions = await runPrediction(
+          state.date,
+          opts,
+          state.snapshotPath,
+        );
         state.predictionCache = new Map();
         for (const p of predictions) {
           state.predictionCache.set(p.raceId, {
@@ -696,6 +789,9 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     logger.info("Schedule: 0 races");
   }
 
+  // Build stats snapshot for fast inference
+  const snapshotPath = await buildStatsSnapshot(date);
+
   // Prediction cache is built on-demand when races reach "predict" state
   // (after exhibition data has been scraped)
   const predictionCache: PredictionCache | null = null;
@@ -708,6 +804,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     bankroll: opts.bankroll,
     date,
     lastStatusLine: "",
+    snapshotPath,
   };
 
   await notifyStartup({
