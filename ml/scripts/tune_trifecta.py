@@ -209,7 +209,7 @@ def main():
     fold_b1_data = []
     for i, fold in enumerate(folds):
         test_dates = fold["period"]["test"]
-        test_from, test_to = test_dates.split("~")
+        test_from, test_to = [d.strip() for d in test_dates.split("~")]
 
         train_fold = df[df["race_date"] < test_from]
         test_fold = df[
