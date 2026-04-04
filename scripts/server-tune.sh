@@ -243,6 +243,12 @@ _build_cmd() {
       ;;
     trifecta)
       cmd="uv run --directory ml python -m scripts.tune_trifecta"
+      cmd+=" --trials ${TRIALS}"
+      cmd+=" --n-folds ${FOLDS}"
+      cmd+=" --fold-months ${FOLD_MONTHS}"
+      cmd+=" --seed ${SEED}"
+      echo "$cmd"
+      return
       ;;
     *)
       echo "ERROR: unknown model '${MODEL}' (use: ranking | boat1 | trifecta)" >&2
