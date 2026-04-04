@@ -197,29 +197,38 @@ result = prior / prior_count      # NaN if no prior data
 
 学習時は漏洩あり（intraday cumsum）で木構造を改善し、評価時は `neutralize_leaked_features()` でレース内 mean に置換する。学習時の漏洩を除去してはならない。
 
-## EV 戦略
+## EV 戦略（3連単 X-noB1-noB1）
 
-### 単勝 EV（メイン）
+1号艇飛び予測時、非1号艇の1着固定 × 2-3着全流し（12点）。
 
 ```
-EV = model_prob × tansho_odds × 100 - 100
-EV >= 0 のレースで単勝1号艇を購入
+1. b1_prob < b1_threshold → 1号艇が負けると判断
+2. ランキングモデルの softmax 確率で1着 X を予測（非1号艇の最上位）
+3. EV = model_prob / market_prob × 0.75 - 1
+4. EV >= ev_threshold で購入
+5. 12点: X-{非1,非X}-{非1,非X}
 ```
 
-- WF-CV 全4フォールドで ROI 115-132%
 - オッズは特徴量に含めない（モデルは独立に確率推定）
-- market impact 上限: 1ベット約 ¥4,000（単勝プール ~94万円/レース）
+- 3連単プール: 一般 ¥34M、G1 ¥108M → betCap ¥2,000 は全場安全
 
-### 2連複 EV（サブ）
+## モンテカルロシミュレーション
 
+バックテスト統計に基づく収益・リスク予測。
+
+```bash
+# デフォルト（現在のWF-CV統計で10,000回）
+uv run --directory ml python -m scripts.simulate_monte_carlo
+
+# パラメータ変更
+uv run --directory ml python -m scripts.simulate_monte_carlo --bankroll 100000 --bet-cap 3000
+
+# 最新のバックテストから経験的パラメータを収集して実行
+uv run --directory ml python -m scripts.simulate_monte_carlo --from-backtest --ev-threshold 0.33
+
+# カスタム期間
+uv run --directory ml python -m scripts.simulate_monte_carlo --days 7,14,30,60
 ```
-ランキングモデルの上位2艇を選択 → 2連複1点買い
-EV = softmax_prob × quinella_odds × 100 - 100
-EV >= 10 のレースで購入
-```
-
-- WF-CV 4フォールドで ROI 99-113%（EV>=10 で全フォールド 100%超）
-- ベット数: ~2,200/fold
 
 ## Stats Snapshot（推論高速化）
 

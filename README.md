@@ -79,10 +79,6 @@ bun run start predict -d 2026-04-02          # テーブル表示
 bun run start predict -d 2026-04-02 --json   # JSON 出力
 bun run start predict -d 2026-04-02 --all    # 全レース表示
 
-# Stats snapshot（推論高速化）
-uv run --directory ml python -m scripts.build_snapshot --through-date 2026-04-01
-uv run --directory ml python -m scripts.predict_trifecta --date 2026-04-02 --snapshot data/stats-snapshots/2026-04-01.db
-
 # 期間バックテスト
 bun run start analyze --from 2026-03-19 --to 2026-04-03
 bun run start analyze --from 2026-03-19 --to 2026-04-03 --ev-threshold 20  # EV≥+20% のみ
