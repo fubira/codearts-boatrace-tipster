@@ -21,11 +21,15 @@ import {
   type RaceParams,
   STADIUMS,
   beforeInfoUrl,
+  odds3TUrl,
   oddsTfUrl,
   raceResultUrl,
 } from "@/features/scraper/sources/boatrace/constants";
 import { discoverDateSchedule } from "@/features/scraper/sources/boatrace/discovery";
-import { parseOddsTf } from "@/features/scraper/sources/boatrace/odds-parsers";
+import {
+  parseOdds3T,
+  parseOddsTf,
+} from "@/features/scraper/sources/boatrace/odds-parsers";
 import {
   parseBeforeInfo,
   parseRaceResult,
@@ -318,12 +322,52 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       logger.info(`Re-scraped exhibition data for ${rescraped} race(s)`);
     }
 
-    // Rebuild prediction cache (trifecta: b1 binary + LambdaRank + EV)
-    const needsRebuild = actionable.predict.some(
-      (s) =>
-        !state.predictionCache?.has(s.raceId) ||
-        !state.predictionCache?.get(s.raceId)?.hasExhibition,
+    // Fetch 3連単 odds for races that need prediction (required for EV calculation)
+    let oddsFetched = 0;
+    for (const slot of actionable.predict) {
+      const stadiumCode = padStadiumCode(slot.stadiumId);
+      const params: RaceParams = {
+        raceNumber: slot.raceNumber,
+        stadiumCode,
+        date: state.date.replace(/-/g, ""),
+      };
+      try {
+        const page = fetchPage(odds3TUrl(params), { skipCache: true });
+        if (page) {
+          const entries = parseOdds3T(page.html);
+          if (entries.length > 0) {
+            saveOdds([
+              {
+                stadiumId: slot.stadiumId,
+                raceDate: state.date,
+                raceNumber: slot.raceNumber,
+                entries: entries.map((e) => ({
+                  betType: e.betType,
+                  combination: e.combination,
+                  odds: e.odds,
+                })),
+              },
+            ]);
+            oddsFetched++;
+          }
+        }
+      } catch (_err) {
+        // Odds may not be available yet for early races
+      }
+    }
+    logger.info(
+      `Trifecta odds: ${oddsFetched}/${actionable.predict.length} fetched`,
     );
+
+    // Rebuild prediction cache (trifecta: b1 binary + LambdaRank + EV)
+    // Rebuild when: new races, exhibition data updated, or new odds fetched
+    const needsRebuild =
+      oddsFetched > 0 ||
+      actionable.predict.some(
+        (s) =>
+          !state.predictionCache?.has(s.raceId) ||
+          !state.predictionCache?.get(s.raceId)?.hasExhibition,
+      );
     try {
       if (needsRebuild) {
         logger.info("Running trifecta prediction...");
