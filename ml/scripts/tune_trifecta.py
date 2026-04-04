@@ -257,9 +257,10 @@ def main():
 
         # Strategy parameters
         b1_threshold = trial.suggest_float("b1_threshold", 0.30, 0.55)
-        ev_threshold = trial.suggest_float("ev_threshold", -0.3, 0.5)
+        ev_threshold = trial.suggest_float("ev_threshold", -0.1, 0.5)
 
         rois = []
+        total_races = 0
         for i, fold in enumerate(folds):
             with contextlib.redirect_stdout(io.StringIO()):
                 rank_model, _ = train_model(
@@ -290,13 +291,16 @@ def main():
                 ev_threshold=ev_threshold,
             )
             rois.append(result["roi"])
+            total_races += result["races"]
 
         mean_roi = float(np.mean(rois))
         std_roi = float(np.std(rois))
         min_roi = float(np.min(rois))
 
-        # Penalize high variance: use Sharpe-like metric
-        # objective = mean_roi - 0.5 * std_roi (reward stability)
+        # Require minimum bet volume (too few races = unreliable Sharpe)
+        if total_races < 50:
+            return -999.0
+
         sharpe = (mean_roi - 1.0) / std_roi if std_roi > 0 else 0
 
         trial.set_user_attr("mean_roi", mean_roi)
@@ -305,10 +309,7 @@ def main():
         trial.set_user_attr("roi_max", float(np.max(rois)))
         trial.set_user_attr("rois", [round(r, 4) for r in rois])
         trial.set_user_attr("sharpe", round(sharpe, 3))
-        trial.set_user_attr(
-            "avg_races",
-            round(np.mean([r["races"] for r in [result]]), 1),
-        )
+        trial.set_user_attr("total_races", total_races)
 
         # Optimize Sharpe ratio (stability-adjusted ROI)
         return sharpe
@@ -353,11 +354,12 @@ def main():
         rel = t.params.get("relevance", "?")
         b1t = t.params.get("b1_threshold", 0)
         evt = t.params.get("ev_threshold", 0)
+        races = ua.get("total_races", "?")
         print(
             f"  #{t.number:>3}: Sharpe={t.value:.2f} "
             f"ROI={ua['mean_roi']:.0%}±{ua['roi_std']:.0%} "
             f"[{ua['roi_min']:.0%}-{ua['roi_max']:.0%}] "
-            f"rel={rel} b1<{b1t:.0%} ev>{evt:+.0%}"
+            f"n={races} rel={rel} b1<{b1t:.0%} ev>{evt:+.0%}"
         )
 
     print(f"\nTotal time: {time.time() - t0:.1f}s")
