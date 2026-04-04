@@ -16,6 +16,7 @@ Usage:
 import argparse
 import contextlib
 import io
+import os
 import sys
 import time
 from collections import defaultdict
@@ -62,8 +63,6 @@ def load_and_train(db_path, train_end="2026-01-01", val_days=60, model_dir=None)
     If model_dir is given but empty, train and save there.
     If model_dir is None, always train (no save).
     """
-    import os
-
     b1_dir = os.path.join(model_dir, "boat1") if model_dir else None
     rank_dir = os.path.join(model_dir, "ranking") if model_dir else None
 
