@@ -397,8 +397,16 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
           continue;
         }
 
+        // Don't bet without exhibition data — keep at before_info to retry next poll
+        if (!cached.hasExhibition) {
+          logger.info(
+            `[TRI] WAIT: ${slot.stadiumName} R${slot.raceNumber} | exhibition data missing, retrying next poll`,
+          );
+          slot.status = "before_info";
+          continue;
+        }
+
         const label = `${slot.stadiumName} R${slot.raceNumber}`;
-        const exhTag = cached.hasExhibition ? "" : " [no-exh]";
         const evFrac = cached.ev;
         const evPct = evFrac * 100;
         const isBet = evFrac >= opts.evThreshold;
@@ -436,7 +444,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             const moreStr =
               cached.tickets.length > 3 ? ` +${cached.tickets.length - 3}` : "";
             logger.info(
-              `[TRI] BET: ${base} | ¥${unit}×${cached.tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}${moreStr}${exhTag}`,
+              `[TRI] BET: ${base} | ¥${unit}×${cached.tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}${moreStr}`,
             );
 
             await notifyPrediction({
@@ -453,11 +461,11 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
             state.bankroll -= totalWager;
           } else {
-            logger.info(`[TRI] SKIP: ${base} | bankroll insufficient${exhTag}`);
+            logger.info(`[TRI] SKIP: ${base} | bankroll insufficient`);
           }
         } else {
           logger.info(
-            `[TRI] ---: ${base} | <${evThresholdPct.toFixed(0)}%${thresholdTag}${exhTag}`,
+            `[TRI] ---: ${base} | <${evThresholdPct.toFixed(0)}%${thresholdTag}`,
           );
         }
 
