@@ -25,7 +25,8 @@ export const scrapeCommand = new Command("scrape")
   .option("-r, --race <numbers>", "race number(s) (1-12, comma-separated)")
   .option("-l, --limit <n>", "max races to scrape", Number.parseInt)
   .option("--dry-run", "parse only, do not save to DB")
-  .option("--force", "re-scrape even if already in DB")
+  .option("--force", "re-scrape even if already in DB (implies --no-cache)")
+  .option("--no-cache", "ignore cached HTML, always fetch from network")
   .option("--cache-only", "download HTML to cache without parsing")
   .option("--from-cache", "parse from cache only, never fetch from network")
   .action((opts) => {
@@ -51,9 +52,16 @@ export const scrapeCommand = new Command("scrape")
       process.exit(1);
     }
 
+    if (opts.noCache && opts.fromCache) {
+      console.error(
+        "Error: --no-cache and --from-cache cannot be used together",
+      );
+      process.exit(1);
+    }
+
     enableCache();
 
-    if (opts.force) {
+    if (opts.force || opts.noCache) {
       disableCacheRead();
     }
 

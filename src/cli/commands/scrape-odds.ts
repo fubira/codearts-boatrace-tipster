@@ -5,6 +5,7 @@ import {
 } from "@/features/database";
 import type { OddsData } from "@/features/database";
 import {
+  disableCacheRead,
   enableCache,
   setCacheRequired,
 } from "@/features/scraper/cache-manager";
@@ -94,6 +95,7 @@ export const scrapeOddsCommand = new Command("scrape-odds")
   .option("-y, --year <year>", "target year (YYYY)")
   .option("-s, --stadium <id>", "stadium code (01-24)")
   .option("--dry-run", "parse only, do not save to DB")
+  .option("--no-cache", "ignore cached HTML, always fetch from network")
   .option("--cache-only", "download HTML to cache without parsing")
   .option("--from-cache", "parse from cache only, never fetch from network")
   .action((opts) => {
@@ -109,7 +111,15 @@ export const scrapeOddsCommand = new Command("scrape-odds")
       process.exit(1);
     }
 
+    if (opts.noCache && opts.fromCache) {
+      console.error(
+        "Error: --no-cache and --from-cache cannot be used together",
+      );
+      process.exit(1);
+    }
+
     enableCache();
+    if (opts.noCache) disableCacheRead();
     if (opts.fromCache) setCacheRequired();
 
     if (!opts.dryRun && !opts.cacheOnly) {
