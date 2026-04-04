@@ -828,15 +828,16 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     }
 
     // Sleep until next day 7:00 JST
-    const nextStart = new Date();
-    nextStart.setHours(nextStart.getHours() + 9); // UTC → JST
-    const jstHour = nextStart.getHours();
-    // Calculate ms until tomorrow 7:00 JST
-    const tomorrow7 = new Date(nextStart);
-    tomorrow7.setDate(tomorrow7.getDate() + (jstHour >= 7 ? 1 : 0));
-    tomorrow7.setHours(7, 0, 0, 0);
-    tomorrow7.setHours(tomorrow7.getHours() - 9); // JST → UTC
-    const sleepMs = tomorrow7.getTime() - Date.now();
+    const now = Date.now();
+    const jstNow = now + 9 * 3600_000; // UTC ms → JST ms
+    const jstMidnight = jstNow - (jstNow % (24 * 3600_000)); // JST midnight (in JST ms)
+    const jstHourMs = jstNow - jstMidnight;
+    const jst7am = 7 * 3600_000;
+    const target =
+      jstHourMs >= jst7am
+        ? jstMidnight + 24 * 3600_000 + jst7am // tomorrow 7:00 JST
+        : jstMidnight + jst7am; // today 7:00 JST
+    const sleepMs = target - 9 * 3600_000 - now; // JST ms → UTC ms
 
     logger.info(
       `Sleeping until tomorrow 07:00 JST (${Math.round(sleepMs / 3600_000)}h)`,
