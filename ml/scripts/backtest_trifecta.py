@@ -179,12 +179,17 @@ def evaluate_period(
                 a3 = b
 
         hit_odds = 0.0
-        if finish_map.get((rid, wp)) == 1 and a2 and a3:
+        allflow_odds = 0.0
+        pick_1st = finish_map.get((rid, wp)) == 1
+        if pick_1st and a2 and a3:
             hc = f"{wp}-{a2}-{a3}"
-            if hc in tkts:
-                ho = trifecta_odds.get((rid, hc))
-                if ho:
-                    hit_odds = ho
+            # All-flow: any 2-3 combo is a hit
+            ho = trifecta_odds.get((rid, hc))
+            if ho:
+                allflow_odds = ho
+            # noB1: only if combo is in noB1 tickets
+            if hc in tkts and ho:
+                hit_odds = ho
 
         results.append({
             "race_id": rid,
@@ -196,6 +201,8 @@ def evaluate_period(
             "tickets": len(tkts),
             "hit_odds": round(hit_odds, 1),
             "won": hit_odds > 0,
+            "pick_1st": pick_1st,
+            "allflow_odds": round(allflow_odds, 1),
         })
 
     return results

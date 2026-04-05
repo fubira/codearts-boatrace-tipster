@@ -247,9 +247,8 @@ def predict_trifecta(
             continue
         n_ev_pass += 1
 
-        # Build X-noB1-noB1 tickets (12 combinations)
-        excluded = {wp, 1}
-        flow = [int(b) for b in boats_2d[ri] if int(b) not in excluded]
+        # Build X-全流し tickets (20 combinations: wp fixed 1st, all others 2-3)
+        flow = [int(b) for b in boats_2d[ri] if int(b) != wp]
         tickets = []
         for b2 in flow:
             for b3 in flow:

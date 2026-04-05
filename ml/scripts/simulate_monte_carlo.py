@@ -216,7 +216,12 @@ def run_projection(
 # ---------------------------------------------------------------------------
 
 
-def _extract_params(all_results: list[dict], b1_threshold: float, ev_threshold: float) -> dict:
+def _extract_params(
+    all_results: list[dict],
+    b1_threshold: float,
+    ev_threshold: float,
+    all_flow: bool = False,
+) -> dict:
     """Extract MC parameters from backtest results by filtering with thresholds."""
     filtered = [r for r in all_results
                 if r["b1_prob"] < b1_threshold and r["ev"] >= ev_threshold]
@@ -226,11 +231,20 @@ def _extract_params(all_results: list[dict], b1_threshold: float, ev_threshold: 
         return {"hit_rate": 0, "bets_per_day": 0, "tickets_per_bet": 0,
                 "payout_mu": DEFAULTS["payout_mu"], "payout_sigma": DEFAULTS["payout_sigma"]}
 
-    n_wins = sum(1 for r in filtered if r["won"])
-    hit_rate = n_wins / n_bets
-    avg_tickets = np.mean([r["tickets"] for r in filtered])
+    if all_flow:
+        # X-全流し: hit when pick_1st is correct, 20 tickets
+        n_wins = sum(1 for r in filtered if r.get("pick_1st"))
+        avg_tickets = 20.0
+        payouts_when_hit = [r["allflow_odds"] for r in filtered
+                           if r.get("pick_1st") and r.get("allflow_odds", 0) > 0]
+    else:
+        # X-noB1-noB1: original 12 tickets
+        n_wins = sum(1 for r in filtered if r["won"])
+        avg_tickets = np.mean([r["tickets"] for r in filtered])
+        payouts_when_hit = [r["hit_odds"] for r in filtered if r["won"]]
 
-    payouts_when_hit = [r["hit_odds"] for r in filtered if r["won"]]
+    hit_rate = n_wins / n_bets
+
     if payouts_when_hit:
         log_payouts = np.log(payouts_when_hit)
         payout_mu = float(np.mean(log_payouts))
@@ -352,8 +366,9 @@ def main():
     parser.add_argument("--bets-per-day", type=float, default=None)
     # Compare mode: train once, sweep thresholds
     parser.add_argument("--compare", type=str, default=None,
-                        help="Compare multiple threshold sets. Format: 'b1:ev,b1:ev,...' "
-                             "e.g. '0.39:0.44,0.49:0.42,0.48:0.40'")
+                        help="Compare multiple threshold sets: 'b1:ev,b1:ev,...'")
+    parser.add_argument("--all-flow", action="store_true",
+                        help="Use X-全流し (20 tickets) instead of X-noB1-noB1 (12 tickets)")
     args = parser.parse_args()
 
     # Periods
@@ -366,14 +381,15 @@ def main():
     # Compare mode: single backtest, multiple threshold sweeps
     if args.compare:
         all_results = collect_all_candidates(args.n_folds)
+        flow_label = "全流し(20点)" if args.all_flow else "noB1(12点)"
         pairs = [p.strip().split(":") for p in args.compare.split(",")]
         for b1s, evs in pairs:
             b1_thr, ev_thr = float(b1s), float(evs)
-            params = _extract_params(all_results, b1_thr, ev_thr)
+            params = _extract_params(all_results, b1_thr, ev_thr, all_flow=args.all_flow)
             n = sum(1 for r in all_results
                     if r["b1_prob"] < b1_thr and r["ev"] >= ev_thr)
             print(f"\n{'='*70}")
-            print(f"b1<{b1_thr} ev>+{ev_thr:.0%} — {n} bets, "
+            print(f"[{flow_label}] b1<{b1_thr} ev>+{ev_thr:.0%} — {n} bets, "
                   f"{params['bets_per_day']:.2f}/day, hit={params['hit_rate']:.1%}")
             print(f"{'='*70}")
             run_projection(

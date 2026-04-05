@@ -63,7 +63,7 @@ export interface RunnerOptions {
   purchaseExecutor?: PurchaseExecutor | null;
 }
 
-/** Trifecta prediction: X-noB1-noB1 (12-ticket fixed 1st) */
+/** Trifecta prediction: X-allflow (20-ticket fixed 1st, all 2-3) */
 interface TrifectaPrediction {
   winnerPick: number;
   b1Prob: number;
