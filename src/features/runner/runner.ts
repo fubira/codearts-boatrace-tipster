@@ -73,8 +73,8 @@ interface TrifectaPrediction {
   hasExhibition: boolean;
 }
 
-// null value = evaluated but no qualifying prediction (b1_pass but no EV)
-type PredictionCache = Map<number, TrifectaPrediction | null>;
+// string value = skip reason (e.g. "no_odds", "ev_low:-0.123")
+type PredictionCache = Map<number, TrifectaPrediction | string>;
 
 interface RunnerState {
   schedule: RaceSlot[];
@@ -236,6 +236,12 @@ function rotateSnapshots(): void {
 // Prediction
 // ---------------------------------------------------------------------------
 
+interface SkipInfo {
+  b1_prob: number;
+  ev?: number;
+  reason: string;
+}
+
 interface PredictionResult {
   predictions: {
     raceId: number;
@@ -247,6 +253,7 @@ interface PredictionResult {
     hasExhibition: boolean;
   }[];
   evaluatedRaceIds: number[];
+  skipped: Record<number, SkipInfo>;
 }
 
 async function runPrediction(
@@ -332,8 +339,12 @@ async function runPrediction(
   );
 
   const evaluatedRaceIds: number[] = result.evaluated_race_ids ?? [];
+  const skipped: Record<
+    number,
+    { b1_prob: number; ev?: number; reason: string }
+  > = result.skipped ?? {};
 
-  return { predictions, evaluatedRaceIds };
+  return { predictions, evaluatedRaceIds, skipped };
 }
 
 /**
@@ -472,13 +483,23 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       (s) => !state.predictionCache?.has(s.raceId),
     );
     const exhibitionUpdated = actionable.predict.filter((s) => {
-      const cached = state.predictionCache?.get(s.raceId);
-      return cached !== undefined && cached !== null && !cached.hasExhibition;
+      if (!state.predictionCache?.has(s.raceId)) return false;
+      const cached = state.predictionCache.get(s.raceId);
+      // string = skip reason (b1_pass but no EV); re-predict when exhibition arrives
+      if (typeof cached === "string") return true;
+      return cached !== undefined && !cached.hasExhibition;
     });
-    const racesToPredict =
+    const oddsUpdatedRaces =
       oddsFetched > 0
-        ? actionable.predict
-        : [...uncachedRaces, ...exhibitionUpdated];
+        ? actionable.predict.filter((s) => state.predictionCache?.has(s.raceId))
+        : [];
+    const racesToPredict = [
+      ...new Map(
+        [...uncachedRaces, ...exhibitionUpdated, ...oddsUpdatedRaces].map(
+          (s) => [s.raceId, s],
+        ),
+      ).values(),
+    ];
     const needsRebuild = racesToPredict.length > 0;
     try {
       if (needsRebuild) {
@@ -499,10 +520,18 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         if (!state.predictionCache) {
           state.predictionCache = new Map();
         }
-        // Cache all evaluated races (b1_pass) so we don't re-run needlessly
+        // Cache all evaluated races (b1_pass) with skip info
         for (const raceId of result.evaluatedRaceIds) {
-          if (!state.predictionCache.has(raceId)) {
-            state.predictionCache.set(raceId, null);
+          const info = result.skipped[raceId];
+          if (info) {
+            const b1Pct = (info.b1_prob * 100).toFixed(0);
+            const skipStr =
+              info.reason === "no_odds"
+                ? `no_odds b1=${b1Pct}%`
+                : info.ev !== undefined
+                  ? `${info.reason} b1=${b1Pct}% EV=${(info.ev * 100).toFixed(1)}%`
+                  : `${info.reason} b1=${b1Pct}%`;
+            state.predictionCache.set(raceId, skipStr);
           }
         }
         // Overwrite with actual predictions for qualifying races
@@ -524,15 +553,15 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       // Bet decision at T-5min (trifecta EV is pre-computed, no live odds needed)
       const evThresholdPct = opts.evThreshold * 100;
       for (const slot of actionable.predict) {
-        const hasCacheEntry = state.predictionCache?.has(slot.raceId);
         const cached = state.predictionCache?.get(slot.raceId);
-        if (!cached) {
-          const reason = hasCacheEntry
-            ? "1号艇飛び予想だがオッズなし or EV不足"
-            : "1号艇勝ち予想";
-          logger.info(
-            `[TRI] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${reason}`,
-          );
+        if (!cached || typeof cached === "string") {
+          const label = `${slot.stadiumName} R${slot.raceNumber}`;
+          if (cached === undefined) {
+            logger.info(`[TRI] SKIP: ${label} | b1勝ち`);
+          } else {
+            // cached is skip reason string like "no_odds|b1=42.3|" or "ev_low|b1=42.3|ev=-5.2|"
+            logger.info(`[TRI] SKIP: ${label} | ${cached}`);
+          }
           slot.status = "predicted";
           continue;
         }
@@ -651,7 +680,8 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
       // Check if any of our trifecta tickets hit
       const cached = state.predictionCache?.get(slot.raceId);
-      const tickets = cached?.tickets ?? [];
+      const tickets =
+        cached && typeof cached !== "string" ? cached.tickets : [];
       const hitCombo =
         actual1st && actual2nd && actual3rd
           ? `${actual1st}-${actual2nd}-${actual3rd}`

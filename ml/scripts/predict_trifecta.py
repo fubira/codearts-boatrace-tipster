@@ -202,6 +202,7 @@ def predict_trifecta(
     # --- Build predictions ---
     predictions = []
     evaluated_race_ids = []
+    skipped: dict[int, dict] = {}  # race_id → {b1_prob, ev?, reason}
     n_total = len(b1_rows)
     n_b1_pass = 0
     n_has_odds = 0
@@ -228,17 +229,20 @@ def predict_trifecta(
         # Winner's softmax probability
         bidx = np.where(boats_2d[ri] == wp)[0]
         if len(bidx) == 0:
+            skipped[rid] = {"b1_prob": round(b1p, 4), "reason": "no_winner"}
             continue
         wprob = float(rank_probs[ri, bidx[0]])
 
         # Trifecta-implied EV
         mkt_prob = tri_win_prob.get((rid, wp), 0)
         if mkt_prob <= 0:
+            skipped[rid] = {"b1_prob": round(b1p, 4), "reason": "no_odds"}
             continue
         n_has_odds += 1
 
         ev = wprob / mkt_prob * 0.75 - 1
         if ev < ev_threshold:
+            skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev, 4), "reason": "ev_low"}
             continue
         n_ev_pass += 1
 
@@ -279,6 +283,7 @@ def predict_trifecta(
         "n_races": len(predictions),
         "predictions": predictions,
         "evaluated_race_ids": evaluated_race_ids,
+        "skipped": skipped,
         "stats": {
             "total": n_total,
             "b1_pass": n_b1_pass,
