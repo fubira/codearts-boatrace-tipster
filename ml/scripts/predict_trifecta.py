@@ -217,6 +217,7 @@ def predict_trifecta(
 
         b1p = float(b1_probs[bi])
         if b1p >= b1_threshold:
+            skipped[rid] = {"b1_prob": round(b1p, 4), "reason": "b1_win"}
             continue
         n_b1_pass += 1
         evaluated_race_ids.append(rid)

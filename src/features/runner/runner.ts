@@ -520,19 +520,15 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         if (!state.predictionCache) {
           state.predictionCache = new Map();
         }
-        // Cache all evaluated races (b1_pass) with skip info
-        for (const raceId of result.evaluatedRaceIds) {
-          const info = result.skipped[raceId];
-          if (info) {
-            const b1Pct = (info.b1_prob * 100).toFixed(0);
-            const skipStr =
-              info.reason === "no_odds"
-                ? `no_odds b1=${b1Pct}%`
-                : info.ev !== undefined
-                  ? `${info.reason} b1=${b1Pct}% EV=${(info.ev * 100).toFixed(1)}%`
-                  : `${info.reason} b1=${b1Pct}%`;
-            state.predictionCache.set(raceId, skipStr);
-          }
+        // Cache all skipped races with reason
+        for (const [ridStr, info] of Object.entries(result.skipped)) {
+          const rid = Number(ridStr);
+          const b1Pct = (info.b1_prob * 100).toFixed(0);
+          const skipStr =
+            info.ev !== undefined
+              ? `${info.reason} b1=${b1Pct}% EV=${(info.ev * 100).toFixed(1)}%`
+              : `${info.reason} b1=${b1Pct}%`;
+          state.predictionCache.set(rid, skipStr);
         }
         // Overwrite with actual predictions for qualifying races
         for (const p of result.predictions) {
@@ -555,13 +551,9 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       for (const slot of actionable.predict) {
         const cached = state.predictionCache?.get(slot.raceId);
         if (!cached || typeof cached === "string") {
-          const label = `${slot.stadiumName} R${slot.raceNumber}`;
-          if (cached === undefined) {
-            logger.info(`[TRI] SKIP: ${label} | b1勝ち`);
-          } else {
-            // cached is skip reason string like "no_odds|b1=42.3|" or "ev_low|b1=42.3|ev=-5.2|"
-            logger.info(`[TRI] SKIP: ${label} | ${cached}`);
-          }
+          logger.info(
+            `[TRI] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${cached ?? "unknown"}`,
+          );
           slot.status = "predicted";
           continue;
         }
