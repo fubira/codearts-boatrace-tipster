@@ -216,18 +216,51 @@ def run_projection(
 # ---------------------------------------------------------------------------
 
 
-def collect_from_backtest(
-    ev_threshold: float,
-    b1_threshold: float,
-    n_folds: int,
-) -> dict:
-    """Run WF-CV backtest and extract empirical distribution parameters."""
+def _extract_params(all_results: list[dict], b1_threshold: float, ev_threshold: float) -> dict:
+    """Extract MC parameters from backtest results by filtering with thresholds."""
+    filtered = [r for r in all_results
+                if r["b1_prob"] < b1_threshold and r["ev"] >= ev_threshold]
+
+    n_bets = len(filtered)
+    if n_bets == 0:
+        return {"hit_rate": 0, "bets_per_day": 0, "tickets_per_bet": 0,
+                "payout_mu": DEFAULTS["payout_mu"], "payout_sigma": DEFAULTS["payout_sigma"]}
+
+    n_wins = sum(1 for r in filtered if r["won"])
+    hit_rate = n_wins / n_bets
+    avg_tickets = np.mean([r["tickets"] for r in filtered])
+
+    payouts_when_hit = [r["hit_odds"] for r in filtered if r["won"]]
+    if payouts_when_hit:
+        log_payouts = np.log(payouts_when_hit)
+        payout_mu = float(np.mean(log_payouts))
+        payout_sigma = float(np.std(log_payouts))
+    else:
+        payout_mu = DEFAULTS["payout_mu"]
+        payout_sigma = DEFAULTS["payout_sigma"]
+
+    daily = defaultdict(int)
+    for r in filtered:
+        daily[r["date"]] += 1
+    bets_per_day = n_bets / len(daily) if daily else 0
+
+    return {
+        "hit_rate": hit_rate,
+        "bets_per_day": bets_per_day,
+        "tickets_per_bet": avg_tickets,
+        "payout_mu": payout_mu,
+        "payout_sigma": payout_sigma,
+    }
+
+
+def collect_all_candidates(n_folds: int) -> list[dict]:
+    """Run WF-CV backtest once with no filtering, return all candidate bets."""
     from boatrace_tipster_ml.db import DEFAULT_DB_PATH
     from boatrace_tipster_ml.feature_config import prepare_feature_matrix
     from boatrace_tipster_ml.model import walk_forward_splits
     from scripts.backtest_trifecta import evaluate_period, load_data, train_models
 
-    print("Collecting empirical parameters from backtest...", file=sys.stderr)
+    print("Running backtest to collect all candidates...", file=sys.stderr)
     t0 = time.time()
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -257,45 +290,29 @@ def collect_from_backtest(
         results = evaluate_period(
             b1_model, rank_model, test_fold,
             trifecta_odds, tri_win_prob, finish_map, race_date_map,
-            b1_threshold=b1_threshold, ev_threshold=ev_threshold,
+            b1_threshold=1.0, ev_threshold=-999,
         )
         all_results.extend(results)
 
-    # Extract parameters
-    n_bets = len(all_results)
-    n_wins = sum(1 for r in all_results if r["won"])
-    hit_rate = n_wins / n_bets if n_bets > 0 else 0
-    avg_tickets = np.mean([r["tickets"] for r in all_results])
-
-    payouts_when_hit = [r["hit_odds"] for r in all_results if r["won"]]
-
-    # Fit lognormal to payout distribution
-    if payouts_when_hit:
-        log_payouts = np.log(payouts_when_hit)
-        payout_mu = float(np.mean(log_payouts))
-        payout_sigma = float(np.std(log_payouts))
-    else:
-        payout_mu = DEFAULTS["payout_mu"]
-        payout_sigma = DEFAULTS["payout_sigma"]
-
-    # Days with bets
-    daily = defaultdict(int)
-    for r in all_results:
-        daily[r["date"]] += 1
-    bets_per_day = n_bets / len(daily) if daily else 0
-
-    print(f"  {n_bets} bets, {n_wins} wins ({hit_rate:.1%}), "
-          f"{bets_per_day:.2f} bets/day, "
-          f"payout median={np.exp(payout_mu):.0f}x in {time.time()-t0:.0f}s",
+    print(f"  {len(all_results)} candidates collected in {time.time()-t0:.0f}s",
           file=sys.stderr)
+    return all_results
 
-    return {
-        "hit_rate": hit_rate,
-        "bets_per_day": bets_per_day,
-        "tickets_per_bet": avg_tickets,
-        "payout_mu": payout_mu,
-        "payout_sigma": payout_sigma,
-    }
+
+def collect_from_backtest(
+    ev_threshold: float,
+    b1_threshold: float,
+    n_folds: int,
+) -> dict:
+    """Run WF-CV backtest and extract empirical distribution parameters."""
+    all_results = collect_all_candidates(n_folds)
+    params = _extract_params(all_results, b1_threshold, ev_threshold)
+
+    print(f"  b1<{b1_threshold} ev>+{ev_threshold:.0%}: "
+          f"{sum(1 for r in all_results if r['b1_prob'] < b1_threshold and r['ev'] >= ev_threshold)} bets, "
+          f"{params['bets_per_day']:.2f}/day, hit={params['hit_rate']:.1%}",
+          file=sys.stderr)
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -333,9 +350,40 @@ def main():
     # Manual parameter override
     parser.add_argument("--hit-rate", type=float, default=None)
     parser.add_argument("--bets-per-day", type=float, default=None)
+    # Compare mode: train once, sweep thresholds
+    parser.add_argument("--compare", type=str, default=None,
+                        help="Compare multiple threshold sets. Format: 'b1:ev,b1:ev,...' "
+                             "e.g. '0.39:0.44,0.49:0.42,0.48:0.40'")
     args = parser.parse_args()
 
-    # Determine parameters
+    # Periods
+    if args.days:
+        day_list = [int(d) for d in args.days.split(",")]
+        periods = {f"{d}日": d for d in day_list}
+    else:
+        periods = {"1ヶ月": 30, "3ヶ月": 90, "6ヶ月": 180, "1年": 365}
+
+    # Compare mode: single backtest, multiple threshold sweeps
+    if args.compare:
+        all_results = collect_all_candidates(args.n_folds)
+        pairs = [p.strip().split(":") for p in args.compare.split(",")]
+        for b1s, evs in pairs:
+            b1_thr, ev_thr = float(b1s), float(evs)
+            params = _extract_params(all_results, b1_thr, ev_thr)
+            n = sum(1 for r in all_results
+                    if r["b1_prob"] < b1_thr and r["ev"] >= ev_thr)
+            print(f"\n{'='*70}")
+            print(f"b1<{b1_thr} ev>+{ev_thr:.0%} — {n} bets, "
+                  f"{params['bets_per_day']:.2f}/day, hit={params['hit_rate']:.1%}")
+            print(f"{'='*70}")
+            run_projection(
+                n_sims=args.n_sims, periods=periods, params=params,
+                bankroll=args.bankroll, unit_divisor=args.unit_divisor,
+                min_unit=args.min_unit, max_unit=args.bet_cap, seed=args.seed,
+            )
+        return
+
+    # Single run mode
     if args.from_backtest:
         params = collect_from_backtest(
             ev_threshold=args.ev_threshold,
@@ -350,13 +398,6 @@ def main():
         params["hit_rate"] = args.hit_rate
     if args.bets_per_day is not None:
         params["bets_per_day"] = args.bets_per_day
-
-    # Periods
-    if args.days:
-        day_list = [int(d) for d in args.days.split(",")]
-        periods = {f"{d}日": d for d in day_list}
-    else:
-        periods = {"1ヶ月": 30, "3ヶ月": 90, "6ヶ月": 180, "1年": 365}
 
     run_projection(
         n_sims=args.n_sims,
