@@ -8,7 +8,6 @@
  */
 import { launchTelebotBrowser } from "@/features/teleboat/browser";
 import {
-  BET_SELECTORS,
   LOGIN_SELECTORS,
   MENU_SELECTORS,
   TELEBOAT_URL,

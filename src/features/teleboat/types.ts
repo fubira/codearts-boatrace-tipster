@@ -4,8 +4,10 @@ export interface TelebotCredentials {
   subscriberNumber: string;
   /** 暗証番号 */
   pin: string;
-  /** 認証パスワード */
+  /** 認証用パスワード（ログイン時に使用） */
   password: string;
+  /** 投票用パスワード（入金・投票確定時に使用） */
+  betPassword: string;
 }
 
 /** テレボート投票指示 */
