@@ -455,6 +455,9 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       );
     try {
       if (needsRebuild) {
+        // WAL checkpoint so DuckDB (READ_ONLY ATTACH) can see latest writes
+        getDatabase().exec("PRAGMA wal_checkpoint(PASSIVE)");
+
         logger.info("Running trifecta prediction...");
         const predictions = await runPrediction(
           state.date,
