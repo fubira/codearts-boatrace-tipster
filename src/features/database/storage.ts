@@ -497,9 +497,15 @@ export function saveOdds(oddsList: OddsData[], db?: Database): void {
 
       if (!race) continue;
 
-      database
-        .query("DELETE FROM race_odds WHERE race_id = $raceId")
-        .run({ $raceId: race.id });
+      // Delete only the bet types being saved (not all odds for this race)
+      const betTypes = [...new Set(odds.entries.map((e) => e.betType))];
+      for (const bt of betTypes) {
+        database
+          .query(
+            "DELETE FROM race_odds WHERE race_id = $raceId AND bet_type = $betType",
+          )
+          .run({ $raceId: race.id, $betType: bt });
+      }
 
       for (const entry of odds.entries) {
         database
