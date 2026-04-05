@@ -185,11 +185,11 @@ def evaluate_period(
             hc = f"{wp}-{a2}-{a3}"
             # All-flow: any 2-3 combo is a hit
             ho = trifecta_odds.get((rid, hc))
-            if ho:
+            if ho is not None and ho > 0:
                 allflow_odds = ho
-            # noB1: only if combo is in noB1 tickets
-            if hc in tkts and ho:
-                hit_odds = ho
+                # noB1: only if combo is in noB1 tickets
+                if hc in tkts:
+                    hit_odds = ho
 
         results.append({
             "race_id": rid,

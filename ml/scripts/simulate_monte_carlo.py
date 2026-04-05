@@ -317,10 +317,11 @@ def collect_from_backtest(
     ev_threshold: float,
     b1_threshold: float,
     n_folds: int,
+    all_flow: bool = False,
 ) -> dict:
     """Run WF-CV backtest and extract empirical distribution parameters."""
     all_results = collect_all_candidates(n_folds)
-    params = _extract_params(all_results, b1_threshold, ev_threshold)
+    params = _extract_params(all_results, b1_threshold, ev_threshold, all_flow=all_flow)
 
     print(f"  b1<{b1_threshold} ev>+{ev_threshold:.0%}: "
           f"{sum(1 for r in all_results if r['b1_prob'] < b1_threshold and r['ev'] >= ev_threshold)} bets, "
@@ -405,6 +406,7 @@ def main():
             ev_threshold=args.ev_threshold,
             b1_threshold=args.b1_threshold,
             n_folds=args.n_folds,
+            all_flow=args.all_flow,
         )
     else:
         params = dict(DEFAULTS)
