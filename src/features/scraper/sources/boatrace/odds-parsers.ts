@@ -122,9 +122,14 @@ export function parseOdds3T(html: string): OddsEntry[] {
     if (text.match(/^\d$/)) headerBoats.push(text);
   });
 
+  // Each tbody block has 4 rows × 6 columns.
+  // Column layout: [2nd-boat(rowspan=4)] [3rd-boat] [odds] repeated 6 times per row.
+  // The 2nd-boat td with rowspan appears only in the first row of each 4-row group.
+  // First column's 2nd-boat has is-borderLeftNone, others don't.
+  const secondBoats: string[] = new Array(headerBoats.length).fill("");
+
   table.find("tbody.is-p3-0").each((_i, tbody) => {
     const rows = $(tbody).find("tr");
-    let secondBoat = "";
 
     rows.each((_j, tr) => {
       const tds = $(tr).find("td");
@@ -133,8 +138,9 @@ export function parseOdds3T(html: string): OddsEntry[] {
       for (let k = 0; k < tds.length; k++) {
         const td = $(tds[k]);
 
-        if (td.attr("rowspan") && td.hasClass("is-borderLeftNone")) {
-          secondBoat = td.text().trim();
+        if (td.attr("rowspan")) {
+          // This is a 2nd-boat indicator for the current column
+          secondBoats[colIdx] = td.text().trim();
           continue;
         }
 
@@ -147,7 +153,7 @@ export function parseOdds3T(html: string): OddsEntry[] {
             const firstBoat = headerBoats[colIdx];
             entries.push({
               betType: "3連単",
-              combination: `${firstBoat}-${secondBoat}-${thirdBoat}`,
+              combination: `${firstBoat}-${secondBoats[colIdx]}-${thirdBoat}`,
               odds,
             });
           }
