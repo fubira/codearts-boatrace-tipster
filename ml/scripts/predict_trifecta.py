@@ -86,6 +86,7 @@ def predict_trifecta(
     b1_threshold: float | None = None,
     ev_threshold: float | None = None,
     snapshot_path: str | None = None,
+    race_ids: list[int] | None = None,
 ) -> dict:
     next_day = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime(
         "%Y-%m-%d"
@@ -105,8 +106,22 @@ def predict_trifecta(
             "model_dir": model_dir,
             "n_races": 0,
             "predictions": [],
+            "evaluated_race_ids": [],
             "error": f"No race data for {date}",
         }
+
+    # Filter to specific races if requested (runner mode)
+    race_id_set = set(race_ids) if race_ids else None
+    if race_id_set:
+        df = df[df["race_id"].isin(race_id_set)].reset_index(drop=True)
+        if len(df) == 0:
+            return {
+                "date": date,
+                "model_dir": model_dir,
+                "n_races": 0,
+                "predictions": [],
+                "evaluated_race_ids": [],
+            }
 
     # --- Boat1 binary model ---
     b1_dir = f"{model_dir}/boat1"
@@ -186,6 +201,7 @@ def predict_trifecta(
 
     # --- Build predictions ---
     predictions = []
+    evaluated_race_ids = []
     n_total = len(b1_rows)
     n_b1_pass = 0
     n_has_odds = 0
@@ -202,6 +218,7 @@ def predict_trifecta(
         if b1p >= b1_threshold:
             continue
         n_b1_pass += 1
+        evaluated_race_ids.append(rid)
 
         # Winner pick: top non-boat-1
         wp = int(top_boats[ri, 0])
@@ -261,6 +278,7 @@ def predict_trifecta(
         "ev_threshold": ev_threshold,
         "n_races": len(predictions),
         "predictions": predictions,
+        "evaluated_race_ids": evaluated_race_ids,
         "stats": {
             "total": n_total,
             "b1_pass": n_b1_pass,
@@ -283,13 +301,20 @@ def main():
                         help="Override ev_threshold (default: from model_meta)")
     parser.add_argument("--snapshot", default=None,
                         help="Stats snapshot path for fast inference")
+    parser.add_argument("--race-ids", default=None,
+                        help="Comma-separated race IDs to predict (runner mode)")
     args = parser.parse_args()
+
+    rid_list = None
+    if args.race_ids:
+        rid_list = [int(x) for x in args.race_ids.split(",")]
 
     result = predict_trifecta(
         args.date, args.model_dir, args.db_path,
         b1_threshold=args.b1_threshold,
         ev_threshold=args.ev_threshold,
         snapshot_path=args.snapshot,
+        race_ids=rid_list,
     )
     json.dump(result, sys.stdout, ensure_ascii=False, default=str)
 

@@ -73,7 +73,8 @@ interface TrifectaPrediction {
   hasExhibition: boolean;
 }
 
-type PredictionCache = Map<number, TrifectaPrediction>;
+// null value = evaluated but no qualifying prediction (b1_pass but no EV)
+type PredictionCache = Map<number, TrifectaPrediction | null>;
 
 interface RunnerState {
   schedule: RaceSlot[];
@@ -235,12 +236,8 @@ function rotateSnapshots(): void {
 // Prediction
 // ---------------------------------------------------------------------------
 
-async function runPrediction(
-  date: string,
-  opts: RunnerOptions,
-  snapshotPath?: string,
-): Promise<
-  {
+interface PredictionResult {
+  predictions: {
     raceId: number;
     winnerPick: number;
     b1Prob: number;
@@ -248,8 +245,16 @@ async function runPrediction(
     ev: number;
     tickets: string[];
     hasExhibition: boolean;
-  }[]
-> {
+  }[];
+  evaluatedRaceIds: number[];
+}
+
+async function runPrediction(
+  date: string,
+  opts: RunnerOptions,
+  snapshotPath?: string,
+  raceIds?: number[],
+): Promise<PredictionResult> {
   const modelDir = resolve(config.projectRoot, "ml/models/trifecta_v1");
   const args = [
     "--date",
@@ -263,6 +268,9 @@ async function runPrediction(
   ];
   if (snapshotPath) {
     args.push("--snapshot", snapshotPath);
+  }
+  if (raceIds && raceIds.length > 0) {
+    args.push("--race-ids", raceIds.join(","));
   }
   const { cmd, cwd } = pythonCommand("scripts.predict_trifecta", args);
   const PREDICTION_TIMEOUT_MS = 60_000;
@@ -298,12 +306,12 @@ async function runPrediction(
 
   if (result.stats) {
     const s = result.stats;
-    logger.info(
-      `Trifecta filter: ${s.total}R → b1_pass:${s.b1_pass} → has_odds:${s.has_odds} → ev_pass:${s.ev_pass}`,
+    logger.debug(
+      `Trifecta stats: ${s.total} races, ${s.b1_pass} upset, ${s.has_odds} with odds, ${s.ev_pass} EV-pass`,
     );
   }
 
-  return result.predictions.map(
+  const predictions = result.predictions.map(
     (p: {
       race_id: number;
       winner_pick: number;
@@ -322,6 +330,10 @@ async function runPrediction(
       hasExhibition: p.has_exhibition,
     }),
   );
+
+  const evaluatedRaceIds: number[] = result.evaluated_race_ids ?? [];
+
+  return { predictions, evaluatedRaceIds };
 }
 
 /**
@@ -452,29 +464,49 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       `Trifecta odds: ${oddsFetched}/${actionable.predict.length} fetched`,
     );
 
-    // Rebuild prediction cache (trifecta: b1 binary + LambdaRank + EV)
-    // Rebuild when: new races, exhibition data updated, or new odds fetched
-    const needsRebuild =
-      oddsFetched > 0 ||
-      actionable.predict.some(
-        (s) =>
-          !state.predictionCache?.has(s.raceId) ||
-          !state.predictionCache?.get(s.raceId)?.hasExhibition,
-      );
+    // Determine which races need (re-)prediction:
+    // - Not yet in cache at all
+    // - In cache but without exhibition data (exhibition was just scraped)
+    // - Odds were freshly fetched (EV may change)
+    const uncachedRaces = actionable.predict.filter(
+      (s) => !state.predictionCache?.has(s.raceId),
+    );
+    const exhibitionUpdated = actionable.predict.filter((s) => {
+      const cached = state.predictionCache?.get(s.raceId);
+      return cached !== undefined && cached !== null && !cached.hasExhibition;
+    });
+    const racesToPredict =
+      oddsFetched > 0
+        ? actionable.predict
+        : [...uncachedRaces, ...exhibitionUpdated];
+    const needsRebuild = racesToPredict.length > 0;
     try {
       if (needsRebuild) {
         // WAL checkpoint so DuckDB (READ_ONLY ATTACH) can see latest writes.
         // TRUNCATE required because bun:sqlite holds an open connection as reader.
         getDatabase().exec("PRAGMA wal_checkpoint(TRUNCATE)");
 
-        logger.info("Running trifecta prediction...");
-        const predictions = await runPrediction(
+        const targetRaceIds = racesToPredict.map((s) => s.raceId);
+        logger.info(
+          `Running trifecta prediction for ${targetRaceIds.length} race(s)...`,
+        );
+        const result = await runPrediction(
           state.date,
           opts,
           state.snapshotPath,
+          targetRaceIds,
         );
-        state.predictionCache = new Map();
-        for (const p of predictions) {
+        if (!state.predictionCache) {
+          state.predictionCache = new Map();
+        }
+        // Cache all evaluated races (b1_pass) so we don't re-run needlessly
+        for (const raceId of result.evaluatedRaceIds) {
+          if (!state.predictionCache.has(raceId)) {
+            state.predictionCache.set(raceId, null);
+          }
+        }
+        // Overwrite with actual predictions for qualifying races
+        for (const p of result.predictions) {
           state.predictionCache.set(p.raceId, {
             winnerPick: p.winnerPick,
             b1Prob: p.b1Prob,
@@ -484,16 +516,23 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             hasExhibition: p.hasExhibition,
           });
         }
-        logger.info(
-          `Trifecta predictions: ${state.predictionCache.size} qualifying races`,
+        logger.debug(
+          `Prediction cache: ${result.predictions.length} qualifying / ${result.evaluatedRaceIds.length} evaluated`,
         );
       }
 
       // Bet decision at T-5min (trifecta EV is pre-computed, no live odds needed)
       const evThresholdPct = opts.evThreshold * 100;
       for (const slot of actionable.predict) {
+        const hasCacheEntry = state.predictionCache?.has(slot.raceId);
         const cached = state.predictionCache?.get(slot.raceId);
         if (!cached) {
+          const reason = hasCacheEntry
+            ? "1号艇飛び予想だがオッズなし or EV不足"
+            : "1号艇勝ち予想";
+          logger.info(
+            `[TRI] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${reason}`,
+          );
           slot.status = "predicted";
           continue;
         }
