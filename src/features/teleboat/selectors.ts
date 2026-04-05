@@ -21,6 +21,10 @@ export const LOGIN_SELECTORS = {
   pin: "#pin",
   password: "#authPassword",
   loginButton: "#loginButton",
+  /** ログイン後に表示される「特別なお知らせ」モーダルの閉じるボタン */
+  noticeCloseButton: "#newsoverviewdispCloseButton",
+  /** 「すべて既読にする」チェックボックス */
+  noticeAllRead: "#isAllread",
 } as const;
 
 export const MENU_SELECTORS = {
@@ -28,6 +32,26 @@ export const MENU_SELECTORS = {
   balance: "#currentBetLimitAmount",
   /** 残高更新ボタン */
   balanceReload: "#updateBalanceBtn a",
+  /** 入金メニュー */
+  charge: "#charge",
+} as const;
+
+/**
+ * 入金モーダル
+ *
+ * フロー: メニュー「入金する」→ 金額入力 → パスワード入力 → 入金実行 → 完了
+ */
+export const CHARGE_SELECTORS = {
+  /** 入金金額入力（千円単位 — 入力値 × 1000 = 実金額） */
+  amountInput: "#chargeInstructAmt",
+  /** 投票用パスワード入力 */
+  betPassword: "#chargeBetPassword",
+  /** 入金実行ボタン */
+  executeButton: "#executeCharge",
+  /** キャンセルボタン */
+  cancelButton: "#closeCharge",
+  /** 入金完了画面の閉じるボタン */
+  closeCompButton: "#closeChargecomp",
 } as const;
 
 export const STADIUM_SELECTORS = {
@@ -53,21 +77,39 @@ export const RACE_SELECTORS = {
 /**
  * 投票操作（賭式・艇番・金額）
  *
- * フロー: 単勝タブ → 艇番クリック → 金額入力 → ベットリスト追加
+ * フロー: 賭式タブ → 投票方式タブ → 艇番クリック → 金額入力 → ベットリスト追加
  */
 export const BET_SELECTORS = {
   /** 単勝タブ (kachishiki=1) */
   tanshoTab: "#betkati1",
+  /** 3連単タブ (kachishiki=6) */
+  sanrentanTab: "#betkati6",
+
+  /** 通常投票タブ */
+  normalBetWay: "#betway1",
+  /** フォーメーション投票タブ */
+  formationBetWay: "#betway4",
+
   /**
-   * 艇番ボタン — `#regbtn_{boatNumber}_{column}`
-   * 単勝の場合 column=1（1着列のみ）
+   * 通常投票の艇番ボタン — `#regbtn_{boatNumber}_{column}`
+   * 単勝: column=1（1着列のみ）
+   */
+  normalBoatPrefix: "#regbtn_",
+  /**
+   * フォーメーション投票の艇番セル — `td.combiForma.x{boatNumber}.y{column}`
+   * column: y1=1着, y2=2着, y3=3着
    * 選択済みで `.check` クラスが付与される
    */
-  boatButtonPrefix: "#regbtn_",
+  formationBoatCell: "td.combiForma",
+
   /** 購入金額入力欄（100円単位 — 入力値 × 100 = 実金額） */
   amountInput: "#amount",
-  /** ベットリストに追加ボタン */
-  addToBetList: "#regAmountBtn",
+  /** ベットリストに追加（通常投票） */
+  normalAddToBetList: "#regAmountBtn",
+  /** ベットリストに追加（フォーメーション投票） */
+  formationAddToBetList: "#formaAmountBtn",
+  /** フォーメーションのベット数表示 */
+  formationBetCount: "#combiCount",
 } as const;
 
 /**

@@ -35,6 +35,9 @@ logs/
 # Server tune
 scripts/server-tune.conf
 
+# Teleboat screenshots & debug output
+tmp/
+
 # Misc
 .wrangler/
 CONTINUATION_PROMPT.md

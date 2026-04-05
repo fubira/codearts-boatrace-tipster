@@ -16,11 +16,15 @@ export interface TelebotBetOrder {
   stadiumName: string;
   /** レース番号 */
   raceNumber: number;
-  /** 艇番（1-6） */
-  boatNumber: number;
-  /** 賭け式（現在は単勝固定） */
-  betType: "tansho";
-  /** 金額（100円単位） */
+  /** 賭け式 */
+  betType: "tansho" | "sanrentan";
+  /** 1着に選択する艇番 */
+  boats1st: number[];
+  /** 2着に選択する艇番（3連単時） */
+  boats2nd?: number[];
+  /** 3着に選択する艇番（3連単時） */
+  boats3rd?: number[];
+  /** 1点あたりの金額（100円単位） */
   amount: number;
 }
 
