@@ -239,6 +239,7 @@ function rotateSnapshots(): void {
 interface SkipInfo {
   b1_prob: number;
   ev?: number;
+  pick?: number;
   reason: string;
 }
 
@@ -524,9 +525,10 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         for (const [ridStr, info] of Object.entries(result.skipped)) {
           const rid = Number(ridStr);
           const b1Pct = (info.b1_prob * 100).toFixed(0);
+          const pickTag = info.pick ? ` ${info.pick}号艇1着` : "";
           const skipStr =
             info.ev !== undefined
-              ? `${info.reason} b1=${b1Pct}% EV=${(info.ev * 100).toFixed(1)}%`
+              ? `${info.reason}${pickTag} b1=${b1Pct}% EV=${(info.ev * 100).toFixed(1)}%`
               : `${info.reason} b1=${b1Pct}%`;
           state.predictionCache.set(rid, skipStr);
         }

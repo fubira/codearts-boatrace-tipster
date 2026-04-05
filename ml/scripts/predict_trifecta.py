@@ -243,7 +243,7 @@ def predict_trifecta(
 
         ev = wprob / mkt_prob * 0.75 - 1
         if ev < ev_threshold:
-            skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev, 4), "reason": "ev_low"}
+            skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev, 4), "pick": int(wp), "reason": "ev_low"}
             continue
         n_ev_pass += 1
 
