@@ -40,9 +40,9 @@ bun run start backup              # ローカルバックアップ（7 世代ロ
 
 ## ML: モデル学習
 
-### 1号艇二値分類（メインモデル）
+### 1号艇二値分類
 
-1号艇が勝つかを予測する二値分類モデル。単勝 EV 戦略の核。
+1号艇が勝つかを予測する二値分類モデル。3連単 X-noB1-noB1 戦略の1号艇飛び判定に使用。
 
 ```bash
 # 基本: single split 学習 + テスト評価
@@ -66,7 +66,7 @@ uv run --directory ml python -m scripts.train_boat1_binary --mode optuna --n-tri
 
 ### 6艇ランキング（LambdaRank）
 
-6艇の着順を予測するランキングモデル。2連複1点買い EV 戦略で使用。
+6艇の着順を予測するランキングモデル。3連単 X-noB1-noB1 戦略の1着予測に使用。
 
 ```bash
 # single split
@@ -119,17 +119,6 @@ uv run --directory ml python -m scripts.train_eval --mode optuna --n-trials 100
 **注意**: サーバーでの ML 実行は必ず `server-tune.sh` 経由で行う。直接 ssh で `uv run` を叩くとコード不整合が発生する。
 
 ## ML: 分析
-
-### 1号艇飛びパターン分析
-
-1号艇が負ける条件と、モデルの検出能力を分析する。
-
-```bash
-uv run --directory ml python -m scripts.analyze_boat1
-uv run --directory ml python -m scripts.analyze_boat1 --relevance top_heavy
-```
-
-出力: 基本統計、モデル検出率、特徴量条件分析、複合条件、見逃し分析、生データ効果量（Cohen's d）、会場別/天候別飛率、イン屋影響。
 
 ### 2連単/2連複パターン検証
 
