@@ -364,6 +364,267 @@ export function calcTrifectaUnit(bankroll: number, betCap: number): number {
 // Poll cycle
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Poll helpers (extracted from poll() for readability)
+// ---------------------------------------------------------------------------
+
+/** Fetch trifecta odds for actionable races. Returns count of fetched. */
+function fetchTrifectaOdds(slots: RaceSlot[], date: string): number {
+  let fetched = 0;
+  for (const slot of slots) {
+    const stadiumCode = padStadiumCode(slot.stadiumId);
+    const params: RaceParams = {
+      raceNumber: slot.raceNumber,
+      stadiumCode,
+      date: date.replace(/-/g, ""),
+    };
+    try {
+      const page = fetchPage(odds3TUrl(params), { skipCache: true });
+      if (page) {
+        const entries = parseOdds3T(page.html);
+        if (entries.length > 0) {
+          saveOdds([
+            {
+              stadiumId: slot.stadiumId,
+              raceDate: date,
+              raceNumber: slot.raceNumber,
+              entries: entries.map((e) => ({
+                betType: e.betType,
+                combination: e.combination,
+                odds: e.odds,
+              })),
+            },
+          ]);
+          fetched++;
+        }
+      }
+    } catch {
+      // Odds may not be available yet for early races
+    }
+  }
+  return fetched;
+}
+
+/** Determine which races need prediction based on cache state. */
+function getRacesToPredict(
+  slots: RaceSlot[],
+  cache: PredictionCache | null,
+  oddsFetched: number,
+): RaceSlot[] {
+  const uncached = slots.filter((s) => !cache?.has(s.raceId));
+  const exhibitionUpdated = slots.filter((s) => {
+    if (!cache?.has(s.raceId)) return false;
+    const cached = cache.get(s.raceId);
+    if (typeof cached === "string") return true;
+    return cached !== undefined && !cached.hasExhibition;
+  });
+  const oddsUpdated =
+    oddsFetched > 0 ? slots.filter((s) => cache?.has(s.raceId)) : [];
+  return [
+    ...new Map(
+      [...uncached, ...exhibitionUpdated, ...oddsUpdated].map((s) => [
+        s.raceId,
+        s,
+      ]),
+    ).values(),
+  ];
+}
+
+/** Update prediction cache from ML result. */
+function updatePredictionCache(
+  state: RunnerState,
+  result: PredictionResult,
+): void {
+  if (!state.predictionCache) {
+    state.predictionCache = new Map();
+  }
+  for (const [ridStr, info] of Object.entries(result.skipped)) {
+    const rid = Number(ridStr);
+    const b1Pct = (info.b1_prob * 100).toFixed(0);
+    const pickTag = info.pick ? ` ${info.pick}号艇1着` : "";
+    const skipStr =
+      info.ev !== undefined
+        ? `${info.reason}${pickTag} b1=${b1Pct}% EV=${(info.ev * 100).toFixed(1)}%`
+        : `${info.reason} b1=${b1Pct}%`;
+    state.predictionCache.set(rid, skipStr);
+  }
+  for (const p of result.predictions) {
+    state.predictionCache.set(p.raceId, {
+      winnerPick: p.winnerPick,
+      b1Prob: p.b1Prob,
+      winnerProb: p.winnerProb,
+      ev: p.ev,
+      tickets: p.tickets,
+      hasExhibition: p.hasExhibition,
+    });
+  }
+  logger.debug(
+    `Prediction cache: ${result.predictions.length} qualifying / ${result.evaluatedRaceIds.length} evaluated`,
+  );
+}
+
+/** Predict and make bet decisions for actionable races. */
+async function pollPredict(
+  state: RunnerState,
+  slots: RaceSlot[],
+  opts: RunnerOptions,
+  bets: Map<number, BetDecision>,
+): Promise<void> {
+  // Re-scrape before-info if exhibition data is missing
+  const db = getDatabase();
+  let rescraped = 0;
+  for (const slot of slots) {
+    const hasExh = db
+      .query(
+        `SELECT COUNT(*) as cnt FROM race_entries
+         WHERE race_id = ? AND exhibition_time IS NOT NULL`,
+      )
+      .get(slot.raceId) as { cnt: number };
+    if (hasExh.cnt === 0) {
+      try {
+        scrapeBeforeInfoForRace(slot, state.date);
+        rescraped++;
+      } catch {
+        // Prediction will proceed without exhibition data
+      }
+    }
+  }
+  if (rescraped > 0) {
+    logger.info(`Re-scraped exhibition data for ${rescraped} race(s)`);
+  }
+
+  const oddsFetched = fetchTrifectaOdds(slots, state.date);
+  logger.info(`Trifecta odds: ${oddsFetched}/${slots.length} fetched`);
+
+  const racesToPredict = getRacesToPredict(
+    slots,
+    state.predictionCache,
+    oddsFetched,
+  );
+
+  try {
+    if (racesToPredict.length > 0) {
+      getDatabase().exec("PRAGMA wal_checkpoint(TRUNCATE)");
+
+      const targetRaceIds = racesToPredict.map((s) => s.raceId);
+      logger.info(
+        `Running trifecta prediction for ${targetRaceIds.length} race(s)...`,
+      );
+      const result = await runPrediction(
+        state.date,
+        opts,
+        state.snapshotPath,
+        targetRaceIds,
+      );
+      updatePredictionCache(state, result);
+    }
+
+    await makeBetDecisions(slots, state, opts, bets);
+  } catch (err) {
+    await notifyError("prediction", err);
+    for (const slot of slots) {
+      slot.status = "predicted";
+    }
+  }
+}
+
+/** Make bet decisions for each slot based on cached predictions. */
+async function makeBetDecisions(
+  slots: RaceSlot[],
+  state: RunnerState,
+  opts: RunnerOptions,
+  bets: Map<number, BetDecision>,
+): Promise<void> {
+  const evThresholdPct = opts.evThreshold * 100;
+  for (const slot of slots) {
+    const cached = state.predictionCache?.get(slot.raceId);
+    if (!cached || typeof cached === "string") {
+      logger.info(
+        `[TRI] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${cached ?? "unknown"}`,
+      );
+      slot.status = "predicted";
+      continue;
+    }
+
+    if (!cached.hasExhibition) {
+      logger.info(
+        `[TRI] WAIT: ${slot.stadiumName} R${slot.raceNumber} | exhibition data missing, retrying next poll`,
+      );
+      slot.status = "before_info";
+      continue;
+    }
+
+    const label = `${slot.stadiumName} R${slot.raceNumber}`;
+    const evFrac = cached.ev;
+    const evPct = evFrac * 100;
+    const isBet = evFrac >= opts.evThreshold;
+
+    let thresholdTag = "";
+    if (!isBet) {
+      const wouldPass = [10, 20, 30].filter((t) => evPct >= t);
+      thresholdTag =
+        wouldPass.length > 0
+          ? ` (would buy ≥${wouldPass[wouldPass.length - 1]}%)`
+          : "";
+    }
+
+    const base = `${label} | ${cached.winnerPick}号艇1着 | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct.toFixed(1)}% | ${cached.tickets.length}pt`;
+
+    if (isBet) {
+      const unit = calcTrifectaUnit(state.bankroll, opts.betCap);
+      const totalWager = unit * cached.tickets.length;
+
+      if (unit > 0 && totalWager <= state.bankroll) {
+        const decision: BetDecision = {
+          raceId: slot.raceId,
+          stadiumName: slot.stadiumName,
+          raceNumber: slot.raceNumber,
+          boatNumber: cached.winnerPick,
+          prob: cached.winnerProb,
+          odds: 0,
+          ev: evPct,
+          betAmount: totalWager,
+          recommend: true,
+        };
+        bets.set(slot.raceId, decision);
+
+        const ticketStr = cached.tickets.slice(0, 3).join(", ");
+        const moreStr =
+          cached.tickets.length > 3 ? ` +${cached.tickets.length - 3}` : "";
+        logger.info(
+          `[TRI] BET: ${base} | ¥${unit}×${cached.tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}${moreStr}`,
+        );
+
+        await notifyPrediction({
+          stadiumName: slot.stadiumName,
+          raceNumber: slot.raceNumber,
+          deadline: slot.deadline,
+          prob: cached.winnerProb,
+          odds: 0,
+          ev: evPct,
+          betAmount: totalWager,
+        });
+
+        // TODO: teleboat purchase for trifecta (Phase 2)
+
+        state.bankroll -= totalWager;
+      } else {
+        logger.info(`[TRI] SKIP: ${base} | bankroll insufficient`);
+      }
+    } else {
+      logger.info(
+        `[TRI] ---: ${base} | <${evThresholdPct.toFixed(0)}%${thresholdTag}`,
+      );
+    }
+
+    slot.status = "predicted";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main poll loop
+// ---------------------------------------------------------------------------
+
 async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   const { schedule, bets, results } = state;
   const now = Date.now();
@@ -416,230 +677,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
   // 2. Predict for races near deadline (trifecta strategy)
   if (actionable.predict.length > 0) {
-    // Re-scrape before-info if exhibition data is missing
-    const db = getDatabase();
-    let rescraped = 0;
-    for (const slot of actionable.predict) {
-      const hasExh = db
-        .query(
-          `SELECT COUNT(*) as cnt FROM race_entries
-           WHERE race_id = ? AND exhibition_time IS NOT NULL`,
-        )
-        .get(slot.raceId) as { cnt: number };
-      if (hasExh.cnt === 0) {
-        try {
-          scrapeBeforeInfoForRace(slot, state.date);
-          rescraped++;
-        } catch (_err) {
-          // Prediction will proceed without exhibition data
-        }
-      }
-    }
-    if (rescraped > 0) {
-      logger.info(`Re-scraped exhibition data for ${rescraped} race(s)`);
-    }
-
-    // Fetch 3連単 odds for races that need prediction (required for EV calculation)
-    let oddsFetched = 0;
-    for (const slot of actionable.predict) {
-      const stadiumCode = padStadiumCode(slot.stadiumId);
-      const params: RaceParams = {
-        raceNumber: slot.raceNumber,
-        stadiumCode,
-        date: state.date.replace(/-/g, ""),
-      };
-      try {
-        const page = fetchPage(odds3TUrl(params), { skipCache: true });
-        if (page) {
-          const entries = parseOdds3T(page.html);
-          if (entries.length > 0) {
-            saveOdds([
-              {
-                stadiumId: slot.stadiumId,
-                raceDate: state.date,
-                raceNumber: slot.raceNumber,
-                entries: entries.map((e) => ({
-                  betType: e.betType,
-                  combination: e.combination,
-                  odds: e.odds,
-                })),
-              },
-            ]);
-            oddsFetched++;
-          }
-        }
-      } catch (_err) {
-        // Odds may not be available yet for early races
-      }
-    }
-    logger.info(
-      `Trifecta odds: ${oddsFetched}/${actionable.predict.length} fetched`,
-    );
-
-    // Determine which races need (re-)prediction:
-    // - Not yet in cache at all
-    // - In cache but without exhibition data (exhibition was just scraped)
-    // - Odds were freshly fetched (EV may change)
-    const uncachedRaces = actionable.predict.filter(
-      (s) => !state.predictionCache?.has(s.raceId),
-    );
-    const exhibitionUpdated = actionable.predict.filter((s) => {
-      if (!state.predictionCache?.has(s.raceId)) return false;
-      const cached = state.predictionCache.get(s.raceId);
-      // string = skip reason (b1_pass but no EV); re-predict when exhibition arrives
-      if (typeof cached === "string") return true;
-      return cached !== undefined && !cached.hasExhibition;
-    });
-    const oddsUpdatedRaces =
-      oddsFetched > 0
-        ? actionable.predict.filter((s) => state.predictionCache?.has(s.raceId))
-        : [];
-    const racesToPredict = [
-      ...new Map(
-        [...uncachedRaces, ...exhibitionUpdated, ...oddsUpdatedRaces].map(
-          (s) => [s.raceId, s],
-        ),
-      ).values(),
-    ];
-    const needsRebuild = racesToPredict.length > 0;
-    try {
-      if (needsRebuild) {
-        // WAL checkpoint so DuckDB (READ_ONLY ATTACH) can see latest writes.
-        // TRUNCATE required because bun:sqlite holds an open connection as reader.
-        getDatabase().exec("PRAGMA wal_checkpoint(TRUNCATE)");
-
-        const targetRaceIds = racesToPredict.map((s) => s.raceId);
-        logger.info(
-          `Running trifecta prediction for ${targetRaceIds.length} race(s)...`,
-        );
-        const result = await runPrediction(
-          state.date,
-          opts,
-          state.snapshotPath,
-          targetRaceIds,
-        );
-        if (!state.predictionCache) {
-          state.predictionCache = new Map();
-        }
-        // Cache all skipped races with reason
-        for (const [ridStr, info] of Object.entries(result.skipped)) {
-          const rid = Number(ridStr);
-          const b1Pct = (info.b1_prob * 100).toFixed(0);
-          const pickTag = info.pick ? ` ${info.pick}号艇1着` : "";
-          const skipStr =
-            info.ev !== undefined
-              ? `${info.reason}${pickTag} b1=${b1Pct}% EV=${(info.ev * 100).toFixed(1)}%`
-              : `${info.reason} b1=${b1Pct}%`;
-          state.predictionCache.set(rid, skipStr);
-        }
-        // Overwrite with actual predictions for qualifying races
-        for (const p of result.predictions) {
-          state.predictionCache.set(p.raceId, {
-            winnerPick: p.winnerPick,
-            b1Prob: p.b1Prob,
-            winnerProb: p.winnerProb,
-            ev: p.ev,
-            tickets: p.tickets,
-            hasExhibition: p.hasExhibition,
-          });
-        }
-        logger.debug(
-          `Prediction cache: ${result.predictions.length} qualifying / ${result.evaluatedRaceIds.length} evaluated`,
-        );
-      }
-
-      // Bet decision at T-5min (trifecta EV is pre-computed, no live odds needed)
-      const evThresholdPct = opts.evThreshold * 100;
-      for (const slot of actionable.predict) {
-        const cached = state.predictionCache?.get(slot.raceId);
-        if (!cached || typeof cached === "string") {
-          logger.info(
-            `[TRI] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${cached ?? "unknown"}`,
-          );
-          slot.status = "predicted";
-          continue;
-        }
-
-        // Don't bet without exhibition data — keep at before_info to retry next poll
-        if (!cached.hasExhibition) {
-          logger.info(
-            `[TRI] WAIT: ${slot.stadiumName} R${slot.raceNumber} | exhibition data missing, retrying next poll`,
-          );
-          slot.status = "before_info";
-          continue;
-        }
-
-        const label = `${slot.stadiumName} R${slot.raceNumber}`;
-        const evFrac = cached.ev;
-        const evPct = evFrac * 100;
-        const isBet = evFrac >= opts.evThreshold;
-
-        let thresholdTag = "";
-        if (!isBet) {
-          const wouldPass = [10, 20, 30].filter((t) => evPct >= t);
-          thresholdTag =
-            wouldPass.length > 0
-              ? ` (would buy ≥${wouldPass[wouldPass.length - 1]}%)`
-              : "";
-        }
-
-        const base = `${label} | ${cached.winnerPick}号艇1着 | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct.toFixed(1)}% | ${cached.tickets.length}pt`;
-
-        if (isBet) {
-          const unit = calcTrifectaUnit(state.bankroll, opts.betCap);
-          const totalWager = unit * cached.tickets.length;
-
-          if (unit > 0 && totalWager <= state.bankroll) {
-            const decision: BetDecision = {
-              raceId: slot.raceId,
-              stadiumName: slot.stadiumName,
-              raceNumber: slot.raceNumber,
-              boatNumber: cached.winnerPick,
-              prob: cached.winnerProb,
-              odds: 0,
-              ev: evPct,
-              betAmount: totalWager,
-              recommend: true,
-            };
-            bets.set(slot.raceId, decision);
-
-            const ticketStr = cached.tickets.slice(0, 3).join(", ");
-            const moreStr =
-              cached.tickets.length > 3 ? ` +${cached.tickets.length - 3}` : "";
-            logger.info(
-              `[TRI] BET: ${base} | ¥${unit}×${cached.tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}${moreStr}`,
-            );
-
-            await notifyPrediction({
-              stadiumName: slot.stadiumName,
-              raceNumber: slot.raceNumber,
-              deadline: slot.deadline,
-              prob: cached.winnerProb,
-              odds: 0,
-              ev: evPct,
-              betAmount: totalWager,
-            });
-
-            // TODO: teleboat purchase for trifecta (Phase 2)
-
-            state.bankroll -= totalWager;
-          } else {
-            logger.info(`[TRI] SKIP: ${base} | bankroll insufficient`);
-          }
-        } else {
-          logger.info(
-            `[TRI] ---: ${base} | <${evThresholdPct.toFixed(0)}%${thresholdTag}`,
-          );
-        }
-
-        slot.status = "predicted";
-      }
-    } catch (err) {
-      await notifyError("prediction", err);
-      for (const slot of actionable.predict) {
-        slot.status = "predicted";
-      }
-    }
+    await pollPredict(state, actionable.predict, opts, bets);
   }
 
   // 3. Skip oddsTf (T-1) — no longer used in trifecta strategy
