@@ -186,7 +186,12 @@ def predict_trifecta(
 
     # --- Build predictions ---
     predictions = []
-    for i in range(len(b1_rows)):
+    n_total = len(b1_rows)
+    n_b1_pass = 0
+    n_has_odds = 0
+    n_ev_pass = 0
+
+    for i in range(n_total):
         rid = int(b1_rows["race_id"].values[i])
         bi = b1_map.get(rid)
         ri = rank_rid_map.get(rid)
@@ -196,6 +201,7 @@ def predict_trifecta(
         b1p = float(b1_probs[bi])
         if b1p >= b1_threshold:
             continue
+        n_b1_pass += 1
 
         # Winner pick: top non-boat-1
         wp = int(top_boats[ri, 0])
@@ -212,9 +218,12 @@ def predict_trifecta(
         mkt_prob = tri_win_prob.get((rid, wp), 0)
         if mkt_prob <= 0:
             continue
+        n_has_odds += 1
+
         ev = wprob / mkt_prob * 0.75 - 1
         if ev < ev_threshold:
             continue
+        n_ev_pass += 1
 
         # Build X-noB1-noB1 tickets (12 combinations)
         excluded = {wp, 1}
@@ -252,6 +261,12 @@ def predict_trifecta(
         "ev_threshold": ev_threshold,
         "n_races": len(predictions),
         "predictions": predictions,
+        "stats": {
+            "total": n_total,
+            "b1_pass": n_b1_pass,
+            "has_odds": n_has_odds,
+            "ev_pass": n_ev_pass,
+        },
     }
 
 

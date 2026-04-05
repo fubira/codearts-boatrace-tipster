@@ -295,6 +295,14 @@ async function runPrediction(
   const stdout = await exited;
 
   const result = JSON.parse(stdout);
+
+  if (result.stats) {
+    const s = result.stats;
+    logger.info(
+      `Trifecta filter: ${s.total}R → b1_pass:${s.b1_pass} → has_odds:${s.has_odds} → ev_pass:${s.ev_pass}`,
+    );
+  }
+
   return result.predictions.map(
     (p: {
       race_id: number;
@@ -455,8 +463,9 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       );
     try {
       if (needsRebuild) {
-        // WAL checkpoint so DuckDB (READ_ONLY ATTACH) can see latest writes
-        getDatabase().exec("PRAGMA wal_checkpoint(PASSIVE)");
+        // WAL checkpoint so DuckDB (READ_ONLY ATTACH) can see latest writes.
+        // TRUNCATE required because bun:sqlite holds an open connection as reader.
+        getDatabase().exec("PRAGMA wal_checkpoint(TRUNCATE)");
 
         logger.info("Running trifecta prediction...");
         const predictions = await runPrediction(
