@@ -60,6 +60,9 @@ def build_snapshot(
         conn.close()
 
     df = df.sort_values(["race_date", "race_id", "entry_id"]).reset_index(drop=True)
+    # Drop void races (all 6 entries have NULL finish_position = race not established)
+    void_races = df.groupby("race_id")["finish_position"].apply(lambda x: x.isna().all())
+    df = df[~df["race_id"].isin(void_races[void_races].index)].reset_index(drop=True)
     df["finish_position"] = df["finish_position"].fillna(NON_FINISHER_RANK).astype(int)
 
     # Drop races without exactly 6 entries

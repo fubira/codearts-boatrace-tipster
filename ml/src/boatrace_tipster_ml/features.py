@@ -80,6 +80,9 @@ NON_FINISHER_RANK = 7
 def _load_all_data(conn) -> pd.DataFrame:
     df = conn.execute(_BASE_QUERY).fetchdf()
     df = df.sort_values(["race_date", "race_id", "entry_id"]).reset_index(drop=True)
+    # Drop void races (all 6 entries have NULL finish_position = race not established)
+    void_races = df.groupby("race_id")["finish_position"].apply(lambda x: x.isna().all())
+    df = df[~df["race_id"].isin(void_races[void_races].index)].reset_index(drop=True)
     # Assign worst rank to non-finishers to keep 6 entries per race
     df["finish_position"] = df["finish_position"].fillna(NON_FINISHER_RANK).astype(int)
     # Drop races that don't have exactly 6 entries (data corruption)
