@@ -325,6 +325,14 @@ export function createTelebotClient(browser: TelebotBrowser): TelebotClient {
         `Teleboat: Confirm amount ¥${confirmAmountNum} (expected ¥${order.amount})`,
       );
 
+      // 金額不一致チェック
+      if (confirmAmountNum !== order.amount) {
+        await page.click(CONFIRM_SELECTORS.cancelButton);
+        throw new Error(
+          `Amount mismatch: confirm ¥${confirmAmountNum} != order ¥${order.amount}`,
+        );
+      }
+
       if (dryRun) {
         logger.info(`Teleboat: Dry-run completed ${label}`);
         await page.click(CONFIRM_SELECTORS.cancelButton);
@@ -337,9 +345,15 @@ export function createTelebotClient(browser: TelebotBrowser): TelebotClient {
         };
       }
 
-      // LIVE: 購入金額 + 投票用パスワード入力 → 投票実行
+      // LIVE: betPassword 必須
+      if (!betPassword) {
+        await page.click(CONFIRM_SELECTORS.cancelButton);
+        throw new Error("LIVE mode requires betPassword");
+      }
+
+      // 購入金額 + 投票用パスワード入力 → 投票実行
       await page.fill(CONFIRM_SELECTORS.amountInput, String(confirmAmountNum));
-      await page.fill(CONFIRM_SELECTORS.betPassword, betPassword ?? "");
+      await page.fill(CONFIRM_SELECTORS.betPassword, betPassword);
       await page.click(CONFIRM_SELECTORS.submitButton);
 
       // 投票完了を待つ（確認ダイアログが出る可能性）
