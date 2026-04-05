@@ -221,8 +221,16 @@ def _extract_params(
     b1_threshold: float,
     ev_threshold: float,
     all_flow: bool = False,
+    mixed: bool = False,
+    exacta_ratio: float = 1.0,
 ) -> dict:
-    """Extract MC parameters from backtest results by filtering with thresholds."""
+    """Extract MC parameters from backtest results by filtering with thresholds.
+
+    Modes:
+        default: X-noB1-noB1 (12 tickets)
+        all_flow: X-全流し (20 tickets)
+        mixed: 3連単 X-全 + 2連単 X-全 (20 + 5*ratio tickets)
+    """
     filtered = [r for r in all_results
                 if r["b1_prob"] < b1_threshold and r["ev"] >= ev_threshold]
 
@@ -231,7 +239,20 @@ def _extract_params(
         return {"hit_rate": 0, "bets_per_day": 0, "tickets_per_bet": 0,
                 "payout_mu": DEFAULTS["payout_mu"], "payout_sigma": DEFAULTS["payout_sigma"]}
 
-    if all_flow:
+    if mixed:
+        # 3連単(20pt) + 2連単(5pt × ratio) combined
+        n_wins = sum(1 for r in filtered if r.get("pick_1st"))
+        avg_tickets = 20.0 + 5.0 * exacta_ratio
+        payouts_when_hit = []
+        for r in filtered:
+            if not r.get("pick_1st"):
+                continue
+            tri = r.get("allflow_odds", 0)
+            exa = r.get("exacta_hit_odds", 0) * exacta_ratio
+            combined = tri + exa
+            if combined > 0:
+                payouts_when_hit.append(combined)
+    elif all_flow:
         # X-全流し: hit when pick_1st is correct, 20 tickets
         n_wins = sum(1 for r in filtered if r.get("pick_1st"))
         avg_tickets = 20.0
@@ -278,7 +299,7 @@ def collect_all_candidates(n_folds: int) -> list[dict]:
     t0 = time.time()
 
     with contextlib.redirect_stdout(io.StringIO()):
-        df, trifecta_odds, tri_win_prob, finish_map, race_date_map = load_data(
+        df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds = load_data(
             DEFAULT_DB_PATH
         )
 
@@ -305,6 +326,7 @@ def collect_all_candidates(n_folds: int) -> list[dict]:
             b1_model, rank_model, test_fold,
             trifecta_odds, tri_win_prob, finish_map, race_date_map,
             b1_threshold=1.0, ev_threshold=-999,
+            exacta_odds=exacta_odds,
         )
         all_results.extend(results)
 
@@ -318,10 +340,15 @@ def collect_from_backtest(
     b1_threshold: float,
     n_folds: int,
     all_flow: bool = False,
+    mixed: bool = False,
+    exacta_ratio: float = 1.0,
 ) -> dict:
     """Run WF-CV backtest and extract empirical distribution parameters."""
     all_results = collect_all_candidates(n_folds)
-    params = _extract_params(all_results, b1_threshold, ev_threshold, all_flow=all_flow)
+    params = _extract_params(
+        all_results, b1_threshold, ev_threshold,
+        all_flow=all_flow, mixed=mixed, exacta_ratio=exacta_ratio,
+    )
 
     print(f"  b1<{b1_threshold} ev>+{ev_threshold:.0%}: "
           f"{sum(1 for r in all_results if r['b1_prob'] < b1_threshold and r['ev'] >= ev_threshold)} bets, "
@@ -370,6 +397,10 @@ def main():
                         help="Compare multiple threshold sets: 'b1:ev,b1:ev,...'")
     parser.add_argument("--all-flow", action="store_true",
                         help="Use X-全流し (20 tickets) instead of X-noB1-noB1 (12 tickets)")
+    parser.add_argument("--mixed", action="store_true",
+                        help="Use 3連単 X-全 + 2連単 X-全 combined (25 tickets)")
+    parser.add_argument("--exacta-ratio", type=float, default=1.0,
+                        help="2連単 unit multiplier relative to 3連単 (default: 1.0)")
     args = parser.parse_args()
 
     # Periods
@@ -382,11 +413,20 @@ def main():
     # Compare mode: single backtest, multiple threshold sweeps
     if args.compare:
         all_results = collect_all_candidates(args.n_folds)
-        flow_label = "全流し(20点)" if args.all_flow else "noB1(12点)"
+        if args.mixed:
+            flow_label = f"混合(25点×{args.exacta_ratio})"
+        elif args.all_flow:
+            flow_label = "全流し(20点)"
+        else:
+            flow_label = "noB1(12点)"
         pairs = [p.strip().split(":") for p in args.compare.split(",")]
         for b1s, evs in pairs:
             b1_thr, ev_thr = float(b1s), float(evs)
-            params = _extract_params(all_results, b1_thr, ev_thr, all_flow=args.all_flow)
+            params = _extract_params(
+                all_results, b1_thr, ev_thr,
+                all_flow=args.all_flow or args.mixed,
+                mixed=args.mixed, exacta_ratio=args.exacta_ratio,
+            )
             n = sum(1 for r in all_results
                     if r["b1_prob"] < b1_thr and r["ev"] >= ev_thr)
             print(f"\n{'='*70}")
@@ -406,7 +446,9 @@ def main():
             ev_threshold=args.ev_threshold,
             b1_threshold=args.b1_threshold,
             n_folds=args.n_folds,
-            all_flow=args.all_flow,
+            all_flow=args.all_flow or args.mixed,
+            mixed=args.mixed,
+            exacta_ratio=args.exacta_ratio,
         )
     else:
         params = dict(DEFAULTS)

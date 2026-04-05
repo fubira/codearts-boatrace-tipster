@@ -55,6 +55,12 @@ def load_data(db_path: str):
         first_boat = int(combo.split("-")[0])
         tri_win_prob[(rid, first_boat)] += 0.75 / odds
 
+    # Exacta odds (2連単)
+    exacta_rows = conn.execute(
+        "SELECT race_id, combination, odds FROM db.race_odds WHERE bet_type = '2連単'"
+    ).fetchall()
+    exacta_odds = {(int(r[0]), r[1]): float(r[2]) for r in exacta_rows}
+
     conn.close()
 
     # Finish map and date map
@@ -71,7 +77,7 @@ def load_data(db_path: str):
             )
         race_date_map[int(row["race_id"])] = str(row["race_date"])
 
-    return df, trifecta_odds, dict(tri_win_prob), finish_map, race_date_map
+    return df, trifecta_odds, dict(tri_win_prob), finish_map, race_date_map, exacta_odds
 
 
 def train_models(train_df, val_df=None):
@@ -108,6 +114,7 @@ def evaluate_period(
     race_date_map: dict,
     b1_threshold: float = 0.40,
     ev_threshold: float = 0.10,
+    exacta_odds: dict | None = None,
 ) -> list[dict]:
     """Evaluate strategy on test period, return per-race results."""
     with contextlib.redirect_stdout(io.StringIO()):
@@ -180,6 +187,7 @@ def evaluate_period(
 
         hit_odds = 0.0
         allflow_odds = 0.0
+        exacta_hit_odds = 0.0
         pick_1st = finish_map.get((rid, wp)) == 1
         if pick_1st and a2 and a3:
             hc = f"{wp}-{a2}-{a3}"
@@ -190,6 +198,12 @@ def evaluate_period(
                 # noB1: only if combo is in noB1 tickets
                 if hc in tkts:
                     hit_odds = ho
+            # Exacta: X-2nd
+            if exacta_odds is not None:
+                ec = f"{wp}-{a2}"
+                eo = exacta_odds.get((rid, ec))
+                if eo is not None and eo > 0:
+                    exacta_hit_odds = eo
 
         results.append({
             "race_id": rid,
@@ -203,6 +217,7 @@ def evaluate_period(
             "won": hit_odds > 0,
             "pick_1st": pick_1st,
             "allflow_odds": round(allflow_odds, 1),
+            "exacta_hit_odds": round(exacta_hit_odds, 1),
         })
 
     return results
@@ -439,7 +454,7 @@ def main():
 
     t0 = time.time()
     print("Loading data...", file=sys.stderr)
-    df, trifecta_odds, tri_win_prob, finish_map, race_date_map = load_data(
+    df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds = load_data(
         args.db_path
     )
     print(f"Loaded in {time.time() - t0:.1f}s", file=sys.stderr)
