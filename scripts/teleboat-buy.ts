@@ -15,17 +15,9 @@
  */
 import { parseArgs } from "node:util";
 import { launchTelebotBrowser } from "@/features/teleboat/browser";
-import {
-  BETLIST_SELECTORS,
-  BET_SELECTORS,
-  CHARGE_SELECTORS,
-  LOGIN_SELECTORS,
-  MENU_SELECTORS,
-  RACE_SELECTORS,
-  STADIUM_CODES,
-  STADIUM_SELECTORS,
-  TELEBOAT_URL,
-} from "@/features/teleboat/selectors";
+import { STADIUM_CODES } from "@/features/teleboat/selectors";
+import { createTelebotClient } from "@/features/teleboat/teleboat-client";
+import type { TelebotCredentials } from "@/features/teleboat/types";
 
 const { values } = parseArgs({
   options: {
@@ -41,7 +33,6 @@ const raceNumber = Number(values.race);
 const boat1st = Number(values.boat);
 const amountPerBet = Number(values.amount);
 
-// バリデーション
 if (!stadiumCode || !STADIUM_CODES[stadiumCode]) {
   console.error(`無効な場コード: ${stadiumCode}`);
   console.error(
@@ -78,7 +69,7 @@ console.log(
 console.log(`金額: ¥${amountPerBet} × 12点 = ¥${totalAmount}`);
 console.log();
 
-const credentials = {
+const credentials: TelebotCredentials = {
   subscriberNumber: process.env.TELEBOAT_SUBSCRIBER_NUMBER ?? "",
   pin: process.env.TELEBOAT_PIN ?? "",
   password: process.env.TELEBOAT_PASSWORD ?? "",
@@ -98,147 +89,57 @@ if (
 }
 
 const browser = await launchTelebotBrowser({ headless: false });
-const { page: loginPage } = browser;
+const client = createTelebotClient(browser);
 
 try {
   // 1. ログイン
-  console.log("[1/6] ログイン中...");
-  await loginPage.goto(TELEBOAT_URL);
-  await loginPage.waitForSelector(LOGIN_SELECTORS.subscriberNumber, {
-    timeout: 10_000,
-  });
-  await loginPage.fill(
-    LOGIN_SELECTORS.subscriberNumber,
-    credentials.subscriberNumber,
-  );
-  await loginPage.fill(LOGIN_SELECTORS.pin, credentials.pin);
-  await loginPage.fill(LOGIN_SELECTORS.password, credentials.password);
-
-  const [betPage] = await Promise.all([
-    loginPage.context().waitForEvent("page", { timeout: 30_000 }),
-    loginPage.click(LOGIN_SELECTORS.loginButton),
-  ]);
-  await betPage.waitForLoadState("networkidle", { timeout: 30_000 });
-
-  // お知らせモーダルをスキップ
-  for (;;) {
-    const isVisible = await betPage
-      .locator(LOGIN_SELECTORS.noticeCloseButton)
-      .isVisible();
-    if (!isVisible) break;
-    console.log("  お知らせモーダルをスキップ...");
-    const allRead = await betPage.$(LOGIN_SELECTORS.noticeAllRead);
-    if (allRead) await allRead.check();
-    await betPage.click(LOGIN_SELECTORS.noticeCloseButton);
-    await betPage.waitForTimeout(500);
-  }
-
-  await betPage.waitForSelector(MENU_SELECTORS.balance, { timeout: 15_000 });
-  const balanceText = await betPage.textContent(MENU_SELECTORS.balance);
-  const balance = Number.parseInt(
-    (balanceText ?? "0").replace(/[,，円\s]/g, ""),
-    10,
-  );
-  console.log(`  ログイン成功 残高: ¥${balance.toLocaleString()}`);
+  console.log("[1/4] ログイン中...");
+  await client.login(credentials);
+  const { availableBalance } = await client.getBalance();
+  console.log(`  残高: ¥${availableBalance.toLocaleString()}`);
 
   // 2. 入金（残高不足時）
-  if (balance < totalAmount) {
+  if (availableBalance < totalAmount) {
     console.log(
-      `[2/6] 入金中... ¥${depositNeeded.toLocaleString()}（残高 ¥${balance.toLocaleString()} < 必要額 ¥${totalAmount.toLocaleString()}）`,
+      `[2/4] 入金中... ¥${depositNeeded.toLocaleString()}（残高 ¥${availableBalance.toLocaleString()} < 必要額 ¥${totalAmount.toLocaleString()}）`,
     );
-    await betPage.click(MENU_SELECTORS.charge);
-    await betPage.waitForSelector(CHARGE_SELECTORS.amountInput, {
-      timeout: 10_000,
-    });
-    await betPage.fill(
-      CHARGE_SELECTORS.amountInput,
-      String(depositNeeded / 1000),
-    );
-    await betPage.fill(CHARGE_SELECTORS.betPassword, credentials.betPassword);
-    await betPage.click(CHARGE_SELECTORS.executeButton);
-    await betPage.waitForSelector(CHARGE_SELECTORS.closeCompButton, {
-      timeout: 30_000,
-    });
-    console.log(`  入金完了 ¥${depositNeeded.toLocaleString()}`);
-    await betPage.click(CHARGE_SELECTORS.closeCompButton);
-    await betPage.waitForTimeout(500);
+    await client.deposit(depositNeeded, credentials.betPassword);
+    const { availableBalance: newBalance } = await client.getBalance();
+    console.log(`  残高反映: ¥${newBalance.toLocaleString()}`);
   } else {
     console.log(
-      `[2/6] 入金不要（残高 ¥${balance.toLocaleString()} >= 必要額 ¥${totalAmount.toLocaleString()}）`,
+      `[2/4] 入金不要（残高 ¥${availableBalance.toLocaleString()} >= 必要額 ¥${totalAmount.toLocaleString()}）`,
     );
   }
 
-  // 3. 会場選択
-  console.log(`[3/6] ${stadiumName} を選択...`);
-  const stadiumSelector = `${STADIUM_SELECTORS.stadiumIdPrefix}${stadiumCode} a`;
-  await betPage.waitForSelector(stadiumSelector, { timeout: 10_000 });
-  await betPage.click(stadiumSelector);
-  await betPage.waitForURL("**/service/bet/betcom/**", { timeout: 15_000 });
-
-  // 4. レース選択 + 3連単フォーメーション
-  const raceNo = String(raceNumber).padStart(2, "0");
-  console.log(`[4/6] ${raceNumber}R → 3連単フォーメーション...`);
-  await betPage.waitForSelector(`${RACE_SELECTORS.raceTabPrefix}${raceNo}`, {
-    timeout: 10_000,
-  });
-  await betPage.click(`${RACE_SELECTORS.raceTabPrefix}${raceNo}`);
-
-  // 3連単タブ
-  await betPage.waitForSelector(BET_SELECTORS.sanrentanTab, {
-    timeout: 10_000,
-  });
-  await betPage.click(BET_SELECTORS.sanrentanTab);
-
-  // フォーメーションタブ
-  await betPage.waitForSelector(BET_SELECTORS.formationBetWay, {
-    timeout: 10_000,
-  });
-  await betPage.click(BET_SELECTORS.formationBetWay);
-
-  // 5. 艇番選択
-  console.log(
-    `[5/6] 艇番選択: 1着=${boat1st} 2着=${boats2nd.join(",")} 3着=${boats2nd.join(",")}...`,
+  // 3. 投票（ベットリスト追加まで）
+  console.log("[3/4] 投票セット中...");
+  const result = await client.placeBet(
+    {
+      stadiumCode,
+      stadiumName,
+      raceNumber,
+      betType: "sanrentan",
+      boats1st: [boat1st],
+      boats2nd,
+      boats3rd: boats2nd,
+      amount: amountPerBet,
+    },
+    true, // dry-run: ベットリスト追加まで
   );
 
-  // 1着
-  const sel1st = `${BET_SELECTORS.formationBoatCell}.x${boat1st}.y1`;
-  await betPage.waitForSelector(sel1st, { timeout: 10_000 });
-  await betPage.click(sel1st);
-
-  // 2着・3着
-  for (const boat of boats2nd) {
-    await betPage.click(`${BET_SELECTORS.formationBoatCell}.x${boat}.y2`);
-    await betPage.click(`${BET_SELECTORS.formationBoatCell}.x${boat}.y3`);
+  if (result.success) {
+    console.log();
+    console.log("===========================================");
+    console.log("  [4/4] ベットリスト追加完了！");
+    console.log("  ブラウザで内容を確認し「投票入力完了」を押してください");
+    console.log("===========================================");
+  } else {
+    console.error(`投票失敗: ${result.error}`);
   }
 
-  // ベット数確認
-  const betCount = await betPage.textContent(BET_SELECTORS.formationBetCount);
-  console.log(`  組合せ数: ${betCount}`);
-
-  // 金額入力
-  const units = amountPerBet / 100;
-  await betPage.fill(BET_SELECTORS.amountInput, String(units));
-
-  // ベットリストに追加
-  console.log("[6/6] ベットリストに追加...");
-  await betPage.click(BET_SELECTORS.formationAddToBetList);
-
-  // ベットリスト反映を確認
-  await betPage.waitForTimeout(1000);
-  const totalAmountText = await betPage.textContent(
-    BETLIST_SELECTORS.totalAmount,
-  );
-  console.log(`  総購入金額: ${totalAmountText}円`);
-
-  console.log();
-  console.log("===========================================");
-  console.log("  ベットリスト追加完了！");
-  console.log("  ブラウザで内容を確認し「投票入力完了」を押してください");
-  console.log("===========================================");
   console.log();
   console.log("終了するには Ctrl+C を押してください");
-
-  // ブラウザが閉じられるまで待機
   await new Promise(() => {});
 } catch (error) {
   const msg = error instanceof Error ? error.message : String(error);

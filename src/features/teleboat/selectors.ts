@@ -32,8 +32,14 @@ export const MENU_SELECTORS = {
   balance: "#currentBetLimitAmount",
   /** 残高更新ボタン */
   balanceReload: "#updateBalanceBtn a",
-  /** 入金メニュー */
-  charge: "#charge",
+  /** 「入金・精算」ドロップダウンの親メニュー */
+  chargeMenu: "#gnavi01",
+  /** 入金メニュー（ドロップダウン内） */
+  charge: "#charge a",
+  /** 「照会」ドロップダウンの親メニュー */
+  inquiryMenu: "#gnavi02",
+  /** 契約一覧（入金精算）を見る */
+  depositHistory: "#rcptlist_3",
 } as const;
 
 /**
@@ -48,6 +54,8 @@ export const CHARGE_SELECTORS = {
   betPassword: "#chargeBetPassword",
   /** 入金実行ボタン */
   executeButton: "#executeCharge",
+  /** 確認ダイアログOKボタン */
+  confirmOk: "#ok",
   /** キャンセルボタン */
   cancelButton: "#closeCharge",
   /** 入金完了画面の閉じるボタン */

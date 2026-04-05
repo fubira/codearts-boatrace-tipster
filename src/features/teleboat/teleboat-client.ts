@@ -116,7 +116,12 @@ export function createTelebotClient(browser: TelebotBrowser): TelebotClient {
     const units = amount / 1000;
     logger.info(`Teleboat: Deposit ¥${amount} (${units}千円)`);
 
-    // 入金メニューを開く
+    // 「入金・精算」ドロップダウンを開いてから入金メニューをクリック
+    await page.click(MENU_SELECTORS.chargeMenu);
+    await page.waitForSelector(MENU_SELECTORS.charge, {
+      state: "visible",
+      timeout: CLICK_TIMEOUT,
+    });
     await page.click(MENU_SELECTORS.charge);
     await page.waitForSelector(CHARGE_SELECTORS.amountInput, {
       timeout: CLICK_TIMEOUT,
@@ -130,6 +135,12 @@ export function createTelebotClient(browser: TelebotBrowser): TelebotClient {
     // 入金実行
     await page.click(CHARGE_SELECTORS.executeButton);
 
+    // 確認ダイアログ「入金を実行します。よろしいですか？」
+    await page.waitForSelector(CHARGE_SELECTORS.confirmOk, {
+      timeout: CLICK_TIMEOUT,
+    });
+    await page.click(CHARGE_SELECTORS.confirmOk);
+
     // 完了画面を待って閉じる
     await page.waitForSelector(CHARGE_SELECTORS.closeCompButton, {
       timeout: NAV_TIMEOUT,
@@ -137,7 +148,23 @@ export function createTelebotClient(browser: TelebotBrowser): TelebotClient {
     await screenshotWithTimestamp("deposit-complete");
     await page.click(CHARGE_SELECTORS.closeCompButton);
 
-    logger.info(`Teleboat: Deposit completed ¥${amount}`);
+    // 入金反映: 照会→契約一覧(入金精算)を開いて閉じると即反映される
+    logger.info("Teleboat: Refreshing balance via deposit history...");
+    await page.waitForTimeout(2000);
+    await page.click(MENU_SELECTORS.inquiryMenu);
+    await page.waitForSelector(MENU_SELECTORS.depositHistory, {
+      state: "visible",
+      timeout: CLICK_TIMEOUT,
+    });
+    await page.click(MENU_SELECTORS.depositHistory);
+    await page.waitForTimeout(3000);
+    const closeBtn = await page.$("#contractCloseButton");
+    if (closeBtn) await closeBtn.click();
+    await page.waitForTimeout(1000);
+
+    const text = await page.textContent(MENU_SELECTORS.balance);
+    const bal = Number.parseInt((text ?? "0").replace(/[,，円\s]/g, ""), 10);
+    logger.info(`Teleboat: Deposit completed ¥${amount}, balance ¥${bal}`);
   }
 
   async function placeBet(
