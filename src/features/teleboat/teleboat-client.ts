@@ -40,7 +40,11 @@ export interface TelebotClient {
   login(credentials: TelebotCredentials): Promise<void>;
   getBalance(): Promise<TelebotBalance>;
   deposit(amount: number, betPassword: string): Promise<void>;
-  placeBet(order: TelebotBetOrder, dryRun: boolean): Promise<TelebotBetResult>;
+  placeBet(
+    order: TelebotBetOrder,
+    dryRun: boolean,
+    betPassword?: string,
+  ): Promise<TelebotBetResult>;
   close(): Promise<void>;
 }
 
@@ -170,6 +174,7 @@ export function createTelebotClient(browser: TelebotBrowser): TelebotClient {
   async function placeBet(
     order: TelebotBetOrder,
     dryRun: boolean,
+    betPassword?: string,
   ): Promise<TelebotBetResult> {
     const boatLabel =
       order.betType === "sanrentan"
@@ -187,7 +192,10 @@ export function createTelebotClient(browser: TelebotBrowser): TelebotClient {
       ),
     );
 
-    return Promise.race([placeBetInternal(order, label, dryRun), timeout]);
+    return Promise.race([
+      placeBetInternal(order, label, dryRun, betPassword),
+      timeout,
+    ]);
   }
 
   /** フォーメーション投票で艇番セルをクリック */
@@ -218,6 +226,7 @@ export function createTelebotClient(browser: TelebotBrowser): TelebotClient {
     order: TelebotBetOrder,
     label: string,
     dryRun: boolean,
+    betPassword?: string,
   ): Promise<TelebotBetResult> {
     try {
       // 1. トップページの会場をクリック → 投票画面へ遷移
@@ -298,28 +307,58 @@ export function createTelebotClient(browser: TelebotBrowser): TelebotClient {
       await page.click(BETLIST_SELECTORS.submitButton);
 
       // 8. 確認画面
-      // TODO: 確認画面のセレクタが埋まったら以下を実装
-      // - 投票内容のバリデーション
-      // - dry-run: キャンセル / live: 投票用パスワード入力 → 投票実行
       logger.info(`Teleboat step 8: confirm screen ${label}`);
+      await page.waitForSelector(CONFIRM_SELECTORS.totalAmount, {
+        timeout: NAV_TIMEOUT,
+      });
       await screenshotWithTimestamp(`confirm-${label}`);
+
+      // 金額バリデーション
+      const confirmAmount = await page.textContent(
+        CONFIRM_SELECTORS.totalAmount,
+      );
+      const confirmAmountNum = Number.parseInt(
+        (confirmAmount ?? "0").replace(/[,，円\s]/g, ""),
+        10,
+      );
+      logger.info(
+        `Teleboat: Confirm amount ¥${confirmAmountNum} (expected ¥${order.amount})`,
+      );
 
       if (dryRun) {
         logger.info(`Teleboat: Dry-run completed ${label}`);
-        // TODO: 確認画面でキャンセルクリック
-        // await page.click(CONFIRM_SELECTORS.cancelButton);
+        await page.click(CONFIRM_SELECTORS.cancelButton);
         return {
           order,
           success: true,
+          screenshotPath: await screenshotWithTimestamp(`dryrun-done-${label}`),
           completedAt: new Date().toISOString(),
           dryRun: true,
         };
       }
 
-      // LIVE: TODO — 確認画面セレクタ実装後に有効化
-      throw new Error(
-        "LIVE mode not yet implemented — confirm screen selectors needed",
-      );
+      // LIVE: 購入金額 + 投票用パスワード入力 → 投票実行
+      await page.fill(CONFIRM_SELECTORS.amountInput, String(confirmAmountNum));
+      await page.fill(CONFIRM_SELECTORS.betPassword, betPassword ?? "");
+      await page.click(CONFIRM_SELECTORS.submitButton);
+
+      // 投票完了を待つ（確認ダイアログが出る可能性）
+      const okBtn = await page.waitForSelector(CHARGE_SELECTORS.confirmOk, {
+        timeout: CLICK_TIMEOUT,
+      });
+      if (okBtn) await okBtn.click();
+
+      await page.waitForTimeout(3000);
+      const screenshotPath = await screenshotWithTimestamp(`complete-${label}`);
+      logger.info(`Teleboat: Bet completed ${label}`);
+
+      return {
+        order,
+        success: true,
+        screenshotPath,
+        completedAt: new Date().toISOString(),
+        dryRun: false,
+      };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.error(`Teleboat: Bet failed ${label}: ${errorMsg}`);

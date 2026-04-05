@@ -137,17 +137,23 @@ export const BETLIST_SELECTORS = {
 
 /**
  * 投票確認画面（/service/bet/betconf）
- * TODO: 確認画面の HTML を調査して埋める
+ *
+ * フロー: 購入金額入力 → 投票用パスワード入力 → 「投票する」ボタン
+ * dry-run 時は「投票内容を修正する」でベットリストに戻る。
  */
 export const CONFIRM_SELECTORS = {
-  /** 投票内容リスト */
-  voteList: "", // TODO
+  /** 投票内容テーブル */
+  voteList: "#voteListAreaInner table",
+  /** 購入金額合計の表示 */
+  totalAmount: "#betconfTotalBetAmount",
+  /** 購入金額入力 */
+  amountInput: "#amount",
   /** 投票用パスワード入力 */
-  betPassword: "", // TODO
-  /** 投票ボタン */
-  submitButton: "", // TODO
-  /** キャンセルボタン — dry-run 時に使用 */
-  cancelButton: "", // TODO
+  betPassword: "#pass",
+  /** 投票するボタン */
+  submitButton: "#submitBet a",
+  /** 投票内容を修正するボタン（キャンセル） */
+  cancelButton: "#modifyBet a",
 } as const;
 
 /**
