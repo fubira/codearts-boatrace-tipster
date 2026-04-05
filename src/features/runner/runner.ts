@@ -23,14 +23,10 @@ import {
   STADIUMS,
   beforeInfoUrl,
   odds3TUrl,
-  oddsTfUrl,
   raceResultUrl,
 } from "@/features/scraper/sources/boatrace/constants";
 import { discoverDateSchedule } from "@/features/scraper/sources/boatrace/discovery";
-import {
-  parseOdds3T,
-  parseOddsTf,
-} from "@/features/scraper/sources/boatrace/odds-parsers";
+import { parseOdds3T } from "@/features/scraper/sources/boatrace/odds-parsers";
 import {
   parseBeforeInfo,
   parseRaceResult,
@@ -572,38 +568,8 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     }
   }
 
-  // 3. Fetch oddsTf at T-1min for DB update only (bet decision already made at T-5)
+  // 3. Skip oddsTf (T-1) — no longer used in trifecta strategy
   for (const slot of actionable.odds) {
-    const stadiumCode = padStadiumCode(slot.stadiumId);
-    try {
-      const params: RaceParams = {
-        raceNumber: slot.raceNumber,
-        stadiumCode,
-        date: state.date.replace(/-/g, ""),
-      };
-      const page = fetchPage(oddsTfUrl(params), { skipCache: true });
-      if (page) {
-        const entries = parseOddsTf(page.html);
-        if (entries.length > 0) {
-          saveOdds([
-            {
-              stadiumId: slot.stadiumId,
-              raceDate: state.date,
-              raceNumber: slot.raceNumber,
-              entries: entries.map((e) => ({
-                betType: e.betType,
-                combination: e.combination,
-                odds: e.odds,
-              })),
-            },
-          ]);
-        }
-      }
-    } catch (err) {
-      logger.warn(
-        `Failed to fetch odds: ${slot.stadiumName} R${slot.raceNumber}: ${err}`,
-      );
-    }
     slot.status = "decided";
   }
 
