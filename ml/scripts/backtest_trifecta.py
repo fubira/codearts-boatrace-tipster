@@ -1,7 +1,7 @@
-"""Backtest trifecta X-noB1-noB1 strategy.
+"""Backtest trifecta X-allflow strategy.
 
-Evaluates 3連単 strategy: fix 1st place (anti-favorite pick), exclude boat 1
-from 2nd/3rd, buy all remaining combinations (12pt).
+Evaluates 3連単 strategy: fix 1st place (anti-favorite pick),
+buy all 2nd-3rd combinations (20pt allflow).
 
 Modes:
     --from/--to:  Period backtest with daily breakdown
@@ -228,57 +228,61 @@ def print_daily(results: list[dict], label: str = ""):
     if label:
         print(f"\n=== {label} ===")
 
+    TICKETS_PER_BET = 20  # allflow
+
     daily: dict[str, dict] = defaultdict(
-        lambda: {"races": 0, "tickets": 0, "wins": 0, "payout": 0.0}
+        lambda: {"races": 0, "wins": 0, "payout": 0.0}
     )
     for r in results:
         d = daily[r["date"]]
         d["races"] += 1
-        d["tickets"] += r["tickets"]
-        if r["won"]:
+        if r["pick_1st"] and r["allflow_odds"] > 0:
             d["wins"] += 1
-            d["payout"] += r["hit_odds"]
+            d["payout"] += r["allflow_odds"]
 
-    cum = 0
-    total_r = total_t = total_w = 0
+    cum = 0.0
+    total_r = total_w = 0
+    total_cost = 0.0
     total_p = 0.0
     win_days = 0
 
     for date in sorted(daily.keys()):
         d = daily[date]
-        pl = d["payout"] - d["tickets"]
+        cost = d["races"] * TICKETS_PER_BET
+        pl = d["payout"] - cost
         cum += pl
         total_r += d["races"]
-        total_t += d["tickets"]
+        total_cost += cost
         total_w += d["wins"]
         total_p += d["payout"]
         if pl > 0:
             win_days += 1
         marker = "+" if pl > 0 else "-"
-        roi = d["payout"] / d["tickets"] if d["tickets"] > 0 else 0
+        hit_pct = d["wins"] / d["races"] * 100 if d["races"] > 0 else 0
         print(
-            f"  {date}: {d['races']:>2}R {d['tickets']:>3}tkt "
-            f"{d['wins']}W P/L {pl:>+7.0f} cum {cum:>+8.0f} {marker}"
+            f"  {date}: {d['races']:>2}R {d['wins']}W({hit_pct:>3.0f}%) "
+            f"P/L {pl:>+8.1f} cum {cum:>+9.1f} {marker}"
         )
 
     days = len(daily)
-    if total_t > 0:
-        roi = total_p / total_t
-        print(f"\n  {days} days, {total_r}R, {total_t}tkt, {total_w}W")
-        print(f"  ROI: {roi:.0%}, P/L: {total_p - total_t:+.0f}")
+    if total_cost > 0:
+        roi = total_p / total_cost
+        print(f"\n  {days} days, {total_r}R(×{TICKETS_PER_BET}pt), {total_w}W")
+        print(f"  Hit: {total_w/total_r:.0%}, ROI: {roi:.0%}, P/L: {total_p - total_cost:+.1f}")
         print(f"  R/d: {total_r/days:.1f}, Win days: {win_days}/{days} ({win_days/days:.0%})")
 
     return {
         "days": days,
         "races": total_r,
-        "tickets": total_t,
+        "tickets_per_bet": TICKETS_PER_BET,
         "wins": total_w,
         "payout": total_p,
-        "roi": total_p / total_t if total_t > 0 else 0,
+        "cost": total_cost,
+        "roi": total_p / total_cost if total_cost > 0 else 0,
     }
 
 
-def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map):
+def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None):
     """Period backtest with daily breakdown."""
     train_df = df[df["race_date"] < args.from_date]
     test_df = df[
@@ -298,11 +302,12 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map)
         trifecta_odds, tri_win_prob, finish_map, race_date_map,
         b1_threshold=args.b1_threshold,
         ev_threshold=args.ev_threshold,
+        exacta_odds=exacta_odds,
     )
 
     summary = print_daily(
         results,
-        f"X-noB1-noB1, b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%} "
+        f"X-allflow(20pt), b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%} "
         f"({args.from_date} ~ {args.to_date})",
     )
 
@@ -315,13 +320,15 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map)
         )
 
 
-def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map):
+def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None):
     """Walk-forward CV."""
     X_rank, y_rank, meta_rank = prepare_feature_matrix(df)
     folds = walk_forward_splits(
         X_rank, y_rank, meta_rank,
         n_folds=args.n_folds, fold_months=args.fold_months,
     )
+
+    TICKETS_PER_BET = 20
 
     print(f"WF-CV: {len(folds)} folds, b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%}")
     fold_rois = []
@@ -349,15 +356,16 @@ def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map):
             trifecta_odds, tri_win_prob, finish_map, race_date_map,
             b1_threshold=args.b1_threshold,
             ev_threshold=args.ev_threshold,
+            exacta_odds=exacta_odds,
         )
 
-        total_t = sum(r["tickets"] for r in results)
-        total_p = sum(r["hit_odds"] for r in results if r["won"])
-        roi = total_p / total_t if total_t > 0 else 0
-        wins = sum(1 for r in results if r["won"])
+        cost = len(results) * TICKETS_PER_BET
+        payout = sum(r["allflow_odds"] for r in results if r["pick_1st"] and r["allflow_odds"] > 0)
+        roi = payout / cost if cost > 0 else 0
+        wins = sum(1 for r in results if r["pick_1st"] and r["allflow_odds"] > 0)
         fold_rois.append(roi)
 
-        print(f"  Fold {i+1}: {len(results)}R, {total_t}tkt, {wins}W, ROI {roi:.0%}")
+        print(f"  Fold {i+1}: {len(results)}R(×{TICKETS_PER_BET}pt), {wins}W, ROI {roi:.0%}")
 
     print(f"\n{'='*50}")
     print(f"Mean ROI: {np.mean(fold_rois):.0%} ± {np.std(fold_rois):.0%}")
@@ -366,7 +374,7 @@ def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map):
     print(f"Sharpe: {sharpe:.2f}")
 
 
-def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map):
+def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None):
     """EV threshold sweep across WF-CV."""
     X_rank, y_rank, meta_rank = prepare_feature_matrix(df)
     folds = walk_forward_splits(
@@ -399,6 +407,7 @@ def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_ma
         fold_models.append((b1_model, rank_model))
         fold_test_dfs.append(test_fold)
 
+    TICKETS_PER_BET = 20
     ev_thresholds = [-0.1, 0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]
 
     print(f"\n{'EV':>6} | {'F1':>5} {'F2':>5} {'F3':>5} {'F4':>5} | {'Mean':>5} {'Std':>4} {'Min':>5} {'Shrp':>5} {'R/d':>5}")
@@ -418,11 +427,12 @@ def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_ma
                 trifecta_odds, tri_win_prob, finish_map, race_date_map,
                 b1_threshold=args.b1_threshold,
                 ev_threshold=ev_thr,
+                exacta_odds=exacta_odds,
             )
 
-            total_t = sum(r["tickets"] for r in results)
-            total_p = sum(r["hit_odds"] for r in results if r["won"])
-            roi = total_p / total_t if total_t > 0 else 0
+            cost = len(results) * TICKETS_PER_BET
+            payout = sum(r["allflow_odds"] for r in results if r["pick_1st"] and r["allflow_odds"] > 0)
+            roi = payout / cost if cost > 0 else 0
             rpd = len(results) / test_days if test_days > 0 else 0
 
             fold_rois.append(roi)
@@ -439,15 +449,15 @@ def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_ma
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backtest trifecta X-noB1-noB1")
+    parser = argparse.ArgumentParser(description="Backtest trifecta X-allflow")
     parser.add_argument("--from", dest="from_date")
     parser.add_argument("--to", dest="to_date")
     parser.add_argument("--wfcv", action="store_true")
     parser.add_argument("--ev-sweep", action="store_true")
     parser.add_argument("--n-folds", type=int, default=4)
     parser.add_argument("--fold-months", type=int, default=2)
-    parser.add_argument("--b1-threshold", type=float, default=0.40)
-    parser.add_argument("--ev-threshold", type=float, default=0.10)
+    parser.add_argument("--b1-threshold", type=float, default=0.42)
+    parser.add_argument("--ev-threshold", type=float, default=0.36)
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -460,11 +470,11 @@ def main():
     print(f"Loaded in {time.time() - t0:.1f}s", file=sys.stderr)
 
     if args.ev_sweep:
-        run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map)
+        run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds)
     elif args.wfcv:
-        run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map)
+        run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds)
     elif args.from_date and args.to_date:
-        run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map)
+        run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds)
     else:
         parser.error("--from/--to, --wfcv, or --ev-sweep required")
 
