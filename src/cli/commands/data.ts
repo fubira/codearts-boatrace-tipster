@@ -1,5 +1,6 @@
 import {
   loadSyncConfig,
+  pushDb,
   syncCache,
   syncDb,
   verify,
@@ -17,10 +18,11 @@ export const dataCommand = new Command("data").description(
 
 dataCommand
   .command("sync")
-  .description("Sync database and cache with server")
+  .description("Sync database and cache with server (default: pull)")
   .option("--cache-only", "sync HTML cache only")
   .option("--db-only", "sync database only")
   .option("--dry-run", "show what would transfer without syncing")
+  .option("--push", "push local DB to server (instead of pull)")
   .action((opts) => {
     if (opts.cacheOnly && opts.dbOnly) {
       console.error(
@@ -30,6 +32,19 @@ dataCommand
     }
 
     const conf = loadSyncConfig();
+
+    if (opts.push) {
+      // Push mode: local → server (DB only, no cache)
+      if (opts.cacheOnly) {
+        console.error("Error: --push only supports database sync");
+        process.exit(1);
+      }
+      pushDb(conf);
+      logger.info("Push complete. Run 'bun run start data verify' to confirm.");
+      return;
+    }
+
+    // Pull mode (default): server → local
     const doCache = !opts.dbOnly;
     const doDb = !opts.cacheOnly;
 

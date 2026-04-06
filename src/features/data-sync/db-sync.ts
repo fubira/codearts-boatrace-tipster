@@ -1,11 +1,13 @@
-/** Pull database from server with atomic swap and backup. */
+/** Database sync: pull from server (default) or push to server (--push). */
 
+import { execSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { resolve } from "node:path";
 import { config } from "@/shared/config";
@@ -79,7 +81,59 @@ export function syncDb(conf: SyncConfig): DbSyncResult {
   }
 
   renameSync(tempDb, localDb);
-  logger.info("Database sync complete.");
+  logger.info("Database pull complete.");
 
   return { backedUp, backupPath };
+}
+
+/** Push local database to server safely.
+ *
+ * 1. Local WAL checkpoint (TRUNCATE) — merge WAL into main DB
+ * 2. Remote WAL/SHM cleanup — remove stale WAL files
+ * 3. rsync main DB file only (no WAL/SHM)
+ *
+ * IMPORTANT: The server runner should not be writing to the DB during push.
+ * This is safe when the runner is in sleep mode between days or stopped.
+ */
+export function pushDb(conf: SyncConfig): void {
+  const localDb = config.dbPath;
+  const remoteDbPath = `${conf.prodDir}/data/boatrace-tipster.db`;
+
+  // Step 1: Local WAL checkpoint
+  logger.info("Running local WAL checkpoint...");
+  try {
+    execSync(`sqlite3 "${localDb}" "PRAGMA wal_checkpoint(TRUNCATE);"`, {
+      encoding: "utf-8",
+      timeout: 30_000,
+    });
+  } catch (e) {
+    throw new Error(`Local WAL checkpoint failed: ${e}`);
+  }
+
+  // Verify no WAL remaining
+  const walPath = `${localDb}-wal`;
+  if (existsSync(walPath)) {
+    const walSize = statSync(walPath).size;
+    if (walSize > 0) {
+      throw new Error(
+        `WAL file still has data (${walSize} bytes) after checkpoint. Another process may be writing to the DB.`,
+      );
+    }
+  }
+
+  // Step 2: Remove remote WAL/SHM files
+  logger.info("Cleaning remote WAL/SHM files...");
+  try {
+    sshExec(conf, `rm -f "${remoteDbPath}-wal" "${remoteDbPath}-shm"`, {
+      timeout: 10_000,
+    });
+  } catch (e) {
+    throw new Error(`Failed to clean remote WAL/SHM: ${e}`);
+  }
+
+  // Step 3: Push main DB file only
+  logger.info("Pushing database to server...");
+  rsync(localDb, `${conf.server}:${remoteDbPath}`);
+
+  logger.info("Database push complete.");
 }
