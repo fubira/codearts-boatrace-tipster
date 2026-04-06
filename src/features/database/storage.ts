@@ -568,6 +568,35 @@ export function savePurchaseRecord(
     });
 }
 
+/** Save odds snapshot (append-only, for multi-timing analysis) */
+export function saveOddsSnapshot(
+  raceId: number,
+  timing: string,
+  entries: { betType: string; combination: string; odds: number }[],
+  db?: Database,
+): void {
+  const database = db ?? getDatabase();
+
+  const transaction = database.transaction(() => {
+    for (const entry of entries) {
+      database
+        .query(
+          `INSERT INTO race_odds_snapshots (race_id, timing, bet_type, combination, odds)
+           VALUES ($raceId, $timing, $betType, $combination, $odds)`,
+        )
+        .run({
+          $raceId: raceId,
+          $timing: timing,
+          $betType: entry.betType,
+          $combination: entry.combination,
+          $odds: entry.odds,
+        });
+    }
+  });
+
+  transaction();
+}
+
 /** Check if a race has already been scraped (has finish_position data) */
 export function isRaceScraped(
   stadiumId: number,

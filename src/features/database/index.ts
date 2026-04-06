@@ -6,6 +6,7 @@ export {
   saveBeforeInfo,
   saveRacerCourseStats,
   saveOdds,
+  saveOddsSnapshot,
   savePurchaseRecord,
   isRaceScraped,
 } from "./storage";

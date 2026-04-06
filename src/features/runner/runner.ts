@@ -8,6 +8,7 @@ import {
   initializeDatabase,
   saveBeforeInfo,
   saveOdds,
+  saveOddsSnapshot,
   saveRaceResults,
   saveRaces,
 } from "@/features/database";
@@ -81,6 +82,7 @@ interface RunnerState {
   bets: Map<number, BetDecision>; // raceId → decision
   results: Map<number, { won: boolean; payout: number }>;
   predictionCache: PredictionCache | null; // null = not yet loaded
+  oddsTimings: Map<number, Set<string>>; // raceId → collected timing labels
   bankroll: number;
   date: string;
   lastStatusLine: string;
@@ -280,6 +282,7 @@ async function runPrediction(
   if (raceIds && raceIds.length > 0) {
     args.push("--race-ids", raceIds.join(","));
   }
+  args.push("--use-snapshots");
   const { cmd, cwd } = pythonCommand("scripts.predict_trifecta", args);
   const PREDICTION_TIMEOUT_MS = 60_000;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
@@ -368,10 +371,24 @@ export function calcTrifectaUnit(bankroll: number, betCap: number): number {
 // Poll helpers (extracted from poll() for readability)
 // ---------------------------------------------------------------------------
 
-/** Fetch trifecta odds for actionable races. Returns count of fetched. */
-function fetchTrifectaOdds(slots: RaceSlot[], date: string): number {
+/**
+ * Fetch trifecta odds and save as snapshot.
+ * Pre-race timings (T-5/T-3/T-1) save to race_odds_snapshots ONLY.
+ * "final" saves to both race_odds (confirmed) and race_odds_snapshots.
+ */
+function fetchTrifectaOdds(
+  slots: RaceSlot[],
+  date: string,
+  timing: string,
+  oddsTimings: Map<number, Set<string>>,
+): number {
   let fetched = 0;
+  const isConfirmed = timing === "final";
+
   for (const slot of slots) {
+    // Skip if this timing already collected for this race
+    if (oddsTimings.get(slot.raceId)?.has(timing)) continue;
+
     const stadiumCode = padStadiumCode(slot.stadiumId);
     const params: RaceParams = {
       raceNumber: slot.raceNumber,
@@ -383,18 +400,31 @@ function fetchTrifectaOdds(slots: RaceSlot[], date: string): number {
       if (page) {
         const entries = parseOdds3T(page.html);
         if (entries.length > 0) {
-          saveOdds([
-            {
-              stadiumId: slot.stadiumId,
-              raceDate: date,
-              raceNumber: slot.raceNumber,
-              entries: entries.map((e) => ({
-                betType: e.betType,
-                combination: e.combination,
-                odds: e.odds,
-              })),
-            },
-          ]);
+          const oddsEntries = entries.map((e) => ({
+            betType: e.betType,
+            combination: e.combination,
+            odds: e.odds,
+          }));
+
+          // Confirmed odds → race_odds table (the source of truth)
+          if (isConfirmed) {
+            saveOdds([
+              {
+                stadiumId: slot.stadiumId,
+                raceDate: date,
+                raceNumber: slot.raceNumber,
+                entries: oddsEntries,
+              },
+            ]);
+          }
+
+          // All timings → snapshots (for drift analysis)
+          saveOddsSnapshot(slot.raceId, timing, oddsEntries);
+          if (!oddsTimings.has(slot.raceId)) {
+            oddsTimings.set(slot.raceId, new Set());
+          }
+          oddsTimings.get(slot.raceId)?.add(timing);
+
           fetched++;
         }
       }
@@ -463,7 +493,7 @@ function updatePredictionCache(
   );
 }
 
-/** Predict and make bet decisions for actionable races. */
+/** Predict and make bet decisions for actionable races. Odds saved as T-5 snapshot. */
 async function pollPredict(
   state: RunnerState,
   slots: RaceSlot[],
@@ -493,8 +523,13 @@ async function pollPredict(
     logger.info(`Re-scraped exhibition data for ${rescraped} race(s)`);
   }
 
-  const oddsFetched = fetchTrifectaOdds(slots, state.date);
-  logger.info(`Trifecta odds: ${oddsFetched}/${slots.length} fetched`);
+  const oddsFetched = fetchTrifectaOdds(
+    slots,
+    state.date,
+    "T-5",
+    state.oddsTimings,
+  );
+  logger.info(`Trifecta odds (T-5): ${oddsFetched}/${slots.length} fetched`);
 
   const racesToPredict = getRacesToPredict(
     slots,
@@ -643,6 +678,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   const active =
     actionable.beforeInfo.length +
     actionable.predict.length +
+    actionable.oddsT3.length +
     actionable.odds.length +
     actionable.results.length;
   const statusLine = `${counts.waiting}/${counts.before_info}/${counts.predicted + counts.decided + counts.result_pending}/${counts.done}`;
@@ -680,12 +716,55 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     await pollPredict(state, actionable.predict, opts, bets);
   }
 
-  // 3. Skip oddsTf (T-1) — no longer used in trifecta strategy
+  // 3a. Fetch T-3 odds snapshot (no status change)
+  if (actionable.oddsT3.length > 0) {
+    const t3Fetched = fetchTrifectaOdds(
+      actionable.oddsT3,
+      state.date,
+      "T-3",
+      state.oddsTimings,
+    );
+    if (t3Fetched > 0) {
+      logger.info(
+        `Odds snapshot (T-3): ${t3Fetched}/${actionable.oddsT3.length} fetched`,
+      );
+    }
+  }
+
+  // 3b. Fetch T-1 odds snapshot and transition to decided
+  if (actionable.odds.length > 0) {
+    const t1Fetched = fetchTrifectaOdds(
+      actionable.odds,
+      state.date,
+      "T-1",
+      state.oddsTimings,
+    );
+    if (t1Fetched > 0) {
+      logger.info(
+        `Odds snapshot (T-1): ${t1Fetched}/${actionable.odds.length} fetched`,
+      );
+    }
+  }
   for (const slot of actionable.odds) {
     slot.status = "decided";
   }
 
   // 4. Check results for finished races (always scrape, even without bets)
+  // Fetch final (confirmed) odds for all results races
+  if (actionable.results.length > 0) {
+    const finalFetched = fetchTrifectaOdds(
+      actionable.results,
+      state.date,
+      "final",
+      state.oddsTimings,
+    );
+    if (finalFetched > 0) {
+      logger.info(
+        `Odds snapshot (final): ${finalFetched}/${actionable.results.length} fetched`,
+      );
+    }
+  }
+
   for (const slot of actionable.results) {
     try {
       const raceResult = scrapeResultForRace(slot, state.date);
@@ -880,6 +959,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     bets: new Map(),
     results: new Map(),
     predictionCache,
+    oddsTimings: new Map(),
     bankroll: opts.bankroll,
     date,
     lastStatusLine: "",
@@ -1046,6 +1126,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     state.bets = new Map();
     state.results = new Map();
     state.predictionCache = null;
+    state.oddsTimings = new Map();
     state.date = newDate;
     state.lastStatusLine = "";
     state.snapshotPath = newSnapshotPath;

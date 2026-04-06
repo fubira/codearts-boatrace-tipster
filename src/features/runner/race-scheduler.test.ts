@@ -110,12 +110,30 @@ describe("getActionableRaces", () => {
     expect(predict).toHaveLength(0);
   });
 
+  test("returns oddsT3 when within 3 min but more than 1 min before deadline", () => {
+    const slot = makeSlot({ deadlineMs, status: "predicted" });
+    const now = deadlineMs - 2 * 60_000; // 2 min before
+
+    const { oddsT3, odds } = getActionableRaces([slot], now);
+    expect(oddsT3).toHaveLength(1);
+    expect(odds).toHaveLength(0);
+  });
+
+  test("does not return oddsT3 when more than 3 min before deadline", () => {
+    const slot = makeSlot({ deadlineMs, status: "predicted" });
+    const now = deadlineMs - 4 * 60_000; // 4 min before
+
+    const { oddsT3 } = getActionableRaces([slot], now);
+    expect(oddsT3).toHaveLength(0);
+  });
+
   test("returns odds when within 1 min of deadline for predicted races", () => {
     const slot = makeSlot({ deadlineMs, status: "predicted" });
     const now = deadlineMs - 0.5 * 60_000; // 30 sec before
 
-    const { odds } = getActionableRaces([slot], now);
+    const { oddsT3, odds } = getActionableRaces([slot], now);
     expect(odds).toHaveLength(1);
+    expect(oddsT3).toHaveLength(0);
   });
 
   test("does not return odds when more than 1 min before deadline", () => {

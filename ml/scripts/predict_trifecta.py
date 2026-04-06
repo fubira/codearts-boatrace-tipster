@@ -44,27 +44,54 @@ def _load_stadium_names(db_path: str) -> dict[int, str]:
         conn.close()
 
 
-def _load_trifecta_odds(db_path: str, date: str, next_day: str) -> tuple[
+def _load_trifecta_odds(
+    db_path: str, date: str, next_day: str, *, use_snapshots: bool = False
+) -> tuple[
     dict[tuple[int, str], float],
     dict[tuple[int, int], float],
 ]:
     """Load trifecta odds and compute market-implied win probabilities.
+
+    Args:
+        use_snapshots: If True, read from race_odds_snapshots (latest timing
+            per race, used by runner). Otherwise read from race_odds (confirmed
+            odds, used by backtest).
 
     Returns:
         trifecta_odds: {(race_id, combo_str): odds}
         tri_win_prob: {(race_id, first_boat): sum(0.75/odds)}
     """
     conn = get_connection(db_path)
-    rows = conn.execute(
-        """
-        SELECT o.race_id, o.combination, o.odds
-        FROM db.race_odds o
-        JOIN db.races r ON r.id = o.race_id
-        WHERE o.bet_type = '3連単'
-          AND r.race_date >= ? AND r.race_date < ?
-        """,
-        [date, next_day],
-    ).fetchall()
+    if use_snapshots:
+        # Use the latest snapshot timing per race (e.g., T-5 during runner)
+        rows = conn.execute(
+            """
+            SELECT s.race_id, s.combination, s.odds
+            FROM db.race_odds_snapshots s
+            JOIN db.races r ON r.id = s.race_id
+            WHERE s.bet_type = '3連単'
+              AND r.race_date >= ? AND r.race_date < ?
+              AND s.id IN (
+                SELECT MAX(s2.id)
+                FROM db.race_odds_snapshots s2
+                WHERE s2.race_id = s.race_id
+                  AND s2.bet_type = s.bet_type
+                  AND s2.combination = s.combination
+              )
+            """,
+            [date, next_day],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT o.race_id, o.combination, o.odds
+            FROM db.race_odds o
+            JOIN db.races r ON r.id = o.race_id
+            WHERE o.bet_type = '3連単'
+              AND r.race_date >= ? AND r.race_date < ?
+            """,
+            [date, next_day],
+        ).fetchall()
     conn.close()
 
     trifecta_odds: dict[tuple[int, str], float] = {}
@@ -87,6 +114,7 @@ def predict_trifecta(
     ev_threshold: float | None = None,
     snapshot_path: str | None = None,
     race_ids: list[int] | None = None,
+    use_snapshots: bool = False,
 ) -> dict:
     next_day = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime(
         "%Y-%m-%d"
@@ -194,7 +222,9 @@ def predict_trifecta(
     rank_rid_map = {int(race_ids[i]): i for i in range(n_races)}
 
     # --- Trifecta odds ---
-    trifecta_odds, tri_win_prob = _load_trifecta_odds(db_path, date, next_day)
+    trifecta_odds, tri_win_prob = _load_trifecta_odds(
+        db_path, date, next_day, use_snapshots=use_snapshots
+    )
 
     # --- Stadium names ---
     stadium_names = _load_stadium_names(db_path)
@@ -308,6 +338,8 @@ def main():
                         help="Stats snapshot path for fast inference")
     parser.add_argument("--race-ids", default=None,
                         help="Comma-separated race IDs to predict (runner mode)")
+    parser.add_argument("--use-snapshots", action="store_true",
+                        help="Read odds from race_odds_snapshots instead of race_odds")
     args = parser.parse_args()
 
     rid_list = None
@@ -320,6 +352,7 @@ def main():
         ev_threshold=args.ev_threshold,
         snapshot_path=args.snapshot,
         race_ids=rid_list,
+        use_snapshots=args.use_snapshots,
     )
     json.dump(result, sys.stdout, ensure_ascii=False, default=str)
 

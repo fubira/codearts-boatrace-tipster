@@ -1,6 +1,6 @@
 /** SQLite schema definitions for boatrace data */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const CREATE_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -142,5 +142,18 @@ export const MIGRATIONS: Record<number, string> = {
     );
     CREATE INDEX IF NOT EXISTS idx_purchase_records_date ON purchase_records(race_date);
     CREATE INDEX IF NOT EXISTS idx_purchase_records_race ON purchase_records(race_id);
+  `,
+  3: `
+    CREATE TABLE IF NOT EXISTS race_odds_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      race_id INTEGER NOT NULL REFERENCES races(id),
+      timing TEXT NOT NULL,
+      bet_type TEXT NOT NULL,
+      combination TEXT NOT NULL,
+      odds REAL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_odds_snapshots_race_timing
+      ON race_odds_snapshots(race_id, timing);
   `,
 };

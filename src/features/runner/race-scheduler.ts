@@ -33,8 +33,9 @@ export interface BetDecision {
 
 // Minutes before deadline to trigger each action
 const BEFORE_INFO_LEAD = 7; // exhibition data fetch
-const PREDICT_LEAD = 5; // ML prediction + EV decision + Slack notification (5min for manual purchase)
-const ODDS_LEAD = 1; // oddsTf DB update only (no bet decision)
+const PREDICT_LEAD = 5; // odds fetch + ML prediction + EV decision
+const ODDS_T3_LEAD = 3; // T-3 odds snapshot
+const ODDS_LEAD = 1; // T-1 odds snapshot + transition to decided
 // Minutes after deadline to check for results
 const RESULT_DELAY = 12;
 // If deadline passed by this many minutes and still "waiting", skip entirely
@@ -88,6 +89,7 @@ export function buildSchedule(
 export interface ActionableRaces {
   beforeInfo: RaceSlot[];
   predict: RaceSlot[];
+  oddsT3: RaceSlot[];
   odds: RaceSlot[];
   results: RaceSlot[];
 }
@@ -101,6 +103,7 @@ export function getActionableRaces(
 ): ActionableRaces {
   const beforeInfo: RaceSlot[] = [];
   const predict: RaceSlot[] = [];
+  const oddsT3: RaceSlot[] = [];
   const odds: RaceSlot[] = [];
   const results: RaceSlot[] = [];
 
@@ -127,6 +130,8 @@ export function getActionableRaces(
           slot.status = "done";
         } else if (minutesToDeadline <= ODDS_LEAD) {
           odds.push(slot);
+        } else if (minutesToDeadline <= ODDS_T3_LEAD) {
+          oddsT3.push(slot);
         }
         break;
       case "decided":
@@ -138,7 +143,7 @@ export function getActionableRaces(
     }
   }
 
-  return { beforeInfo, predict, odds, results };
+  return { beforeInfo, predict, oddsT3, odds, results };
 }
 
 /**
