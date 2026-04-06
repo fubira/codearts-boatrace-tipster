@@ -366,7 +366,6 @@ def _add_course_taking_rate(df: pd.DataFrame) -> None:
     df["course_taking_rate"] = _cumulative_rate(df, ["racer_id"], "_took_inner")
 
 
-
 def _add_recent_form(df: pd.DataFrame) -> None:
     """B4: Recent 20-race form (win rate, top2 rate, avg position).
 
@@ -454,8 +453,6 @@ def _add_tournament_features(df: pd.DataFrame) -> None:
     # Average position within tournament (current form with this motor)
     df["_pos"] = df["finish_position"].astype(float)
     df["tourn_avg_position"] = _cumulative_mean(df, group, "_pos")
-
-
 
 
 # ---------------------------------------------------------------------------

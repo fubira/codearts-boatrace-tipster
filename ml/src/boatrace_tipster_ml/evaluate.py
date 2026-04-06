@@ -261,8 +261,6 @@ _STRATEGIES: list[tuple[str, str, callable]] = [
     ("3連単", "3連単", _trifecta_bets),
 ]
 
-PRIMARY_STRATEGY = "2連単"
-
 
 def _simulate_all_bets(
     race_ids: np.ndarray,
@@ -303,7 +301,6 @@ def _bet_stats(bet: int, payout: int, hits: int) -> dict[str, float] | None:
         "avgPayout": payout / hits if hits > 0 else 0,
         "betCount": n,
     }
-
 
 
 # ---------------------------------------------------------------------------
