@@ -43,8 +43,10 @@ dataCommand
         logger.info("DB push skipped in dry-run mode");
       } else {
         pushDb(conf);
+        logger.info(
+          "Push complete. Run 'bun run start data verify' to confirm.",
+        );
       }
-      logger.info("Push complete. Run 'bun run start data verify' to confirm.");
       return;
     }
 
