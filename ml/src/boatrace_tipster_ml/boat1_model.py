@@ -339,3 +339,34 @@ def load_boat1_model(model_dir: str) -> LGBMClassifier:
         raise FileNotFoundError(f"Model not found: {path}")
     with open(path, "rb") as f:
         return pickle.load(f)
+
+
+_LGB_PARAM_KEYS = {
+    "num_leaves", "max_depth", "min_child_samples",
+    "subsample", "colsample_bytree", "reg_alpha", "reg_lambda",
+}
+
+
+def load_boat1_training_params(model_dir: str) -> dict:
+    """Load boat1 training hyperparameters from model_meta.json.
+
+    Returns dict with keys matching train_boat1_model() arguments:
+        extra_params: dict of LightGBM tree params
+        n_estimators: int
+        learning_rate: float
+    """
+    from .model import load_model_meta
+
+    meta = load_model_meta(model_dir)
+    if not meta or "hyperparameters" not in meta:
+        return {
+            "extra_params": {},
+            "n_estimators": BOAT1_DEFAULT_PARAMS["n_estimators"],
+            "learning_rate": BOAT1_DEFAULT_PARAMS["learning_rate"],
+        }
+    hp = dict(meta["hyperparameters"])
+    return {
+        "extra_params": {k: v for k, v in hp.items() if k in _LGB_PARAM_KEYS},
+        "n_estimators": hp.get("n_estimators", BOAT1_DEFAULT_PARAMS["n_estimators"]),
+        "learning_rate": hp.get("learning_rate", BOAT1_DEFAULT_PARAMS["learning_rate"]),
+    }

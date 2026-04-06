@@ -380,6 +380,47 @@ def main():
             f"n={races} rel={rel} b1<{b1t:.0%} ev>{evt:+.0%}"
         )
 
+    # Auto-save best params to model_meta.json
+    best_hp = {
+        "num_leaves": bp["num_leaves"],
+        "max_depth": bp["max_depth"],
+        "min_child_samples": bp["min_child_samples"],
+        "subsample": bp["subsample"],
+        "colsample_bytree": bp["colsample_bytree"],
+        "reg_alpha": bp["reg_alpha"],
+        "reg_lambda": bp["reg_lambda"],
+        "n_estimators": bp["n_estimators"],
+        "learning_rate": bp["learning_rate"],
+        "relevance_scheme": bp["relevance"],
+    }
+    best_strategy = {
+        "b1_threshold": bp["b1_threshold"],
+        "ev_threshold": bp["ev_threshold"],
+        "bet_pattern": "X-allflow (20 tickets)",
+        "ev_basis": "trifecta inverse (sum 0.75/odds)",
+    }
+    meta_dir = "models/trifecta_v1/ranking"
+    from boatrace_tipster_ml.model import save_model_meta
+    save_model_meta(
+        meta_dir,
+        feature_columns=FEATURE_COLS,
+        hyperparameters=best_hp,
+        training={
+            "note": f"Optuna {args.trials}t seed={args.seed} "
+                    f"#{study.best_trial.number} (Sharpe {study.best_value:.2f})",
+        },
+    )
+    # Append strategy to saved meta
+    import json
+    from pathlib import Path
+    meta_path = Path(meta_dir) / "model_meta.json"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    meta["strategy"] = best_strategy
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    print(f"\nSaved best params to {meta_dir}/model_meta.json")
+
     print(f"\nTotal time: {time.time() - t0:.1f}s")
 
 

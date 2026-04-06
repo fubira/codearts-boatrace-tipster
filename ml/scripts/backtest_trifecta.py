@@ -80,24 +80,68 @@ def load_data(db_path: str):
     return df, trifecta_odds, dict(tri_win_prob), finish_map, race_date_map, exacta_odds
 
 
-def train_models(train_df, val_df=None):
-    """Train boat1 binary + LambdaRank models."""
+def _filter_b1_loss(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter to races where boat 1 did NOT finish 1st."""
+    b1_finish = df[df["boat_number"] == 1][["race_id", "finish_position"]].copy()
+    b1_loss_ids = set(
+        b1_finish[b1_finish["finish_position"] != 1]["race_id"].values
+    )
+    return df[df["race_id"].isin(b1_loss_ids)].reset_index(drop=True)
+
+
+def train_models(
+    train_df,
+    val_df=None,
+    *,
+    b1_loss_only: bool = False,
+    ranking_params: dict | None = None,
+    boat1_params: dict | None = None,
+):
+    """Train boat1 binary + LambdaRank models using params from model_meta.
+
+    Args:
+        b1_loss_only: If True, train ranking model only on races where
+            boat 1 lost. Boat1 binary model always uses full data.
+        ranking_params: Output of load_training_params() for ranking model.
+        boat1_params: Output of load_boat1_training_params() for boat1 model.
+    """
+    rp = ranking_params or {}
+    bp = boat1_params or {}
+
     with contextlib.redirect_stdout(io.StringIO()):
+        # Boat1 model: always full data
         X_b1_tr, y_b1_tr, _ = reshape_to_boat1(train_df if val_df is not None else train_df)
         if val_df is not None:
             X_b1_v, y_b1_v, _ = reshape_to_boat1(val_df)
         else:
             X_b1_v, y_b1_v = None, None
-        b1_model, _ = train_boat1_model(X_b1_tr, y_b1_tr, X_b1_v, y_b1_v)
+        b1_model, _ = train_boat1_model(
+            X_b1_tr, y_b1_tr, X_b1_v, y_b1_v,
+            n_estimators=bp.get("n_estimators"),
+            learning_rate=bp.get("learning_rate"),
+            extra_params=bp.get("extra_params"),
+        )
 
-        X_r_tr, y_r_tr, m_r_tr = prepare_feature_matrix(train_df if val_df is not None else train_df)
-        if val_df is not None:
-            X_r_v, y_r_v, m_r_v = prepare_feature_matrix(val_df)
+        # Ranking model: optionally filter to b1-loss races
+        rank_train = train_df if val_df is not None else train_df
+        rank_val = val_df
+        if b1_loss_only:
+            rank_train = _filter_b1_loss(rank_train)
+            if rank_val is not None:
+                rank_val = _filter_b1_loss(rank_val)
+
+        X_r_tr, y_r_tr, m_r_tr = prepare_feature_matrix(rank_train)
+        if rank_val is not None:
+            X_r_v, y_r_v, m_r_v = prepare_feature_matrix(rank_val)
         else:
             X_r_v, y_r_v, m_r_v = None, None, None
         rank_model, _ = train_model(
             X_r_tr, y_r_tr, m_r_tr,
             X_r_v, y_r_v, m_r_v,
+            n_estimators=rp.get("n_estimators"),
+            learning_rate=rp.get("learning_rate"),
+            extra_params=rp.get("extra_params"),
+            relevance_scheme=rp.get("relevance_scheme", "linear"),
             early_stopping_rounds=50,
         )
 
@@ -282,7 +326,7 @@ def print_daily(results: list[dict], label: str = ""):
     }
 
 
-def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None):
+def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, b1_loss_only: bool = False, ranking_params=None, boat1_params=None):
     """Period backtest with daily breakdown."""
     train_df = df[df["race_date"] < args.from_date]
     test_df = df[
@@ -294,8 +338,8 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map,
     train_early = train_df[train_df["race_date"] < val_start]
     train_late = train_df[train_df["race_date"] >= val_start]
 
-    print(f"Training on data before {args.from_date}...", file=sys.stderr)
-    b1_model, rank_model = train_models(train_early, train_late)
+    print(f"Training on data before {args.from_date}...{' [b1-loss-only]' if b1_loss_only else ''}", file=sys.stderr)
+    b1_model, rank_model = train_models(train_early, train_late, b1_loss_only=b1_loss_only, ranking_params=ranking_params, boat1_params=boat1_params)
 
     results = evaluate_period(
         b1_model, rank_model, test_df,
@@ -320,7 +364,7 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map,
         )
 
 
-def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None):
+def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, b1_loss_only: bool = False, ranking_params=None, boat1_params=None):
     """Walk-forward CV."""
     X_rank, y_rank, meta_rank = prepare_feature_matrix(df)
     folds = walk_forward_splits(
@@ -329,8 +373,8 @@ def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, e
     )
 
     TICKETS_PER_BET = 20
-
-    print(f"WF-CV: {len(folds)} folds, b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%}")
+    tag = " [b1-loss-only]" if b1_loss_only else ""
+    print(f"WF-CV: {len(folds)} folds, b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%}{tag}")
     fold_rois = []
 
     for i, fold in enumerate(folds):
@@ -349,6 +393,9 @@ def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, e
         b1_model, rank_model = train_models(
             train_fold[train_fold["race_date"] < val_start],
             train_fold[train_fold["race_date"] >= val_start],
+            b1_loss_only=b1_loss_only,
+            ranking_params=ranking_params,
+            boat1_params=boat1_params,
         )
 
         results = evaluate_period(
@@ -374,7 +421,7 @@ def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, e
     print(f"Sharpe: {sharpe:.2f}")
 
 
-def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None):
+def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, b1_loss_only: bool = False, ranking_params=None, boat1_params=None):
     """EV threshold sweep across WF-CV."""
     X_rank, y_rank, meta_rank = prepare_feature_matrix(df)
     folds = walk_forward_splits(
@@ -403,6 +450,9 @@ def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_ma
         b1_model, rank_model = train_models(
             train_fold[train_fold["race_date"] < val_start],
             train_fold[train_fold["race_date"] >= val_start],
+            b1_loss_only=b1_loss_only,
+            ranking_params=ranking_params,
+            boat1_params=boat1_params,
         )
         fold_models.append((b1_model, rank_model))
         fold_test_dfs.append(test_fold)
@@ -456,25 +506,58 @@ def main():
     parser.add_argument("--ev-sweep", action="store_true")
     parser.add_argument("--n-folds", type=int, default=4)
     parser.add_argument("--fold-months", type=int, default=2)
-    parser.add_argument("--b1-threshold", type=float, default=0.42)
-    parser.add_argument("--ev-threshold", type=float, default=0.36)
+    parser.add_argument("--model-dir", default="models/trifecta_v1",
+                        help="Model directory to load hyperparams from")
+    parser.add_argument("--b1-threshold", type=float, default=None)
+    parser.add_argument("--ev-threshold", type=float, default=None)
+    parser.add_argument("--start-date", default=None,
+                        help="Earliest date for training data (YYYY-MM-DD)")
+    parser.add_argument("--b1-loss-only", action="store_true",
+                        help="Train ranking model only on races where boat 1 lost")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+
+    # Load hyperparameters from model_meta.json (single source of truth)
+    from boatrace_tipster_ml.model import load_model_meta, load_training_params
+    from boatrace_tipster_ml.boat1_model import load_boat1_training_params
+
+    ranking_params = load_training_params(f"{args.model_dir}/ranking")
+    boat1_params = load_boat1_training_params(f"{args.model_dir}/boat1")
+
+    # Strategy defaults from model_meta
+    rank_meta = load_model_meta(f"{args.model_dir}/ranking")
+    strategy = rank_meta.get("strategy", {}) if rank_meta else {}
+    if args.b1_threshold is None:
+        args.b1_threshold = strategy.get("b1_threshold", 0.42)
+    if args.ev_threshold is None:
+        args.ev_threshold = strategy.get("ev_threshold", 0.36)
+
+    print(f"Model: {args.model_dir}", file=sys.stderr)
+    print(f"  Ranking: relevance={ranking_params['relevance_scheme']}, "
+          f"n_est={ranking_params['n_estimators']}, lr={ranking_params['learning_rate']:.4f}, "
+          f"extra={ranking_params['extra_params']}", file=sys.stderr)
+    print(f"  Strategy: b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%}", file=sys.stderr)
 
     t0 = time.time()
     print("Loading data...", file=sys.stderr)
     df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds = load_data(
         args.db_path
     )
+    if args.start_date:
+        n_before = len(df) // 6
+        df = df[df["race_date"] >= args.start_date].reset_index(drop=True)
+        n_after = len(df) // 6
+        print(f"Filtered to >= {args.start_date}: {n_before}R → {n_after}R", file=sys.stderr)
     print(f"Loaded in {time.time() - t0:.1f}s", file=sys.stderr)
 
+    common = dict(b1_loss_only=args.b1_loss_only, ranking_params=ranking_params, boat1_params=boat1_params)
     if args.ev_sweep:
-        run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds)
+        run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds, **common)
     elif args.wfcv:
-        run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds)
+        run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds, **common)
     elif args.from_date and args.to_date:
-        run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds)
+        run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds, **common)
     else:
         parser.error("--from/--to, --wfcv, or --ev-sweep required")
 

@@ -254,3 +254,35 @@ def load_model_meta(model_dir: str) -> dict | None:
         return None
     with open(path) as f:
         return json.load(f)
+
+
+_LGB_PARAM_KEYS = {
+    "num_leaves", "max_depth", "min_child_samples",
+    "subsample", "colsample_bytree", "reg_alpha", "reg_lambda",
+}
+
+
+def load_training_params(model_dir: str) -> dict:
+    """Load training hyperparameters from model_meta.json.
+
+    Returns dict with keys matching train_model() arguments:
+        extra_params: dict of LightGBM tree params
+        n_estimators: int
+        learning_rate: float
+        relevance_scheme: str
+    """
+    meta = load_model_meta(model_dir)
+    if not meta or "hyperparameters" not in meta:
+        return {
+            "extra_params": {},
+            "n_estimators": DEFAULT_PARAMS["n_estimators"],
+            "learning_rate": DEFAULT_PARAMS["learning_rate"],
+            "relevance_scheme": "linear",
+        }
+    hp = dict(meta["hyperparameters"])
+    return {
+        "extra_params": {k: v for k, v in hp.items() if k in _LGB_PARAM_KEYS},
+        "n_estimators": hp.get("n_estimators", DEFAULT_PARAMS["n_estimators"]),
+        "learning_rate": hp.get("learning_rate", DEFAULT_PARAMS["learning_rate"]),
+        "relevance_scheme": hp.get("relevance_scheme", "linear"),
+    }
