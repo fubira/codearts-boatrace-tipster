@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "../..");
@@ -14,6 +14,26 @@ export const config = {
   cacheDir: resolve(PROJECT_ROOT, "data/cache"),
   dbPath: resolve(PROJECT_ROOT, "data/boatrace-tipster.db"),
 } as const;
+
+/** Load strategy parameters from model_meta.json */
+export function loadModelStrategy(): {
+  b1Threshold: number;
+  evThreshold: number;
+} {
+  const metaPath = resolve(
+    PROJECT_ROOT,
+    "ml/models/trifecta_v1/ranking/model_meta.json",
+  );
+  if (!existsSync(metaPath)) {
+    return { b1Threshold: 0.42, evThreshold: 0.36 };
+  }
+  const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+  const strategy = meta.strategy ?? {};
+  return {
+    b1Threshold: strategy.b1_threshold ?? 0.42,
+    evThreshold: strategy.ev_threshold ?? 0.36,
+  };
+}
 
 export function loadTelebotCredentials(): {
   subscriberNumber: string;

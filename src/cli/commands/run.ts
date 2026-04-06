@@ -1,7 +1,9 @@
 import { runDaemon } from "@/features/runner/runner";
 import { createPurchaseExecutor } from "@/features/teleboat";
-import { loadTelebotCredentials } from "@/shared/config";
+import { loadModelStrategy, loadTelebotCredentials } from "@/shared/config";
 import { Command } from "commander";
+
+const strategy = loadModelStrategy();
 
 export const runCommand = new Command("run")
   .description("Run prediction daemon (scrape → predict → notify)")
@@ -9,9 +11,9 @@ export const runCommand = new Command("run")
   .option("--live", "LIVE mode (execute real purchases)")
   .option(
     "--ev-threshold <n>",
-    "EV threshold as fraction (e.g. 0.33 = 33%)",
+    `EV threshold as fraction (default: from model_meta.json = ${strategy.evThreshold})`,
     (v: string) => Number(v),
-    0.33,
+    strategy.evThreshold,
   )
   .option(
     "--bet-cap <n>",
