@@ -685,19 +685,19 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     slot.status = "decided";
   }
 
-  // 4. Check results for finished races (trifecta)
+  // 4. Check results for finished races (always scrape, even without bets)
   for (const slot of actionable.results) {
     try {
-      const bet = bets.get(slot.raceId);
-      if (!bet) {
-        slot.status = "done";
-        continue;
-      }
-
       const raceResult = scrapeResultForRace(slot, state.date);
 
       if (raceResult === null) {
         slot.status = "result_pending";
+        continue;
+      }
+
+      const bet = bets.get(slot.raceId);
+      if (!bet) {
+        slot.status = "done";
         continue;
       }
 
