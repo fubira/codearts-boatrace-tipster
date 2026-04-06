@@ -121,6 +121,22 @@ function checkResultCoverage(db: Database): CheckResult[] {
   const noFinishPct =
     totalEntries > 0 ? ((noFinish / totalEntries) * 100).toFixed(1) : "0";
 
+  // Recent result coverage: races in last 7 days with all entries having NULL finish
+  const recentVoidRaces = query(
+    db,
+    `SELECT COUNT(*) as cnt FROM races r
+     WHERE r.race_date >= date('now', '-7 days')
+       AND r.weather IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM race_entries re
+         WHERE re.race_id = r.id AND re.finish_position IS NOT NULL
+       )`,
+  );
+  const recentTotal = query(
+    db,
+    "SELECT COUNT(*) as cnt FROM races WHERE race_date >= date('now', '-7 days') AND weather IS NOT NULL",
+  );
+
   return [
     {
       name: "Result coverage",
@@ -131,6 +147,14 @@ function checkResultCoverage(db: Database): CheckResult[] {
       name: "Finish position coverage",
       status: noFinish / totalEntries < 0.05 ? "ok" : "warn",
       detail: `${totalEntries - noFinish}/${totalEntries} entries have finish position (${noFinishPct}% NULL)`,
+    },
+    {
+      name: "Recent results (7d)",
+      status: recentVoidRaces === 0 ? "ok" : "error",
+      detail:
+        recentVoidRaces === 0
+          ? `All ${recentTotal} completed races have finish data`
+          : `${recentVoidRaces}/${recentTotal} completed races missing ALL finish positions`,
     },
   ];
 }

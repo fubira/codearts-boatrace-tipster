@@ -92,8 +92,11 @@ export function syncDb(conf: SyncConfig): DbSyncResult {
  * 2. Remote WAL/SHM cleanup — remove stale WAL files
  * 3. rsync main DB file only (no WAL/SHM)
  *
- * IMPORTANT: The server runner should not be writing to the DB during push.
- * This is safe when the runner is in sleep mode between days or stopped.
+ * IMPORTANT: The server runner keeps a SQLite connection open even in sleep.
+ * This is safe because: remote WAL/SHM are deleted before rsync, and the
+ * runner will create a new WAL on its next write. However, if the runner
+ * is actively writing (mid-transaction), the push could race. Prefer
+ * pushing when the runner is stopped or between daily cycles.
  */
 export function pushDb(conf: SyncConfig): void {
   const localDb = config.dbPath;

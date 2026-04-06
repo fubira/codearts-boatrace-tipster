@@ -132,6 +132,32 @@ export function verify(conf: SyncConfig): VerifyResult {
     match: localCache === remoteCache,
   });
 
+  // Result coverage: finish_position NULL rate for recent races
+  const resultQ =
+    "SELECT COALESCE(ROUND(100.0 * SUM(CASE WHEN re.finish_position IS NULL THEN 1 ELSE 0 END) / COUNT(*), 1), 0) " +
+    "FROM races r JOIN race_entries re ON re.race_id = r.id " +
+    "WHERE r.race_date >= date('now', '-30 days') AND r.weather IS NOT NULL;";
+  const localResultNull = localQuery(resultQ);
+  const remoteResultNull = remoteQuery(conf, resultQ);
+  checks.push({
+    name: "Result NULL% (30d)",
+    local: `${localResultNull}%`,
+    remote: `${remoteResultNull}%`,
+    match: localResultNull === remoteResultNull,
+  });
+
+  // Races without results in recent period
+  const noResultQ =
+    "SELECT COUNT(*) FROM races WHERE race_date >= date('now', '-30 days') AND weather IS NULL;";
+  const localNoResult = localQuery(noResultQ);
+  const remoteNoResult = remoteQuery(conf, noResultQ);
+  checks.push({
+    name: "No-result races (30d)",
+    local: localNoResult,
+    remote: remoteNoResult,
+    match: localNoResult === remoteNoResult,
+  });
+
   // DB size
   try {
     const localSize = (statSync(config.dbPath).size / 1024 / 1024).toFixed(1);
