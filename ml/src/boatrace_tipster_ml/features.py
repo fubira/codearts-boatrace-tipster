@@ -366,12 +366,6 @@ def _add_course_taking_rate(df: pd.DataFrame) -> None:
     df["course_taking_rate"] = _cumulative_rate(df, ["racer_id"], "_took_inner")
 
 
-def _add_course_avg_st(df: pd.DataFrame) -> None:
-    """B3: Racer's average ST by boat number (proxy for expected course)."""
-    df["course_avg_st"] = _cumulative_mean(
-        df, ["racer_id", "boat_number"], "start_timing"
-    )
-
 
 def _add_recent_form(df: pd.DataFrame) -> None:
     """B4: Recent 20-race form (win rate, top2 rate, avg position).
@@ -462,78 +456,6 @@ def _add_tournament_features(df: pd.DataFrame) -> None:
     df["tourn_avg_position"] = _cumulative_mean(df, group, "_pos")
 
 
-def _add_prev_day_features(df: pd.DataFrame) -> None:
-    """Previous day exhibition delta within tournament.
-
-    Compares today's exhibition_time with the same racer's exhibition_time
-    from the previous day in the same tournament. More precise than
-    tourn_exhibition_delta (cumulative mean) — captures day-to-day motor tuning.
-
-    Negative = faster than yesterday = motor tuning improving.
-    NaN for first day of tournament.
-    """
-    daily = (
-        df.groupby(["racer_id", "tournament_id", "race_date"], sort=False)
-        .agg(_daily_ex=("exhibition_time", "mean"))
-        .reset_index()
-        .sort_values(["racer_id", "tournament_id", "race_date"])
-    )
-
-    g = daily.groupby(["racer_id", "tournament_id"], sort=False)
-    daily["_prev_ex"] = g["_daily_ex"].shift(1)
-
-    merge_keys = ["racer_id", "tournament_id", "race_date"]
-    merged = df[merge_keys].merge(
-        daily[merge_keys + ["_prev_ex"]],
-        on=merge_keys,
-        how="left",
-    )
-
-    df["prev_day_exhibition_delta"] = df["exhibition_time"] - merged["_prev_ex"].values
-
-
-def _add_motor_residual(df: pd.DataFrame) -> None:
-    """Motor quality residual: exhibition performance controlling for racer ability.
-
-    For each past race with this motor, compute:
-        residual = exhibition_time - racer's cumulative mean exhibition_time
-
-    Then take the cumulative mean of residuals per (stadium, motor).
-    Negative = this motor makes racers faster than expected = good motor.
-
-    Handles confounds:
-        - Racer skill: subtracted out via racer's own baseline
-        - Motor replacement (~6mo cycle): old history diluted by new data;
-          NaN at very start is natural
-    """
-    # Racer's expected exhibition time (their cumulative mean, leak-safe)
-    racer_avg_ex = _cumulative_mean(df, ["racer_id"], "exhibition_time")
-
-    # Residual: how much faster/slower than this racer's usual
-    df["_motor_residual"] = df["exhibition_time"] - racer_avg_ex
-
-    # Cumulative mean of residuals per motor (leak-safe)
-    df["motor_quality_residual"] = _cumulative_mean(
-        df, ["stadium_id", "motor_number"], "_motor_residual"
-    )
-    df.drop(columns="_motor_residual", inplace=True)
-
-
-def _add_self_comparison_features(df: pd.DataFrame) -> None:
-    """B9: Self-comparison features (current vs own history).
-
-    Captures whether a racer's current boat is better/worse than their usual.
-    Different from rel_* (within-race comparison with opponents).
-    """
-    group = ["racer_id"]
-
-    # Exhibition time: negative = faster than my usual = good motor today
-    racer_avg_ex = _cumulative_mean(df, group, "exhibition_time")
-    df["self_exhibition_delta"] = df["exhibition_time"] - racer_avg_ex
-
-    # Exhibition ST: negative = starting earlier than my usual
-    racer_avg_st = _cumulative_mean(df, group, "exhibition_st")
-    df["self_st_delta"] = df["exhibition_st"] - racer_avg_st
 
 
 # ---------------------------------------------------------------------------
@@ -585,41 +507,6 @@ def _add_leaked_features(df: pd.DataFrame) -> None:
 
     df.drop(columns=["_is_fav", "_fav_won"], inplace=True)
 
-
-# ---------------------------------------------------------------------------
-# Course-taking (イン屋) features
-# ---------------------------------------------------------------------------
-
-# Racers with course_taking_rate above this are considered "イン屋"
-_INYA_THRESHOLD = 0.15
-
-
-def _add_inya_features(df: pd.DataFrame) -> None:
-    """Add within-race イン屋 features.
-
-    inya_x_boat: Racer's inner-taking aggressiveness × distance to cut in.
-        Boat 1 → 0 (already innermost), boat 6 with high rate → large value.
-
-    n_inya_outside: Count of boats with higher boat_number that have
-        course_taking_rate above threshold. Captures start formation threat
-        from aggressive outer boats. Varies per boat in a race.
-    """
-    rate = df["course_taking_rate"].fillna(0)
-    df["inya_x_boat"] = rate * (df["boat_number"] - 1)
-
-    is_inya = (rate > _INYA_THRESHOLD).astype(int)
-    # For each race, compute reverse cumulative sum of is_inya by boat_number
-    # boat 1 sees count of イン屋 in boats 2-6, boat 6 sees 0
-    race_total = df.groupby("race_id")["_inya_flag"].transform("sum") if "_inya_flag" in df.columns else None
-
-    df["_inya_flag"] = is_inya.values
-    # Total イン屋 in race minus cumulative from boat 1 up to this boat
-    race_inya_total = df.groupby("race_id")["_inya_flag"].transform("sum")
-    # Cumulative sum of イン屋 from boat 1 to current boat (inclusive)
-    cumsum = df.groupby("race_id")["_inya_flag"].cumsum()
-    # イン屋 outside = total - cumsum (boats after me)
-    df["n_inya_outside"] = race_inya_total - cumsum
-    df.drop(columns="_inya_flag", inplace=True)
 
 
 # ---------------------------------------------------------------------------
@@ -690,14 +577,10 @@ def build_features_df(
     _add_racer_course_stats(df)
     _add_stadium_course_stats(df)
     _add_course_taking_rate(df)
-    _add_course_avg_st(df)
     _add_recent_form(df)
     _add_st_stability(df)
     _add_rolling_features(df)
     _add_tournament_features(df)
-    _add_prev_day_features(df)
-    _add_motor_residual(df)
-    _add_self_comparison_features(df)
     _add_leaked_features(df)
 
     _cleanup_temp_cols(df)

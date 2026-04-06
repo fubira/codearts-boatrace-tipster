@@ -274,7 +274,7 @@ class TestComputeRelativeFeatures:
         result = compute_relative_features(df)
         expected_new = [
             "rel_national_win_rate", "rel_exhibition_time",
-            "rel_motor_top2_rate", "rel_average_st",
+            "rel_exhibition_st",
         ]
         for col in expected_new:
             assert col in result.columns, f"Missing column: {col}"

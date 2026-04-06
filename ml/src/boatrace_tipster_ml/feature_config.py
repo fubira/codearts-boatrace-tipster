@@ -118,21 +118,7 @@ def compute_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["rel_national_win_rate"] = _race_zscore(df, "national_win_rate")
     df["rel_exhibition_time"] = _race_zscore(df, "exhibition_time")
-    df["rel_motor_top2_rate"] = _race_zscore(df, "motor_top2_rate")
-    df["rel_average_st"] = _race_zscore(df, "average_st")
-    df["rel_motor_top3_rate"] = _race_zscore(df, "motor_top3_rate")
-    df["rel_racer_course_win_rate"] = _race_zscore(df, "racer_course_win_rate")
     df["rel_exhibition_st"] = _race_zscore(df, "exhibition_st")
-    df["rel_rolling_st"] = _race_zscore(df, "rolling_st_mean")
-    df["rel_rolling_win_rate"] = _race_zscore(df, "rolling_win_rate")
-    df["rel_rolling_avg_pos"] = _race_zscore(df, "rolling_avg_position")
-    df["rel_rolling_course_win"] = _race_zscore(df, "rolling_course_win_rate")
-    df["rel_rolling_course_st"] = _race_zscore(df, "rolling_course_st")
-    # Form deltas: recent rolling vs career stats (self-comparison)
-    # Positive = recent worse, negative = recent better
-    df["st_form_delta"] = df["rolling_st_mean"] - df["average_st"]
-    # Position delta: rolling recent vs cumulative career (both are avg finish position)
-    df["pos_form_delta"] = df["rolling_avg_position"] - df["recent_avg_position"]
     return df
 
 

@@ -242,14 +242,6 @@ def _combo(nums: list | np.ndarray, ordered: bool = False) -> str:
 
 
 # Betting strategy generators
-def _tansho_bets(nums: np.ndarray) -> list[str]:
-    return [str(int(nums[0]))]
-
-
-def _fukusho_bets(nums: np.ndarray) -> list[str]:
-    return [str(int(nums[0]))]
-
-
 def _exacta_bets(nums: np.ndarray) -> list[str]:
     return [_combo([nums[0], s], ordered=True) for s in nums[1:3]]
 
@@ -265,14 +257,11 @@ def _trifecta_bets(nums: np.ndarray) -> list[str]:
 
 
 _STRATEGIES: list[tuple[str, str, callable]] = [
-    ("単勝", "単勝", _tansho_bets),
-    ("複勝", "複勝", _fukusho_bets),
     ("2連単", "2連単", _exacta_bets),
     ("3連単", "3連単", _trifecta_bets),
 ]
 
 PRIMARY_STRATEGY = "2連単"
-BETTING_STRATEGIES = ["2連単", "3連単"]
 
 
 def _simulate_all_bets(
@@ -315,25 +304,6 @@ def _bet_stats(bet: int, payout: int, hits: int) -> dict[str, float] | None:
         "betCount": n,
     }
 
-
-def _payout_recovery(
-    race_ids: np.ndarray,
-    boat_by_pred: np.ndarray,
-    db_path: str,
-) -> dict[str, dict[str, float]]:
-    """Compute actual payout-based recovery rate for all bet types."""
-    payouts_db = _load_payouts(db_path, race_ids)
-    if not payouts_db:
-        return {}
-
-    all_stats = _simulate_all_bets(race_ids, boat_by_pred, payouts_db)
-
-    result: dict[str, dict[str, float]] = {}
-    for name, (b, p, h) in all_stats.items():
-        s = _bet_stats(b, p, h)
-        if s:
-            result[name] = s
-    return result
 
 
 # ---------------------------------------------------------------------------

@@ -99,13 +99,10 @@ def verify(date: str, db_path: str, snapshot_path: str) -> bool:
                 "racer_course_win_rate", "racer_course_top2_rate",
                 "racer_course_top3_rate", "stadium_course_win_rate",
                 "course_taking_rate", "recent_win_rate", "recent_top2_rate",
-                "recent_avg_position", "course_avg_st", "st_stability",
-                "self_exhibition_delta", "self_st_delta",
-                "motor_quality_residual",
+                "recent_avg_position", "st_stability",
                 "rolling_st_mean", "rolling_avg_position", "rolling_win_rate",
                 "rolling_course_win_rate", "rolling_course_st",
                 "tourn_exhibition_delta", "tourn_st_delta", "tourn_avg_position",
-                "prev_day_exhibition_delta",
             ]
             status = "FAIL" if important else "warn"
             if important:

@@ -10,10 +10,8 @@ from .evaluate import (
     _combo,
     _compute_rankings,
     _exacta_bets,
-    _fukusho_bets,
     _multi_bet_hit_rates,
     _ndcg,
-    _tansho_bets,
     _top_n_accuracy,
     _trifecta_bets,
 )
@@ -55,16 +53,6 @@ class TestCombo:
 
 
 class TestBettingStrategies:
-    def test_tansho_1_bet(self):
-        nums = np.array([3, 1, 5, 2, 4, 6])
-        bets = _tansho_bets(nums)
-        assert bets == ["3"]
-
-    def test_fukusho_1_bet(self):
-        nums = np.array([3, 1, 5, 2, 4, 6])
-        bets = _fukusho_bets(nums)
-        assert bets == ["3"]
-
     def test_exacta_2_bets(self):
         """2連単: 1着固定, 2着に2nd/3rd候補 → 2点"""
         nums = np.array([3, 1, 5, 2, 4, 6])
