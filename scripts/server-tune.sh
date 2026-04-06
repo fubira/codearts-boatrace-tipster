@@ -206,7 +206,7 @@ _status() {
 
 _watch() {
   log "Watching server log (auto-exits on completion)..."
-  remote "while [ ! -f ${REMOTE_LOG_FILE} ]; do sleep 1; done; tail -f ${REMOTE_LOG_FILE} | sed '/=== Done ===/q'"
+  remote -t "while [ ! -f ${REMOTE_LOG_FILE} ]; do sleep 1; done; tail -f ${REMOTE_LOG_FILE} | sed -u '/=== Done ===/q'"
   log "Completed. Run --fetch to download results."
 }
 
