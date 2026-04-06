@@ -39,7 +39,11 @@ dataCommand
         console.error("Error: --push only supports database sync");
         process.exit(1);
       }
-      pushDb(conf);
+      if (opts.dryRun) {
+        logger.info("DB push skipped in dry-run mode");
+      } else {
+        pushDb(conf);
+      }
       logger.info("Push complete. Run 'bun run start data verify' to confirm.");
       return;
     }
