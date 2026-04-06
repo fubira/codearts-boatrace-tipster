@@ -22,9 +22,11 @@ bun run start scrape -d 2025-01-15 -r 1,2,3 # レース番号指定
 bun run start data test           # DB 整合性チェック（孤立レコード、重複、月次完全性）
 bun run start data fingerprint    # DB 統計表示（テーブル件数、日付範囲）
 bun run start data verify         # ローカル vs サーバ比較（スキーマ、件数、ID sum）
-bun run start data sync           # サーバとの同期（DB + キャッシュ）
+bun run start data sync           # サーバからプル（DB + キャッシュ）
+bun run start data sync --push    # ローカルからサーバへプッシュ（DB のみ）
 bun run start data sync --db-only      # DB のみ同期
 bun run start data sync --cache-only   # キャッシュのみ同期
+bun run start data sync --dry-run      # 実行せず確認のみ
 bun run start backup              # ローカルバックアップ（7 世代ローテーション）
 ```
 
@@ -38,103 +40,88 @@ bun run start backup              # ローカルバックアップ（7 世代ロ
 ./scripts/backup.sh --rotate 21 --db-only /path/to/dest  # 21 日ローテーション
 ```
 
-## ML: モデル学習
+## ML: 3連単戦略（メイン）
 
-### 1号艇二値分類
+### ハイパラ探索（Optuna）
 
-1号艇が勝つかを予測する二値分類モデル。3連単 X-noB1-noB1 戦略の1号艇飛び判定に使用。
+`tune_trifecta.py` が WF-CV で3連単 X-allflow 戦略の Sharpe を最大化する。結果は model_meta.json に自動保存。
 
 ```bash
-# 基本: single split 学習 + テスト評価
-uv run --directory ml python -m scripts.train_boat1_binary --mode single
+# ローカル実行
+uv run --directory ml python -m scripts.tune_trifecta --trials 100
 
-# Walk-Forward CV（4 folds × 2ヶ月）
-uv run --directory ml python -m scripts.train_boat1_binary --mode wfcv --n-folds 4
-
-# Optuna ハイパラ探索（EV>=0 ROI を最大化）
-uv run --directory ml python -m scripts.train_boat1_binary --mode optuna --n-trials 100
-
-# オプション
---n-estimators 500     # ツリー数
---learning-rate 0.05   # 学習率
---start-date 2023-01-01  # 学習開始日
---seed 42              # 乱数シード
---params '{"num_leaves":31}'  # LightGBM パラメータ上書き
+# サーバ実行（推奨）
+./scripts/server-tune.sh --model trifecta --trials 100
 ```
 
-出力: AUC、閾値別 hit 率/ROI、EV 分析（EV>=N での ROI・ベット数）、キャリブレーション、特徴量重要度。
+### 本番モデル学習
 
-### 6艇ランキング（LambdaRank）
-
-6艇の着順を予測するランキングモデル。3連単 X-noB1-noB1 戦略の1着予測に使用。
+model_meta.json のハイパラで学習し、モデルを保存する。
 
 ```bash
-# single split
-uv run --directory ml python -m scripts.train_eval --mode single
+# ランキングモデル
+uv run --directory ml python -m scripts.train_ranking --save --model-meta models/trifecta_v1/ranking
 
-# Walk-Forward CV
-uv run --directory ml python -m scripts.train_eval --mode wfcv --n-folds 4
+# 1号艇二値分類
+uv run --directory ml python -m scripts.train_boat1_binary --mode single
+```
 
-# 特徴量重要度分析（split + gain + permutation）
-uv run --directory ml python -m scripts.train_eval --mode importance
+### バックテスト
 
-# Optuna（2連単 ROI 最大化）
-uv run --directory ml python -m scripts.train_eval --mode optuna --n-trials 100
+保存済み本番モデルで OOS 期間を評価する。WF-CV モードはハイパラ探索の検証専用。
+
+```bash
+# 期間指定（本番モデルをロード、再学習しない）
+uv run --directory ml python -m scripts.backtest_trifecta --from 2026-01-01 --to 2026-04-08
+
+# WF-CV（ハイパラ探索の検証専用）
+uv run --directory ml python -m scripts.backtest_trifecta --wfcv
+
+# EV 閾値スイープ
+uv run --directory ml python -m scripts.backtest_trifecta --ev-sweep
 
 # オプション
---relevance linear|top_heavy|podium|win_only  # relevance scheme
+--model-dir models/trifecta_v1   # モデルディレクトリ（デフォルト）
+--b1-threshold 0.42              # model_meta から自動読み込み
+--ev-threshold 0.36              # model_meta から自動読み込み
+```
+
+### モンテカルロシミュレーション
+
+保存済みモデルの OOS 統計に基づく収益・リスク予測。
+
+```bash
+# 保存済みモデルの OOS データから経験的パラメータを収集して実行
+uv run --directory ml python -m scripts.simulate_monte_carlo --from-backtest
+
+# 閾値比較
+uv run --directory ml python -m scripts.simulate_monte_carlo --from-backtest \
+  --compare "0.42:0.20,0.42:0.30,0.42:0.36" --all-flow
+
+# パラメータ変更
+uv run --directory ml python -m scripts.simulate_monte_carlo --bankroll 100000 --bet-cap 3000
 ```
 
 ### サーバーでの Optuna 実行
 
-計算量の大きい Optuna 探索はサーバーで実行する。`server-tune.sh` がコード同期→nohup実行→ログ管理を一括で行う。
+計算量の大きい Optuna 探索はサーバーで実行する。`server-tune.sh` がコード・DB同期 → nohup実行 → ログ管理を一括で行う。
 
 ```bash
-# 初回セットアップ（uv インストール + workspace 作成 + 依存解決）
-./scripts/server-tune.sh --setup
-
-# 実行（即座に返る、バックグラウンドで走る）
-./scripts/server-tune.sh --trials 100
-
-# 進捗確認
-./scripts/server-tune.sh --status
-
-# ログ監視（完了で自動終了）
-./scripts/server-tune.sh --watch
-
-# 結果ダウンロード
-./scripts/server-tune.sh --fetch
+./scripts/server-tune.sh --setup                        # 初回セットアップ
+./scripts/server-tune.sh --model trifecta --trials 100  # 3連単戦略の探索
+./scripts/server-tune.sh --model boat1 --trials 100     # 二値分類の探索
+./scripts/server-tune.sh --status                       # 進捗確認
+./scripts/server-tune.sh --watch                        # ログ監視（完了で自動終了）
+./scripts/server-tune.sh --fetch                        # 結果ダウンロード
 
 # オプション
---server one           # SSH ホスト名（デフォルト: one）
---folds 4              # WF-CV fold 数
---fold-months 2        # fold 幅
---relevance top_heavy  # relevance scheme
---skip-sync            # コード・データ同期スキップ（2回目以降）
+--skip-sync            # コード・データ同期スキップ（DB を手動で送った場合等）
+--warm-start           # 現行 model_meta のパラメータで初期化
+--seed 43              # 乱数シード（デフォルト: 42、変更で探索範囲拡大）
 --foreground           # SSH 接続維持モード
 ```
 
-サーバー設定は `scripts/server-tune.conf`（gitignored）で変更可能。`scripts/server-tune.conf.example` をコピーして使う。
-
 **注意**: サーバーでの ML 実行は必ず `server-tune.sh` 経由で行う。直接 ssh で `uv run` を叩くとコード不整合が発生する。
-
-## ML: 分析
-
-### 2連単/2連複パターン検証
-
-各パターン（2-3, 3-2 等）の二値分類モデルを個別に構築し、EV 戦略の有効性を検証する。
-
-```bash
-uv run --directory ml python -m scripts.train_exacta_binary
-```
-
-### ローリング窓サイズ最適化
-
-ローリング特徴量の窓サイズ（race-days）を WF-CV で最適化する。
-
-```bash
-uv run --directory ml python -m scripts.grid_rolling
-```
 
 ## ML: 特徴量パイプライン
 
@@ -159,10 +146,11 @@ SQLite DB
   ↓
 交互作用特徴量（class×boat, wind×boat 等）
   ↓
-build_features()     → (X, y, meta) ランキング用 27特徴量
 build_features_df()  → DataFrame 全列保持（二値分類用）
+  ↓  prepare_feature_matrix()
+ランキング用         → (X, y, meta) 24特徴量
   ↓  reshape_to_boat1()
-1号艇二値分類用    → (X_b1, y_b1, meta_b1) 24特徴量
+1号艇二値分類用      → (X_b1, y_b1, meta_b1) 28特徴量
 ```
 
 ### 特徴量の追加方法
@@ -186,38 +174,21 @@ result = prior / prior_count      # NaN if no prior data
 
 学習時は漏洩あり（intraday cumsum）で木構造を改善し、評価時は `neutralize_leaked_features()` でレース内 mean に置換する。学習時の漏洩を除去してはならない。
 
-## EV 戦略（3連単 X-noB1-noB1）
+## EV 戦略（3連単 X-allflow）
 
-1号艇飛び予測時、非1号艇の1着固定 × 2-3着全流し（12点）。
+1号艇飛び予測時、非1号艇の1着固定 × 2-3着全流し（20点）。
 
 ```
 1. b1_prob < b1_threshold → 1号艇が負けると判断
 2. ランキングモデルの softmax 確率で1着 X を予測（非1号艇の最上位）
 3. EV = model_prob / market_prob × 0.75 - 1
 4. EV >= ev_threshold で購入
-5. 12点: X-{非1,非X}-{非1,非X}
+5. 20点: X-{全}-{全}（1着 X 固定、2-3着全流し）
 ```
 
+- 閾値は model_meta.json から読み込み（b1_threshold, ev_threshold）
+- 評価ロジックは `evaluate_trifecta_strategy()` に一本化（tune, backtest, MC が共用）
 - オッズは特徴量に含めない（モデルは独立に確率推定）
-- 3連単プール: 一般 ¥34M、G1 ¥108M → betCap ¥2,000 は全場安全
-
-## モンテカルロシミュレーション
-
-バックテスト統計に基づく収益・リスク予測。
-
-```bash
-# デフォルト（現在のWF-CV統計で10,000回）
-uv run --directory ml python -m scripts.simulate_monte_carlo
-
-# パラメータ変更
-uv run --directory ml python -m scripts.simulate_monte_carlo --bankroll 100000 --bet-cap 3000
-
-# 最新のバックテストから経験的パラメータを収集して実行
-uv run --directory ml python -m scripts.simulate_monte_carlo --from-backtest --ev-threshold 0.33
-
-# カスタム期間
-uv run --directory ml python -m scripts.simulate_monte_carlo --days 7,14,30,60
-```
 
 ## Stats Snapshot（推論高速化）
 
@@ -232,8 +203,7 @@ uv run --directory ml python -m scripts.predict_trifecta --date 2026-04-02 \
   --snapshot data/stats-snapshots/2026-04-01.db
 
 # snapshot の正確性検証（フルパイプラインと全カラム比較）
-uv run --directory ml python -m scripts.verify_snapshot --date 2026-04-02 \
-  --snapshot data/stats-snapshots/2026-04-01.db
+uv run --directory ml python -m scripts.verify_snapshot --date 2026-04-02
 ```
 
 snapshot は `data/stats-snapshots/YYYY-MM-DD.db`（~51 MB）に日付別保存。30 日ローテーション。
