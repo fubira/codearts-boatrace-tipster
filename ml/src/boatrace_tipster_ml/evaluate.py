@@ -428,3 +428,103 @@ def permutation_importance(
         }
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Trifecta X-allflow strategy evaluation
+# ---------------------------------------------------------------------------
+
+TRIFECTA_TICKETS_PER_BET = 20
+
+
+def evaluate_trifecta_strategy(
+    b1_probs: np.ndarray,
+    meta_b1: pd.DataFrame,
+    rank_scores: np.ndarray,
+    meta_rank: pd.DataFrame,
+    finish_map: dict[tuple[int, int], int],
+    trifecta_odds: dict[tuple[int, str], float],
+    tri_win_prob: dict[tuple[int, int], float],
+    b1_threshold: float,
+    ev_threshold: float,
+) -> dict:
+    """Evaluate X-allflow trifecta strategy on test data.
+
+    Used by tune_trifecta.py and backtest_trifecta.py.
+
+    Returns:
+        dict with races, cost, wins, payout, roi
+    """
+    field_size = 6
+
+    n_races = len(rank_scores) // field_size
+    scores_2d = rank_scores.reshape(n_races, field_size)
+    boats_2d = meta_rank["boat_number"].values.reshape(n_races, field_size)
+    race_ids = meta_rank["race_id"].values.reshape(n_races, field_size)[:, 0]
+
+    pred_order = np.argsort(-scores_2d, axis=1)
+    top_boats = np.take_along_axis(boats_2d, pred_order, axis=1)
+
+    exp_s = np.exp(scores_2d - scores_2d.max(axis=1, keepdims=True))
+    rank_probs = exp_s / exp_s.sum(axis=1, keepdims=True)
+
+    b1_map = {rid: i for i, rid in enumerate(meta_b1["race_id"].values)}
+
+    total_races = 0
+    total_cost = 0.0
+    total_wins = 0
+    total_payout = 0.0
+
+    for ri in range(n_races):
+        rid = int(race_ids[ri])
+        bi = b1_map.get(rid)
+        if bi is None:
+            continue
+        if float(b1_probs[bi]) >= b1_threshold:
+            continue
+
+        wp = int(top_boats[ri, 0])
+        if wp == 1:
+            wp = int(top_boats[ri, 1])
+
+        bidx = np.where(boats_2d[ri] == wp)[0]
+        if len(bidx) == 0:
+            continue
+        wprob = float(rank_probs[ri, bidx[0]])
+
+        mkt_prob = tri_win_prob.get((rid, wp), 0)
+        if mkt_prob <= 0:
+            continue
+        ev = wprob / mkt_prob * 0.75 - 1
+        if ev < ev_threshold:
+            continue
+
+        total_races += 1
+        total_cost += TRIFECTA_TICKETS_PER_BET
+
+        if finish_map.get((rid, wp)) != 1:
+            continue
+
+        a2 = a3 = None
+        for b in range(1, 7):
+            fp = finish_map.get((rid, b))
+            if fp == 2:
+                a2 = b
+            if fp == 3:
+                a3 = b
+
+        if a2 and a3:
+            hc = f"{wp}-{a2}-{a3}"
+            ho = trifecta_odds.get((rid, hc))
+            if ho and ho > 0:
+                total_wins += 1
+                total_payout += ho
+
+    roi = total_payout / total_cost if total_cost > 0 else 0
+    return {
+        "races": total_races,
+        "cost": total_cost,
+        "wins": total_wins,
+        "payout": total_payout,
+        "roi": roi,
+    }

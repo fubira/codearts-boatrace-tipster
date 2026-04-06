@@ -28,6 +28,7 @@ import pandas as pd
 from boatrace_tipster_ml.boat1_features import reshape_to_boat1
 from boatrace_tipster_ml.boat1_model import train_boat1_model
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
+from boatrace_tipster_ml.evaluate import evaluate_trifecta_strategy
 from boatrace_tipster_ml.feature_config import prepare_feature_matrix
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import train_model, walk_forward_splits
@@ -80,36 +81,18 @@ def load_data(db_path: str):
     return df, trifecta_odds, dict(tri_win_prob), finish_map, race_date_map, exacta_odds
 
 
-def _filter_b1_loss(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter to races where boat 1 did NOT finish 1st."""
-    b1_finish = df[df["boat_number"] == 1][["race_id", "finish_position"]].copy()
-    b1_loss_ids = set(
-        b1_finish[b1_finish["finish_position"] != 1]["race_id"].values
-    )
-    return df[df["race_id"].isin(b1_loss_ids)].reset_index(drop=True)
-
-
-def train_models(
+def train_models_for_period(
     train_df,
     val_df=None,
     *,
-    b1_loss_only: bool = False,
     ranking_params: dict | None = None,
     boat1_params: dict | None = None,
 ):
-    """Train boat1 binary + LambdaRank models using params from model_meta.
-
-    Args:
-        b1_loss_only: If True, train ranking model only on races where
-            boat 1 lost. Boat1 binary model always uses full data.
-        ranking_params: Output of load_training_params() for ranking model.
-        boat1_params: Output of load_boat1_training_params() for boat1 model.
-    """
+    """Train boat1 binary + LambdaRank models for --from/--to period backtest."""
     rp = ranking_params or {}
     bp = boat1_params or {}
 
     with contextlib.redirect_stdout(io.StringIO()):
-        # Boat1 model: always full data
         X_b1_tr, y_b1_tr, _ = reshape_to_boat1(train_df if val_df is not None else train_df)
         if val_df is not None:
             X_b1_v, y_b1_v, _ = reshape_to_boat1(val_df)
@@ -122,17 +105,9 @@ def train_models(
             extra_params=bp.get("extra_params"),
         )
 
-        # Ranking model: optionally filter to b1-loss races
-        rank_train = train_df if val_df is not None else train_df
-        rank_val = val_df
-        if b1_loss_only:
-            rank_train = _filter_b1_loss(rank_train)
-            if rank_val is not None:
-                rank_val = _filter_b1_loss(rank_val)
-
-        X_r_tr, y_r_tr, m_r_tr = prepare_feature_matrix(rank_train)
-        if rank_val is not None:
-            X_r_v, y_r_v, m_r_v = prepare_feature_matrix(rank_val)
+        X_r_tr, y_r_tr, m_r_tr = prepare_feature_matrix(train_df if val_df is not None else train_df)
+        if val_df is not None:
+            X_r_v, y_r_v, m_r_v = prepare_feature_matrix(val_df)
         else:
             X_r_v, y_r_v, m_r_v = None, None, None
         rank_model, _ = train_model(
@@ -326,7 +301,7 @@ def print_daily(results: list[dict], label: str = ""):
     }
 
 
-def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, b1_loss_only: bool = False, ranking_params=None, boat1_params=None):
+def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, ranking_params=None, boat1_params=None):
     """Period backtest with daily breakdown."""
     train_df = df[df["race_date"] < args.from_date]
     test_df = df[
@@ -338,8 +313,8 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map,
     train_early = train_df[train_df["race_date"] < val_start]
     train_late = train_df[train_df["race_date"] >= val_start]
 
-    print(f"Training on data before {args.from_date}...{' [b1-loss-only]' if b1_loss_only else ''}", file=sys.stderr)
-    b1_model, rank_model = train_models(train_early, train_late, b1_loss_only=b1_loss_only, ranking_params=ranking_params, boat1_params=boat1_params)
+    print(f"Training on data before {args.from_date}...", file=sys.stderr)
+    b1_model, rank_model = train_models_for_period(train_early, train_late, ranking_params=ranking_params, boat1_params=boat1_params)
 
     results = evaluate_period(
         b1_model, rank_model, test_df,
@@ -364,8 +339,12 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map,
         )
 
 
-def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, b1_loss_only: bool = False, ranking_params=None, boat1_params=None):
-    """Walk-forward CV."""
+def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, ranking_params=None, boat1_params=None):
+    """Walk-forward CV — uses same data flow as tune_trifecta.py."""
+    rp = ranking_params or {}
+    bp = boat1_params or {}
+
+    # Prepare feature matrices once on full data, then slice (same as tune)
     X_rank, y_rank, meta_rank = prepare_feature_matrix(df)
     folds = walk_forward_splits(
         X_rank, y_rank, meta_rank,
@@ -373,46 +352,69 @@ def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, e
     )
 
     TICKETS_PER_BET = 20
-    tag = " [b1-loss-only]" if b1_loss_only else ""
-    print(f"WF-CV: {len(folds)} folds, b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%}{tag}")
-    fold_rois = []
+    print(f"WF-CV: {len(folds)} folds, b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%}")
 
+    # Pre-train boat1 models per fold (same as tune)
+    fold_b1_data = []
     for i, fold in enumerate(folds):
         test_dates = fold["period"]["test"]
         test_from, test_to = [d.strip() for d in test_dates.split("~")]
 
         train_fold = df[df["race_date"] < test_from]
-        test_fold = df[
-            (df["race_date"] >= test_from) & (df["race_date"] < test_to)
-        ]
+        test_fold = df[(df["race_date"] >= test_from) & (df["race_date"] < test_to)]
 
         dates = sorted(train_fold["race_date"].unique())
         val_start = dates[max(0, len(dates) - 60)]
 
-        print(f"\nFold {i+1}: {test_from} ~ {test_to}", file=sys.stderr)
-        b1_model, rank_model = train_models(
-            train_fold[train_fold["race_date"] < val_start],
-            train_fold[train_fold["race_date"] >= val_start],
-            b1_loss_only=b1_loss_only,
-            ranking_params=ranking_params,
-            boat1_params=boat1_params,
-        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            X_b1_tr, y_b1_tr, _ = reshape_to_boat1(train_fold[train_fold["race_date"] < val_start])
+            X_b1_v, y_b1_v, _ = reshape_to_boat1(train_fold[train_fold["race_date"] >= val_start])
+            X_b1_te, _, meta_b1_te = reshape_to_boat1(test_fold)
+            b1_model, _ = train_boat1_model(
+                X_b1_tr, y_b1_tr, X_b1_v, y_b1_v,
+                n_estimators=bp.get("n_estimators"),
+                learning_rate=bp.get("learning_rate"),
+                extra_params=bp.get("extra_params"),
+            )
 
-        results = evaluate_period(
-            b1_model, rank_model, test_fold,
-            trifecta_odds, tri_win_prob, finish_map, race_date_map,
+        b1_probs = b1_model.predict_proba(X_b1_te)[:, 1]
+        fold_b1_data.append({"b1_probs": b1_probs, "meta_b1": meta_b1_te})
+
+    # Train ranking + evaluate per fold (same data flow as tune)
+    fold_rois = []
+    for i, fold in enumerate(folds):
+        test_dates = fold["period"]["test"]
+        test_from, test_to = [d.strip() for d in test_dates.split("~")]
+        print(f"\nFold {i+1}: {test_from} ~ {test_to}", file=sys.stderr)
+
+        # Train ranking model using pre-sliced X/y/meta from walk_forward_splits
+        with contextlib.redirect_stdout(io.StringIO()):
+            rank_model, _ = train_model(
+                fold["train"]["X"], fold["train"]["y"], fold["train"]["meta"],
+                fold["val"]["X"], fold["val"]["y"], fold["val"]["meta"],
+                n_estimators=rp.get("n_estimators"),
+                learning_rate=rp.get("learning_rate"),
+                extra_params=rp.get("extra_params"),
+                relevance_scheme=rp.get("relevance_scheme", "linear"),
+                early_stopping_rounds=50,
+            )
+
+        rank_scores = rank_model.predict(fold["test"]["X"])
+
+        result = evaluate_trifecta_strategy(
+            b1_probs=fold_b1_data[i]["b1_probs"],
+            meta_b1=fold_b1_data[i]["meta_b1"],
+            rank_scores=rank_scores,
+            meta_rank=fold["test"]["meta"],
+            finish_map=finish_map,
+            trifecta_odds=trifecta_odds,
+            tri_win_prob=tri_win_prob,
             b1_threshold=args.b1_threshold,
             ev_threshold=args.ev_threshold,
-            exacta_odds=exacta_odds,
         )
+        fold_rois.append(result["roi"])
 
-        cost = len(results) * TICKETS_PER_BET
-        payout = sum(r["allflow_odds"] for r in results if r["pick_1st"] and r["allflow_odds"] > 0)
-        roi = payout / cost if cost > 0 else 0
-        wins = sum(1 for r in results if r["pick_1st"] and r["allflow_odds"] > 0)
-        fold_rois.append(roi)
-
-        print(f"  Fold {i+1}: {len(results)}R(×{TICKETS_PER_BET}pt), {wins}W, ROI {roi:.0%}")
+        print(f"  Fold {i+1}: {result['races']}R(×{TICKETS_PER_BET}pt), {result['wins']}W, ROI {result['roi']:.0%}")
 
     print(f"\n{'='*50}")
     print(f"Mean ROI: {np.mean(fold_rois):.0%} ± {np.std(fold_rois):.0%}")
@@ -421,8 +423,11 @@ def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, e
     print(f"Sharpe: {sharpe:.2f}")
 
 
-def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, b1_loss_only: bool = False, ranking_params=None, boat1_params=None):
-    """EV threshold sweep across WF-CV."""
+def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, ranking_params=None, boat1_params=None):
+    """EV threshold sweep across WF-CV — same data flow as tune."""
+    rp = ranking_params or {}
+    bp = boat1_params or {}
+
     X_rank, y_rank, meta_rank = prepare_feature_matrix(df)
     folds = walk_forward_splits(
         X_rank, y_rank, meta_rank,
@@ -431,31 +436,44 @@ def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_ma
 
     print(f"EV sweep: {len(folds)} folds")
 
-    # Pre-train models
-    fold_models = []
-    fold_test_dfs = []
+    # Pre-train boat1 + ranking models per fold
+    fold_b1_data = []
+    fold_rank_scores = []
     for i, fold in enumerate(folds):
         test_dates = fold["period"]["test"]
         test_from, test_to = [d.strip() for d in test_dates.split("~")]
 
         train_fold = df[df["race_date"] < test_from]
-        test_fold = df[
-            (df["race_date"] >= test_from) & (df["race_date"] < test_to)
-        ]
-
+        test_fold = df[(df["race_date"] >= test_from) & (df["race_date"] < test_to)]
         dates = sorted(train_fold["race_date"].unique())
         val_start = dates[max(0, len(dates) - 60)]
 
         print(f"  Training fold {i+1}: {test_from} ~ {test_to}", file=sys.stderr)
-        b1_model, rank_model = train_models(
-            train_fold[train_fold["race_date"] < val_start],
-            train_fold[train_fold["race_date"] >= val_start],
-            b1_loss_only=b1_loss_only,
-            ranking_params=ranking_params,
-            boat1_params=boat1_params,
-        )
-        fold_models.append((b1_model, rank_model))
-        fold_test_dfs.append(test_fold)
+        with contextlib.redirect_stdout(io.StringIO()):
+            # Boat1
+            X_b1_tr, y_b1_tr, _ = reshape_to_boat1(train_fold[train_fold["race_date"] < val_start])
+            X_b1_v, y_b1_v, _ = reshape_to_boat1(train_fold[train_fold["race_date"] >= val_start])
+            X_b1_te, _, meta_b1_te = reshape_to_boat1(test_fold)
+            b1_model, _ = train_boat1_model(
+                X_b1_tr, y_b1_tr, X_b1_v, y_b1_v,
+                n_estimators=bp.get("n_estimators"),
+                learning_rate=bp.get("learning_rate"),
+                extra_params=bp.get("extra_params"),
+            )
+            # Ranking (using pre-sliced data)
+            rank_model, _ = train_model(
+                fold["train"]["X"], fold["train"]["y"], fold["train"]["meta"],
+                fold["val"]["X"], fold["val"]["y"], fold["val"]["meta"],
+                n_estimators=rp.get("n_estimators"),
+                learning_rate=rp.get("learning_rate"),
+                extra_params=rp.get("extra_params"),
+                relevance_scheme=rp.get("relevance_scheme", "linear"),
+                early_stopping_rounds=50,
+            )
+
+        b1_probs = b1_model.predict_proba(X_b1_te)[:, 1]
+        fold_b1_data.append({"b1_probs": b1_probs, "meta_b1": meta_b1_te})
+        fold_rank_scores.append(rank_model.predict(fold["test"]["X"]))
 
     TICKETS_PER_BET = 20
     ev_thresholds = [-0.1, 0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]
@@ -467,24 +485,25 @@ def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_ma
         fold_rois = []
         fold_rpd = []
 
-        for i, (b1_model, rank_model) in enumerate(fold_models):
-            test_dates = folds[i]["period"]["test"]
+        for i, fold in enumerate(folds):
+            test_dates = fold["period"]["test"]
             test_from, test_to = [d.strip() for d in test_dates.split("~")]
             test_days = (pd.Timestamp(test_to) - pd.Timestamp(test_from)).days
 
-            results = evaluate_period(
-                b1_model, rank_model, fold_test_dfs[i],
-                trifecta_odds, tri_win_prob, finish_map, race_date_map,
+            result = evaluate_trifecta_strategy(
+                b1_probs=fold_b1_data[i]["b1_probs"],
+                meta_b1=fold_b1_data[i]["meta_b1"],
+                rank_scores=fold_rank_scores[i],
+                meta_rank=fold["test"]["meta"],
+                finish_map=finish_map,
+                trifecta_odds=trifecta_odds,
+                tri_win_prob=tri_win_prob,
                 b1_threshold=args.b1_threshold,
                 ev_threshold=ev_thr,
-                exacta_odds=exacta_odds,
             )
 
-            cost = len(results) * TICKETS_PER_BET
-            payout = sum(r["allflow_odds"] for r in results if r["pick_1st"] and r["allflow_odds"] > 0)
-            roi = payout / cost if cost > 0 else 0
-            rpd = len(results) / test_days if test_days > 0 else 0
-
+            roi = result["roi"]
+            rpd = result["races"] / test_days if test_days > 0 else 0
             fold_rois.append(roi)
             fold_rpd.append(rpd)
 
@@ -512,8 +531,6 @@ def main():
     parser.add_argument("--ev-threshold", type=float, default=None)
     parser.add_argument("--start-date", default=None,
                         help="Earliest date for training data (YYYY-MM-DD)")
-    parser.add_argument("--b1-loss-only", action="store_true",
-                        help="Train ranking model only on races where boat 1 lost")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -551,7 +568,7 @@ def main():
         print(f"Filtered to >= {args.start_date}: {n_before}R → {n_after}R", file=sys.stderr)
     print(f"Loaded in {time.time() - t0:.1f}s", file=sys.stderr)
 
-    common = dict(b1_loss_only=args.b1_loss_only, ranking_params=ranking_params, boat1_params=boat1_params)
+    common = dict(ranking_params=ranking_params, boat1_params=boat1_params)
     if args.ev_sweep:
         run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds, **common)
     elif args.wfcv:
