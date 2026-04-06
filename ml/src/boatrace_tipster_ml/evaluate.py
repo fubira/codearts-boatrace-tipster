@@ -447,13 +447,18 @@ def evaluate_trifecta_strategy(
     tri_win_prob: dict[tuple[int, int], float],
     b1_threshold: float,
     ev_threshold: float,
-) -> dict:
+    *,
+    race_date_map: dict[int, str] | None = None,
+    exacta_odds: dict[tuple[int, str], float] | None = None,
+    per_race: bool = False,
+) -> dict | list[dict]:
     """Evaluate X-allflow trifecta strategy on test data.
 
-    Used by tune_trifecta.py and backtest_trifecta.py.
+    Used by tune, backtest, and MC simulation.
 
-    Returns:
-        dict with races, cost, wins, payout, roi
+    Args:
+        per_race: If True, return list of per-race dicts (for MC/backtest daily).
+                  If False, return summary dict with races/cost/wins/payout/roi.
     """
     field_size = 6
 
@@ -474,13 +479,15 @@ def evaluate_trifecta_strategy(
     total_cost = 0.0
     total_wins = 0
     total_payout = 0.0
+    results: list[dict] = []
 
     for ri in range(n_races):
         rid = int(race_ids[ri])
         bi = b1_map.get(rid)
         if bi is None:
             continue
-        if float(b1_probs[bi]) >= b1_threshold:
+        b1p = float(b1_probs[bi])
+        if b1p >= b1_threshold:
             continue
 
         wp = int(top_boats[ri, 0])
@@ -502,23 +509,47 @@ def evaluate_trifecta_strategy(
         total_races += 1
         total_cost += TRIFECTA_TICKETS_PER_BET
 
-        if finish_map.get((rid, wp)) != 1:
-            continue
+        pick_1st = finish_map.get((rid, wp)) == 1
+        allflow_odds = 0.0
+        exacta_hit_odds = 0.0
 
-        a2 = a3 = None
-        for b in range(1, 7):
-            fp = finish_map.get((rid, b))
-            if fp == 2:
-                a2 = b
-            if fp == 3:
-                a3 = b
+        if pick_1st:
+            a2 = a3 = None
+            for b in range(1, 7):
+                fp = finish_map.get((rid, b))
+                if fp == 2:
+                    a2 = b
+                if fp == 3:
+                    a3 = b
 
-        if a2 and a3:
-            hc = f"{wp}-{a2}-{a3}"
-            ho = trifecta_odds.get((rid, hc))
-            if ho and ho > 0:
-                total_wins += 1
-                total_payout += ho
+            if a2 and a3:
+                hc = f"{wp}-{a2}-{a3}"
+                ho = trifecta_odds.get((rid, hc))
+                if ho and ho > 0:
+                    allflow_odds = ho
+                    total_wins += 1
+                    total_payout += ho
+                if exacta_odds is not None:
+                    ec = f"{wp}-{a2}"
+                    eo = exacta_odds.get((rid, ec))
+                    if eo and eo > 0:
+                        exacta_hit_odds = eo
+
+        if per_race:
+            results.append({
+                "race_id": rid,
+                "date": race_date_map.get(rid, "") if race_date_map else "",
+                "winner_pick": wp,
+                "b1_prob": round(b1p, 3),
+                "winner_prob": round(wprob, 3),
+                "ev": round(ev, 3),
+                "pick_1st": pick_1st,
+                "allflow_odds": round(allflow_odds, 1),
+                "exacta_hit_odds": round(exacta_hit_odds, 1),
+            })
+
+    if per_race:
+        return results
 
     roi = total_payout / total_cost if total_cost > 0 else 0
     return {

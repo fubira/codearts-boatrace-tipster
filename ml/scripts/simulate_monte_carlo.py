@@ -295,6 +295,7 @@ def collect_all_candidates(model_dir: str = "models/trifecta_v1") -> list[dict]:
     from boatrace_tipster_ml.boat1_features import reshape_to_boat1
     from boatrace_tipster_ml.boat1_model import load_boat1_model
     from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
+    from boatrace_tipster_ml.evaluate import evaluate_trifecta_strategy
     from boatrace_tipster_ml.feature_config import prepare_feature_matrix
     from boatrace_tipster_ml.features import build_features_df
     from boatrace_tipster_ml.model import load_model, load_model_meta
@@ -345,70 +346,21 @@ def collect_all_candidates(model_dir: str = "models/trifecta_v1") -> list[dict]:
     X_rank, _, meta_rank = prepare_feature_matrix(df)
     rank_scores = rank_model.predict(X_rank)
 
-    # Evaluate with no filtering (b1=1.0, ev=-999) to collect all candidates
-    n_races = len(rank_scores) // 6
-    scores_2d = rank_scores.reshape(n_races, 6)
-    boats_2d = meta_rank["boat_number"].values.reshape(n_races, 6)
-    race_ids = meta_rank["race_id"].values.reshape(n_races, 6)[:, 0]
-
-    pred_order = np.argsort(-scores_2d, axis=1)
-    top_boats = np.take_along_axis(boats_2d, pred_order, axis=1)
-    exp_s = np.exp(scores_2d - scores_2d.max(axis=1, keepdims=True))
-    rank_probs = exp_s / exp_s.sum(axis=1, keepdims=True)
-    b1_map = {rid: i for i, rid in enumerate(meta_b1["race_id"].values)}
-
-    all_results = []
-    for ri in range(n_races):
-        rid = int(race_ids[ri])
-        bi = b1_map.get(rid)
-        if bi is None:
-            continue
-        b1p = float(b1_probs[bi])
-
-        wp = int(top_boats[ri, 0])
-        if wp == 1:
-            wp = int(top_boats[ri, 1])
-
-        bidx = np.where(boats_2d[ri] == wp)[0]
-        if len(bidx) == 0:
-            continue
-        wprob = float(rank_probs[ri, bidx[0]])
-
-        mkt_prob = tri_win_prob.get((rid, wp), 0)
-        if mkt_prob <= 0:
-            continue
-        ev = wprob / mkt_prob * 0.75 - 1
-
-        pick_1st = finish_map.get((rid, wp)) == 1
-        allflow_odds = 0.0
-        exacta_hit_odds = 0.0
-        a2 = a3 = None
-        if pick_1st:
-            for b in range(1, 7):
-                fp = finish_map.get((rid, b))
-                if fp == 2: a2 = b
-                if fp == 3: a3 = b
-            if a2 and a3:
-                hc = f"{wp}-{a2}-{a3}"
-                ho = trifecta_odds.get((rid, hc))
-                if ho and ho > 0:
-                    allflow_odds = ho
-                ec = f"{wp}-{a2}"
-                eo = exacta_odds.get((rid, ec))
-                if eo and eo > 0:
-                    exacta_hit_odds = eo
-
-        all_results.append({
-            "race_id": rid,
-            "date": race_date_map.get(rid, ""),
-            "winner_pick": wp,
-            "b1_prob": round(b1p, 3),
-            "winner_prob": round(wprob, 3),
-            "ev": round(ev, 3),
-            "pick_1st": pick_1st,
-            "allflow_odds": round(allflow_odds, 1),
-            "exacta_hit_odds": round(exacta_hit_odds, 1),
-        })
+    # Collect ALL candidates (no filtering) so _extract_params can sweep thresholds
+    all_results = evaluate_trifecta_strategy(
+        b1_probs=b1_probs,
+        meta_b1=meta_b1,
+        rank_scores=rank_scores,
+        meta_rank=meta_rank,
+        finish_map=finish_map,
+        trifecta_odds=trifecta_odds,
+        tri_win_prob=tri_win_prob,
+        b1_threshold=1.0,       # no b1 filtering
+        ev_threshold=-999.0,    # no EV filtering
+        race_date_map=race_date_map,
+        exacta_odds=exacta_odds,
+        per_race=True,
+    )
 
     print(f"  {len(all_results)} candidates from OOS ({oos_start}~) in {time.time()-t0:.0f}s",
           file=sys.stderr)

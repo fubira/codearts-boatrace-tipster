@@ -36,8 +36,6 @@ from boatrace_tipster_ml.model import train_model, walk_forward_splits
 # train_model / train_boat1_model are only used by --wfcv and --ev-sweep (WF-CV retraining).
 # --from/--to loads saved production models instead.
 
-FIELD_SIZE = 6
-
 
 def load_data(db_path: str):
     """Load features, odds, and finish data."""
@@ -164,67 +162,19 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map,
     X_rank, _, meta_rank = prepare_feature_matrix(test_df)
     rank_scores = rank_model.predict(X_rank)
 
-    n_races = len(rank_scores) // FIELD_SIZE
-    boats_2d = meta_rank["boat_number"].values.reshape(n_races, FIELD_SIZE)
-    race_ids = meta_rank["race_id"].values.reshape(n_races, FIELD_SIZE)[:, 0]
-    scores_2d = rank_scores.reshape(n_races, FIELD_SIZE)
-
-    pred_order = np.argsort(-scores_2d, axis=1)
-    top_boats = np.take_along_axis(boats_2d, pred_order, axis=1)
-    exp_s = np.exp(scores_2d - scores_2d.max(axis=1, keepdims=True))
-    rank_probs = exp_s / exp_s.sum(axis=1, keepdims=True)
-    b1_map = {rid: i for i, rid in enumerate(meta_b1["race_id"].values)}
-
-    # Build per-race results (same structure as old evaluate_period for print_daily)
-    results = []
-    for ri in range(n_races):
-        rid = int(race_ids[ri])
-        bi = b1_map.get(rid)
-        if bi is None:
-            continue
-        b1p = float(b1_probs[bi])
-        if b1p >= args.b1_threshold:
-            continue
-
-        wp = int(top_boats[ri, 0])
-        if wp == 1:
-            wp = int(top_boats[ri, 1])
-
-        bidx = np.where(boats_2d[ri] == wp)[0]
-        if len(bidx) == 0:
-            continue
-        wprob = float(rank_probs[ri, bidx[0]])
-
-        mkt_prob = tri_win_prob.get((rid, wp), 0)
-        if mkt_prob <= 0:
-            continue
-        ev = wprob / mkt_prob * 0.75 - 1
-        if ev < args.ev_threshold:
-            continue
-
-        pick_1st = finish_map.get((rid, wp)) == 1
-        allflow_odds = 0.0
-        if pick_1st:
-            a2 = a3 = None
-            for b in range(1, 7):
-                fp = finish_map.get((rid, b))
-                if fp == 2: a2 = b
-                if fp == 3: a3 = b
-            if a2 and a3:
-                hc = f"{wp}-{a2}-{a3}"
-                ho = trifecta_odds.get((rid, hc))
-                if ho and ho > 0:
-                    allflow_odds = ho
-
-        results.append({
-            "race_id": rid,
-            "date": race_date_map.get(rid, ""),
-            "winner_pick": wp,
-            "b1_prob": round(b1p, 3),
-            "ev": round(ev, 3),
-            "pick_1st": pick_1st,
-            "allflow_odds": round(allflow_odds, 1),
-        })
+    results = evaluate_trifecta_strategy(
+        b1_probs=b1_probs,
+        meta_b1=meta_b1,
+        rank_scores=rank_scores,
+        meta_rank=meta_rank,
+        finish_map=finish_map,
+        trifecta_odds=trifecta_odds,
+        tri_win_prob=tri_win_prob,
+        b1_threshold=args.b1_threshold,
+        ev_threshold=args.ev_threshold,
+        race_date_map=race_date_map,
+        per_race=True,
+    )
 
     summary = print_daily(
         results,
