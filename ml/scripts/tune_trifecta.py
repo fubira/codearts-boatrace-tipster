@@ -1,4 +1,4 @@
-"""Optuna hyperparameter tuning for trifecta X-noB1-noB1 strategy.
+"""Optuna hyperparameter tuning for trifecta X-allflow strategy.
 
 Optimizes LambdaRank + boat1 binary model jointly for 3連単 ROI.
 
@@ -66,7 +66,9 @@ def evaluate_trifecta_strategy(
     b1_threshold: float = 0.40,
     ev_threshold: float = 0.30,
 ) -> dict:
-    """Evaluate X-noB1-noB1 trifecta strategy on test data."""
+    """Evaluate X-allflow trifecta strategy on test data."""
+    TICKETS_PER_BET = 20
+
     n_races = len(rank_scores) // FIELD_SIZE
     scores_2d = rank_scores.reshape(n_races, FIELD_SIZE)
     boats_2d = meta_rank["boat_number"].values.reshape(n_races, FIELD_SIZE)
@@ -81,7 +83,7 @@ def evaluate_trifecta_strategy(
     b1_map = {rid: i for i, rid in enumerate(meta_b1["race_id"].values)}
 
     total_races = 0
-    total_tickets = 0
+    total_cost = 0.0
     total_wins = 0
     total_payout = 0.0
 
@@ -110,23 +112,13 @@ def evaluate_trifecta_strategy(
         if ev < ev_threshold:
             continue
 
-        # Build X-noB1-noB1 tickets
-        excluded = {wp, 1}
-        flow = [int(b) for b in boats_2d[ri] if int(b) not in excluded]
-        tkts = []
-        for b2 in flow:
-            for b3 in flow:
-                if b2 != b3:
-                    c = f"{wp}-{b2}-{b3}"
-                    if (rid, c) in trifecta_odds:
-                        tkts.append(c)
-        if not tkts:
+        total_races += 1
+        total_cost += TICKETS_PER_BET
+
+        # Check result — allflow: hit when pick_1st regardless of 2-3 combo
+        if finish_map.get((rid, wp)) != 1:
             continue
 
-        total_races += 1
-        total_tickets += len(tkts)
-
-        # Check result
         a2 = a3 = None
         for b in range(1, 7):
             fp = finish_map.get((rid, b))
@@ -135,18 +127,17 @@ def evaluate_trifecta_strategy(
             if fp == 3:
                 a3 = b
 
-        if finish_map.get((rid, wp)) == 1 and a2 and a3:
+        if a2 and a3:
             hc = f"{wp}-{a2}-{a3}"
-            if hc in tkts:
-                ho = trifecta_odds.get((rid, hc))
-                if ho:
-                    total_wins += 1
-                    total_payout += ho
+            ho = trifecta_odds.get((rid, hc))
+            if ho and ho > 0:
+                total_wins += 1
+                total_payout += ho
 
-    roi = total_payout / total_tickets if total_tickets > 0 else 0
+    roi = total_payout / total_cost if total_cost > 0 else 0
     return {
         "races": total_races,
-        "tickets": total_tickets,
+        "cost": total_cost,
         "wins": total_wins,
         "payout": total_payout,
         "roi": roi,
@@ -316,14 +307,14 @@ def main():
 
     study = optuna.create_study(
         direction="maximize",
-        study_name="trifecta-x-nob1-nob1",
+        study_name="trifecta-x-allflow",
         sampler=optuna.samplers.TPESampler(seed=args.seed),
     )
     study.optimize(objective, n_trials=args.trials, show_progress_bar=True)
 
     # Results
     print("\n" + "=" * 70)
-    print("Optuna Search Complete — Trifecta X-noB1-noB1")
+    print("Optuna Search Complete — Trifecta X-allflow")
     print("=" * 70)
     print(f"Best Sharpe: {study.best_value:.3f}")
     bp = study.best_params
