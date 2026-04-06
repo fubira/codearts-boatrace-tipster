@@ -288,49 +288,129 @@ def _extract_params(
     }
 
 
-def collect_all_candidates(n_folds: int) -> list[dict]:
-    """Run WF-CV backtest once with no filtering, return all candidate bets."""
-    from boatrace_tipster_ml.db import DEFAULT_DB_PATH
-    from boatrace_tipster_ml.feature_config import prepare_feature_matrix
-    from boatrace_tipster_ml.model import walk_forward_splits
-    from scripts.backtest_trifecta import evaluate_period, load_data, train_models
+def collect_all_candidates(model_dir: str = "models/trifecta_v1") -> list[dict]:
+    """Load saved production models and collect all candidate bets on OOS period."""
+    from collections import defaultdict
 
-    print("Running backtest to collect all candidates...", file=sys.stderr)
+    from boatrace_tipster_ml.boat1_features import reshape_to_boat1
+    from boatrace_tipster_ml.boat1_model import load_boat1_model
+    from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
+    from boatrace_tipster_ml.feature_config import prepare_feature_matrix
+    from boatrace_tipster_ml.features import build_features_df
+    from boatrace_tipster_ml.model import load_model, load_model_meta
+
+    print("Collecting all candidates with saved models...", file=sys.stderr)
     t0 = time.time()
 
-    with contextlib.redirect_stdout(io.StringIO()):
-        df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds = load_data(
-            DEFAULT_DB_PATH
-        )
+    # Determine OOS period from model_meta training date range
+    rank_meta = load_model_meta(f"{model_dir}/ranking")
+    date_range = rank_meta.get("training", {}).get("date_range", "") if rank_meta else ""
+    # date_range format: "2024-01-01 ~ 2025-12-31"
+    oos_start = date_range.split("~")[-1].strip() if "~" in date_range else "2026-01-01"
+    # Day after training end
+    from datetime import datetime, timedelta
+    oos_start = (datetime.strptime(oos_start, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    X_rank, y_rank, meta_rank = prepare_feature_matrix(df)
-    folds = walk_forward_splits(X_rank, y_rank, meta_rank, n_folds=n_folds, fold_months=2)
+    with contextlib.redirect_stdout(io.StringIO()):
+        df = build_features_df(DEFAULT_DB_PATH, start_date=oos_start)
+
+    conn = get_connection(DEFAULT_DB_PATH)
+    rows = conn.execute("SELECT race_id, combination, odds FROM db.race_odds WHERE bet_type = '3連単'").fetchall()
+    trifecta_odds = {(int(r[0]), r[1]): float(r[2]) for r in rows}
+    tri_win_prob: dict[tuple[int, int], float] = defaultdict(float)
+    for r in rows:
+        rid, combo, odds = int(r[0]), r[1], float(r[2])
+        if odds > 0:
+            tri_win_prob[(rid, int(combo.split("-")[0]))] += 0.75 / odds
+
+    exacta_rows = conn.execute("SELECT race_id, combination, odds FROM db.race_odds WHERE bet_type = '2連単'").fetchall()
+    exacta_odds = {(int(r[0]), r[1]): float(r[2]) for r in exacta_rows}
+    conn.close()
+
+    finish_map: dict[tuple[int, int], int] = {}
+    race_date_map: dict[int, str] = {}
+    for _, row in df[["race_id", "boat_number", "finish_position", "race_date"]].drop_duplicates().iterrows():
+        if pd.notna(row["finish_position"]):
+            finish_map[(int(row["race_id"]), int(row["boat_number"]))] = int(row["finish_position"])
+        race_date_map[int(row["race_id"])] = str(row["race_date"])
+
+    # Load saved models
+    b1_model = load_boat1_model(f"{model_dir}/boat1")
+    rank_model = load_model(f"{model_dir}/ranking")
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        X_b1, _, meta_b1 = reshape_to_boat1(df)
+    b1_probs = b1_model.predict_proba(X_b1)[:, 1]
+
+    X_rank, _, meta_rank = prepare_feature_matrix(df)
+    rank_scores = rank_model.predict(X_rank)
+
+    # Evaluate with no filtering (b1=1.0, ev=-999) to collect all candidates
+    n_races = len(rank_scores) // 6
+    scores_2d = rank_scores.reshape(n_races, 6)
+    boats_2d = meta_rank["boat_number"].values.reshape(n_races, 6)
+    race_ids = meta_rank["race_id"].values.reshape(n_races, 6)[:, 0]
+
+    pred_order = np.argsort(-scores_2d, axis=1)
+    top_boats = np.take_along_axis(boats_2d, pred_order, axis=1)
+    exp_s = np.exp(scores_2d - scores_2d.max(axis=1, keepdims=True))
+    rank_probs = exp_s / exp_s.sum(axis=1, keepdims=True)
+    b1_map = {rid: i for i, rid in enumerate(meta_b1["race_id"].values)}
 
     all_results = []
-    for i, fold in enumerate(folds):
-        test_dates = fold["period"]["test"]
-        test_from, test_to = [d.strip() for d in test_dates.split("~")]
-        train_fold = df[df["race_date"] < test_from]
-        test_fold = df[(df["race_date"] >= test_from) & (df["race_date"] < test_to)]
-        dates = sorted(train_fold["race_date"].unique())
-        val_start = dates[max(0, len(dates) - 60)]
+    for ri in range(n_races):
+        rid = int(race_ids[ri])
+        bi = b1_map.get(rid)
+        if bi is None:
+            continue
+        b1p = float(b1_probs[bi])
 
-        print(f"  Fold {i+1}/{len(folds)}: {test_from} ~ {test_to}", file=sys.stderr)
-        with contextlib.redirect_stdout(io.StringIO()):
-            b1_model, rank_model = train_models(
-                train_fold[train_fold["race_date"] < val_start],
-                train_fold[train_fold["race_date"] >= val_start],
-            )
+        wp = int(top_boats[ri, 0])
+        if wp == 1:
+            wp = int(top_boats[ri, 1])
 
-        results = evaluate_period(
-            b1_model, rank_model, test_fold,
-            trifecta_odds, tri_win_prob, finish_map, race_date_map,
-            b1_threshold=1.0, ev_threshold=-999,
-            exacta_odds=exacta_odds,
-        )
-        all_results.extend(results)
+        bidx = np.where(boats_2d[ri] == wp)[0]
+        if len(bidx) == 0:
+            continue
+        wprob = float(rank_probs[ri, bidx[0]])
 
-    print(f"  {len(all_results)} candidates collected in {time.time()-t0:.0f}s",
+        mkt_prob = tri_win_prob.get((rid, wp), 0)
+        if mkt_prob <= 0:
+            continue
+        ev = wprob / mkt_prob * 0.75 - 1
+
+        pick_1st = finish_map.get((rid, wp)) == 1
+        allflow_odds = 0.0
+        exacta_hit_odds = 0.0
+        a2 = a3 = None
+        if pick_1st:
+            for b in range(1, 7):
+                fp = finish_map.get((rid, b))
+                if fp == 2: a2 = b
+                if fp == 3: a3 = b
+            if a2 and a3:
+                hc = f"{wp}-{a2}-{a3}"
+                ho = trifecta_odds.get((rid, hc))
+                if ho and ho > 0:
+                    allflow_odds = ho
+                ec = f"{wp}-{a2}"
+                eo = exacta_odds.get((rid, ec))
+                if eo and eo > 0:
+                    exacta_hit_odds = eo
+
+        all_results.append({
+            "race_id": rid,
+            "date": race_date_map.get(rid, ""),
+            "winner_pick": wp,
+            "b1_prob": round(b1p, 3),
+            "winner_prob": round(wprob, 3),
+            "ev": round(ev, 3),
+            "pick_1st": pick_1st,
+            "allflow_odds": round(allflow_odds, 1),
+            "exacta_hit_odds": round(exacta_hit_odds, 1),
+        })
+
+    print(f"  {len(all_results)} candidates from OOS ({oos_start}~) in {time.time()-t0:.0f}s",
           file=sys.stderr)
     return all_results
 
@@ -338,13 +418,12 @@ def collect_all_candidates(n_folds: int) -> list[dict]:
 def collect_from_backtest(
     ev_threshold: float,
     b1_threshold: float,
-    n_folds: int,
     all_flow: bool = False,
     mixed: bool = False,
     exacta_ratio: float = 1.0,
 ) -> dict:
-    """Run WF-CV backtest and extract empirical distribution parameters."""
-    all_results = collect_all_candidates(n_folds)
+    """Collect empirical distribution parameters from saved model OOS evaluation."""
+    all_results = collect_all_candidates()
     params = _extract_params(
         all_results, b1_threshold, ev_threshold,
         all_flow=all_flow, mixed=mixed, exacta_ratio=exacta_ratio,
@@ -412,7 +491,7 @@ def main():
 
     # Compare mode: single backtest, multiple threshold sweeps
     if args.compare:
-        all_results = collect_all_candidates(args.n_folds)
+        all_results = collect_all_candidates()
         if args.mixed:
             flow_label = f"混合(25点×{args.exacta_ratio})"
         elif args.all_flow:
@@ -445,7 +524,6 @@ def main():
         params = collect_from_backtest(
             ev_threshold=args.ev_threshold,
             b1_threshold=args.b1_threshold,
-            n_folds=args.n_folds,
             all_flow=args.all_flow or args.mixed,
             mixed=args.mixed,
             exacta_ratio=args.exacta_ratio,

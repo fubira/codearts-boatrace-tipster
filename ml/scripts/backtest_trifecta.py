@@ -33,6 +33,9 @@ from boatrace_tipster_ml.feature_config import prepare_feature_matrix
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import train_model, walk_forward_splits
 
+# train_model / train_boat1_model are only used by --wfcv and --ev-sweep (WF-CV retraining).
+# --from/--to loads saved production models instead.
+
 FIELD_SIZE = 6
 
 
@@ -79,167 +82,6 @@ def load_data(db_path: str):
         race_date_map[int(row["race_id"])] = str(row["race_date"])
 
     return df, trifecta_odds, dict(tri_win_prob), finish_map, race_date_map, exacta_odds
-
-
-def train_models_for_period(
-    train_df,
-    val_df=None,
-    *,
-    ranking_params: dict | None = None,
-    boat1_params: dict | None = None,
-):
-    """Train boat1 binary + LambdaRank models for --from/--to period backtest."""
-    rp = ranking_params or {}
-    bp = boat1_params or {}
-
-    with contextlib.redirect_stdout(io.StringIO()):
-        X_b1_tr, y_b1_tr, _ = reshape_to_boat1(train_df if val_df is not None else train_df)
-        if val_df is not None:
-            X_b1_v, y_b1_v, _ = reshape_to_boat1(val_df)
-        else:
-            X_b1_v, y_b1_v = None, None
-        b1_model, _ = train_boat1_model(
-            X_b1_tr, y_b1_tr, X_b1_v, y_b1_v,
-            n_estimators=bp.get("n_estimators"),
-            learning_rate=bp.get("learning_rate"),
-            extra_params=bp.get("extra_params"),
-        )
-
-        X_r_tr, y_r_tr, m_r_tr = prepare_feature_matrix(train_df if val_df is not None else train_df)
-        if val_df is not None:
-            X_r_v, y_r_v, m_r_v = prepare_feature_matrix(val_df)
-        else:
-            X_r_v, y_r_v, m_r_v = None, None, None
-        rank_model, _ = train_model(
-            X_r_tr, y_r_tr, m_r_tr,
-            X_r_v, y_r_v, m_r_v,
-            n_estimators=rp.get("n_estimators"),
-            learning_rate=rp.get("learning_rate"),
-            extra_params=rp.get("extra_params"),
-            relevance_scheme=rp.get("relevance_scheme", "linear"),
-            early_stopping_rounds=50,
-        )
-
-    return b1_model, rank_model
-
-
-def evaluate_period(
-    b1_model,
-    rank_model,
-    test_df: pd.DataFrame,
-    trifecta_odds: dict,
-    tri_win_prob: dict,
-    finish_map: dict,
-    race_date_map: dict,
-    b1_threshold: float = 0.40,
-    ev_threshold: float = 0.10,
-    exacta_odds: dict | None = None,
-) -> list[dict]:
-    """Evaluate strategy on test period, return per-race results."""
-    with contextlib.redirect_stdout(io.StringIO()):
-        X_b1_te, _, meta_b1_te = reshape_to_boat1(test_df)
-        X_r_te, _, meta_r_te = prepare_feature_matrix(test_df)
-
-    b1_probs = b1_model.predict_proba(X_b1_te)[:, 1]
-    rank_scores = rank_model.predict(X_r_te)
-
-    n_races = len(X_r_te) // FIELD_SIZE
-    scores_2d = rank_scores.reshape(n_races, FIELD_SIZE)
-    boats_2d = meta_r_te["boat_number"].values.reshape(n_races, FIELD_SIZE)
-    race_ids = meta_r_te["race_id"].values.reshape(n_races, FIELD_SIZE)[:, 0]
-
-    pred_order = np.argsort(-scores_2d, axis=1)
-    top_boats = np.take_along_axis(boats_2d, pred_order, axis=1)
-
-    exp_s = np.exp(scores_2d - scores_2d.max(axis=1, keepdims=True))
-    rank_probs = exp_s / exp_s.sum(axis=1, keepdims=True)
-
-    b1_map = {rid: i for i, rid in enumerate(meta_b1_te["race_id"].values)}
-
-    results = []
-    for ri in range(n_races):
-        rid = int(race_ids[ri])
-        bi = b1_map.get(rid)
-        if bi is None:
-            continue
-        b1p = float(b1_probs[bi])
-        if b1p >= b1_threshold:
-            continue
-
-        wp = int(top_boats[ri, 0])
-        if wp == 1:
-            wp = int(top_boats[ri, 1])
-
-        bidx = np.where(boats_2d[ri] == wp)[0]
-        if len(bidx) == 0:
-            continue
-        wprob = float(rank_probs[ri, bidx[0]])
-
-        mkt_prob = tri_win_prob.get((rid, wp), 0)
-        if mkt_prob <= 0:
-            continue
-        ev = wprob / mkt_prob * 0.75 - 1
-        if ev < ev_threshold:
-            continue
-
-        # Build X-noB1-noB1 tickets
-        excluded = {wp, 1}
-        flow = [int(b) for b in boats_2d[ri] if int(b) not in excluded]
-        tkts = []
-        for b2 in flow:
-            for b3 in flow:
-                if b2 != b3:
-                    c = f"{wp}-{b2}-{b3}"
-                    if (rid, c) in trifecta_odds:
-                        tkts.append(c)
-        if not tkts:
-            continue
-
-        # Check result
-        a2 = a3 = None
-        for b in range(1, 7):
-            fp = finish_map.get((rid, b))
-            if fp == 2:
-                a2 = b
-            if fp == 3:
-                a3 = b
-
-        hit_odds = 0.0
-        allflow_odds = 0.0
-        exacta_hit_odds = 0.0
-        pick_1st = finish_map.get((rid, wp)) == 1
-        if pick_1st and a2 and a3:
-            hc = f"{wp}-{a2}-{a3}"
-            # All-flow: any 2-3 combo is a hit
-            ho = trifecta_odds.get((rid, hc))
-            if ho is not None and ho > 0:
-                allflow_odds = ho
-                # noB1: only if combo is in noB1 tickets
-                if hc in tkts:
-                    hit_odds = ho
-            # Exacta: X-2nd
-            if exacta_odds is not None:
-                ec = f"{wp}-{a2}"
-                eo = exacta_odds.get((rid, ec))
-                if eo is not None and eo > 0:
-                    exacta_hit_odds = eo
-
-        results.append({
-            "race_id": rid,
-            "date": race_date_map.get(rid, ""),
-            "winner_pick": wp,
-            "b1_prob": round(b1p, 3),
-            "winner_prob": round(wprob, 3),
-            "ev": round(ev, 3),
-            "tickets": len(tkts),
-            "hit_odds": round(hit_odds, 1),
-            "won": hit_odds > 0,
-            "pick_1st": pick_1st,
-            "allflow_odds": round(allflow_odds, 1),
-            "exacta_hit_odds": round(exacta_hit_odds, 1),
-        })
-
-    return results
 
 
 def print_daily(results: list[dict], label: str = ""):
@@ -302,27 +144,87 @@ def print_daily(results: list[dict], label: str = ""):
 
 
 def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, ranking_params=None, boat1_params=None):
-    """Period backtest with daily breakdown."""
-    train_df = df[df["race_date"] < args.from_date]
+    """Period backtest using saved production models (no retraining)."""
+    from boatrace_tipster_ml.boat1_model import load_boat1_model
+    from boatrace_tipster_ml.model import load_model
+
     test_df = df[
         (df["race_date"] >= args.from_date) & (df["race_date"] < args.to_date)
     ]
 
-    dates = sorted(train_df["race_date"].unique())
-    val_start = dates[max(0, len(dates) - 60)]
-    train_early = train_df[train_df["race_date"] < val_start]
-    train_late = train_df[train_df["race_date"] >= val_start]
+    print(f"Loading saved models from {args.model_dir}...", file=sys.stderr)
+    b1_model = load_boat1_model(f"{args.model_dir}/boat1")
+    rank_model = load_model(f"{args.model_dir}/ranking")
 
-    print(f"Training on data before {args.from_date}...", file=sys.stderr)
-    b1_model, rank_model = train_models_for_period(train_early, train_late, ranking_params=ranking_params, boat1_params=boat1_params)
+    # Inference with saved models
+    with contextlib.redirect_stdout(io.StringIO()):
+        X_b1, _, meta_b1 = reshape_to_boat1(test_df)
+    b1_probs = b1_model.predict_proba(X_b1)[:, 1]
 
-    results = evaluate_period(
-        b1_model, rank_model, test_df,
-        trifecta_odds, tri_win_prob, finish_map, race_date_map,
-        b1_threshold=args.b1_threshold,
-        ev_threshold=args.ev_threshold,
-        exacta_odds=exacta_odds,
-    )
+    X_rank, _, meta_rank = prepare_feature_matrix(test_df)
+    rank_scores = rank_model.predict(X_rank)
+
+    n_races = len(rank_scores) // FIELD_SIZE
+    boats_2d = meta_rank["boat_number"].values.reshape(n_races, FIELD_SIZE)
+    race_ids = meta_rank["race_id"].values.reshape(n_races, FIELD_SIZE)[:, 0]
+    scores_2d = rank_scores.reshape(n_races, FIELD_SIZE)
+
+    pred_order = np.argsort(-scores_2d, axis=1)
+    top_boats = np.take_along_axis(boats_2d, pred_order, axis=1)
+    exp_s = np.exp(scores_2d - scores_2d.max(axis=1, keepdims=True))
+    rank_probs = exp_s / exp_s.sum(axis=1, keepdims=True)
+    b1_map = {rid: i for i, rid in enumerate(meta_b1["race_id"].values)}
+
+    # Build per-race results (same structure as old evaluate_period for print_daily)
+    results = []
+    for ri in range(n_races):
+        rid = int(race_ids[ri])
+        bi = b1_map.get(rid)
+        if bi is None:
+            continue
+        b1p = float(b1_probs[bi])
+        if b1p >= args.b1_threshold:
+            continue
+
+        wp = int(top_boats[ri, 0])
+        if wp == 1:
+            wp = int(top_boats[ri, 1])
+
+        bidx = np.where(boats_2d[ri] == wp)[0]
+        if len(bidx) == 0:
+            continue
+        wprob = float(rank_probs[ri, bidx[0]])
+
+        mkt_prob = tri_win_prob.get((rid, wp), 0)
+        if mkt_prob <= 0:
+            continue
+        ev = wprob / mkt_prob * 0.75 - 1
+        if ev < args.ev_threshold:
+            continue
+
+        pick_1st = finish_map.get((rid, wp)) == 1
+        allflow_odds = 0.0
+        if pick_1st:
+            a2 = a3 = None
+            for b in range(1, 7):
+                fp = finish_map.get((rid, b))
+                if fp == 2: a2 = b
+                if fp == 3: a3 = b
+            if a2 and a3:
+                hc = f"{wp}-{a2}-{a3}"
+                ho = trifecta_odds.get((rid, hc))
+                if ho and ho > 0:
+                    allflow_odds = ho
+
+        results.append({
+            "race_id": rid,
+            "date": race_date_map.get(rid, ""),
+            "winner_pick": wp,
+            "b1_prob": round(b1p, 3),
+            "ev": round(ev, 3),
+            "pick_1st": pick_1st,
+            "allflow_odds": round(allflow_odds, 1),
+        })
 
     summary = print_daily(
         results,

@@ -34,9 +34,9 @@ def main():
 
     periods = {"1ヶ月": 30, "3ヶ月": 90, "6ヶ月": 180, "1年": 365}
 
-    print("Collecting all candidates from WF-CV...", file=sys.stderr)
+    print("Collecting all candidates from saved model OOS...", file=sys.stderr)
     t0 = time.time()
-    all_results = collect_all_candidates(args.n_folds)
+    all_results = collect_all_candidates()
     print(f"Done in {time.time() - t0:.1f}s ({len(all_results)} candidates)\n",
           file=sys.stderr)
 

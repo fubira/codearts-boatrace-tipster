@@ -25,19 +25,11 @@ import numpy as np
 import pandas as pd
 
 from boatrace_tipster_ml.boat1_features import reshape_to_boat1
-from boatrace_tipster_ml.boat1_model import (
-    load_boat1_model,
-    save_boat1_model,
-    train_boat1_model,
-)
+from boatrace_tipster_ml.boat1_model import load_boat1_model
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
 from boatrace_tipster_ml.feature_config import prepare_feature_matrix
 from boatrace_tipster_ml.features import build_features_df
-from boatrace_tipster_ml.model import (
-    load_model,
-    save_model,
-    train_model,
-)
+from boatrace_tipster_ml.model import load_model
 
 FIELD_SIZE = 6
 
@@ -99,61 +91,19 @@ def load_and_train(db_path, train_end="2026-01-01", val_days=60, model_dir=None)
 
     test_df = df[df["race_date"] >= train_end]
 
-    # Try loading saved models
-    b1_model = rank_model = None
-    if (
+    # Load saved production models (no retraining)
+    if not (
         b1_dir
         and os.path.exists(os.path.join(b1_dir, "model.pkl"))
         and rank_dir
         and os.path.exists(os.path.join(rank_dir, "model.pkl"))
     ):
-        print(f"Loading saved models from {model_dir}/...", file=sys.stderr)
-        b1_model = load_boat1_model(b1_dir)
-        rank_model = load_model(rank_dir)
-    else:
-        train_df = df[df["race_date"] < train_end]
-        dates = sorted(train_df["race_date"].unique())
-        val_start = dates[max(0, len(dates) - val_days)]
-        train_early = train_df[train_df["race_date"] < val_start]
-        train_late = train_df[train_df["race_date"] >= val_start]
+        print(f"ERROR: Saved models not found in {model_dir}/. Run train_ranking.py and train_boat1_binary.py first.", file=sys.stderr)
+        sys.exit(1)
 
-        print(
-            f"Train: {train_early['race_id'].nunique()}R, "
-            f"Val: {train_late['race_id'].nunique()}R, "
-            f"Test: {test_df['race_id'].nunique()}R ({train_end}~)",
-            file=sys.stderr,
-        )
-
-        print("Training models...", file=sys.stderr)
-        with contextlib.redirect_stdout(io.StringIO()):
-            X_b1_tr, y_b1_tr, _ = reshape_to_boat1(train_early)
-            X_b1_v, y_b1_v, _ = reshape_to_boat1(train_late)
-            b1_model, _ = train_boat1_model(X_b1_tr, y_b1_tr, X_b1_v, y_b1_v)
-
-            X_r_tr, y_r_tr, m_r_tr = prepare_feature_matrix(train_early)
-            X_r_v, y_r_v, m_r_v = prepare_feature_matrix(train_late)
-            rank_model, _ = train_model(
-                X_r_tr,
-                y_r_tr,
-                m_r_tr,
-                X_r_v,
-                y_r_v,
-                m_r_v,
-                n_estimators=DEFAULT_N_ESTIMATORS,
-                learning_rate=DEFAULT_LEARNING_RATE,
-                relevance_scheme=DEFAULT_RELEVANCE,
-                extra_params=DEFAULT_RANK_PARAMS,
-                early_stopping_rounds=50,
-            )
-
-        # Save for reuse
-        if model_dir:
-            os.makedirs(b1_dir, exist_ok=True)
-            os.makedirs(rank_dir, exist_ok=True)
-            print(f"Saving models to {model_dir}/...", file=sys.stderr)
-            save_boat1_model(b1_model, b1_dir)
-            save_model(rank_model, rank_dir)
-            print(f"  Saved boat1 and ranking models", file=sys.stderr)
+    print(f"Loading saved models from {model_dir}/...", file=sys.stderr)
+    b1_model = load_boat1_model(b1_dir)
+    rank_model = load_model(rank_dir)
 
     print(f"Test: {test_df['race_id'].nunique()}R ({train_end}~)", file=sys.stderr)
 
