@@ -292,6 +292,8 @@ def collect_all_candidates(model_dir: str = "models/trifecta_v1") -> list[dict]:
     """Load saved production models and collect all candidate bets on OOS period."""
     from collections import defaultdict
 
+    import pandas as pd
+
     from boatrace_tipster_ml.boat1_features import reshape_to_boat1
     from boatrace_tipster_ml.boat1_model import load_boat1_model
     from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
