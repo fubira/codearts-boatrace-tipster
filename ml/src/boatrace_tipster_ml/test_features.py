@@ -98,8 +98,8 @@ class TestFeatureColumns:
         """Direct DB features should have near-zero NaN rate."""
         X, _, _ = full_data
         direct_cols = [
-            "stadium_id", "race_number", "boat_number",
-            "national_win_rate", "motor_top2_rate", "boat_top2_rate",
+            "boat_number",
+            "national_win_rate", "national_top2_rate", "national_top3_rate",
         ]
         for col in direct_cols:
             nan_pct = X[col].isna().mean()
@@ -131,9 +131,9 @@ class TestEncoding:
 
     def test_encoded_values_in_features(self, full_data):
         X, _, _ = full_data
-        assert X["race_grade_code"].isin([0, 1, 2, 3, 4, 5]).all()
-        assert X["racer_class_code"].isin([0, 1, 2, 3, 4]).all()
-        assert X["weather_code"].isin([0, 1, 2, 3, 4, 5]).all()
+        # Encoding columns are used in interaction features (class_x_boat),
+        # not directly in FEATURE_COLS. Verify interaction feature exists.
+        assert "class_x_boat" in X.columns
 
 
 # ---------------------------------------------------------------------------
@@ -144,13 +144,7 @@ class TestEncoding:
 RACER_HISTORICAL_COLS = [
     "racer_course_win_rate",
     "racer_course_top2_rate",
-    "racer_course_top3_rate",
-    "course_taking_rate",
-    "course_avg_st",
-    "recent_win_rate",
-    "recent_top2_rate",
     "recent_avg_position",
-    "st_stability",
 ]
 
 
