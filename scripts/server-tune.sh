@@ -42,6 +42,7 @@ FOLD_MONTHS=2
 RELEVANCE="top_heavy"
 SEED=42
 TRAIN_START=""
+WARM_START=false
 
 SETUP_ONLY=false
 FOREGROUND=false
@@ -72,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --relevance) RELEVANCE="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     --train-start) TRAIN_START="$2"; shift 2 ;;
+    --warm-start) WARM_START=true; shift ;;
     --help)
       cat <<'HELP'
 Usage: ./scripts/server-tune.sh [options]
@@ -92,6 +94,7 @@ Optuna options:
   --relevance R     relevance scheme (default: top_heavy, ranking only)
   --seed N          random seed (default: 42)
   --train-start D   学習開始日 (default: all)
+  --warm-start      現行model_metaのパラメータで初期化
 
 General:
   --skip-sync       コード・データ同期スキップ
@@ -247,6 +250,9 @@ _build_cmd() {
       cmd+=" --n-folds ${FOLDS}"
       cmd+=" --fold-months ${FOLD_MONTHS}"
       cmd+=" --seed ${SEED}"
+      if [ "$WARM_START" = true ]; then
+        cmd+=" --warm-start"
+      fi
       echo "$cmd"
       return
       ;;

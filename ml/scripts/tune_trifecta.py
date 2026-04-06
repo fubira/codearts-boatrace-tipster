@@ -151,6 +151,8 @@ def main():
     parser.add_argument("--fold-months", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
+    parser.add_argument("--warm-start", action="store_true",
+                        help="Seed search with current best params from model_meta.json")
     args = parser.parse_args()
 
     print(f"Trials: {args.trials}, Folds: {args.n_folds}, Seed: {args.seed}")
@@ -310,6 +312,31 @@ def main():
         study_name="trifecta-x-allflow",
         sampler=optuna.samplers.TPESampler(seed=args.seed),
     )
+
+    if args.warm_start:
+        # Seed with current best params so TPE explores nearby first
+        from boatrace_tipster_ml.model import load_model_meta
+        meta = load_model_meta("models/trifecta_v1/ranking")
+        if meta and "hyperparameters" in meta:
+            hp = meta["hyperparameters"]
+            st = meta.get("strategy", {})
+            seed_params = {
+                "num_leaves": hp.get("num_leaves", 92),
+                "max_depth": hp.get("max_depth", 10),
+                "min_child_samples": hp.get("min_child_samples", 15),
+                "subsample": hp.get("subsample", 0.54),
+                "colsample_bytree": hp.get("colsample_bytree", 0.62),
+                "reg_alpha": hp.get("reg_alpha", 0.0002),
+                "reg_lambda": hp.get("reg_lambda", 3.27),
+                "n_estimators": hp.get("n_estimators", 1476),
+                "learning_rate": hp.get("learning_rate", 0.029),
+                "relevance": hp.get("relevance_scheme", "win_only"),
+                "b1_threshold": st.get("b1_threshold", 0.42),
+                "ev_threshold": st.get("ev_threshold", 0.36),
+            }
+            study.enqueue_trial(seed_params)
+            print(f"Warm start: seeded with model_meta params (trial 0)")
+
     study.optimize(objective, n_trials=args.trials, show_progress_bar=True)
 
     # Results
