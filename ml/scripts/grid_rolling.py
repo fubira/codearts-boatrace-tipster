@@ -19,7 +19,7 @@ import pandas as pd
 import boatrace_tipster_ml.features as feat
 import boatrace_tipster_ml.feature_config as fc
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
-from boatrace_tipster_ml.evaluate import evaluate_model, _load_payouts
+from boatrace_tipster_ml.evaluate import evaluate_model, load_payouts
 from boatrace_tipster_ml.model import train_model, walk_forward_splits
 
 DB_PATH = DEFAULT_DB_PATH
@@ -159,7 +159,7 @@ def main():
             }
             folds_indices.append(fidx)
             test_ids = fold["test"]["meta"]["race_id"].unique()
-            payouts_per_fold.append(_load_payouts(DB_PATH, test_ids))
+            payouts_per_fold.append(load_payouts(DB_PATH, test_ids))
 
         # Baseline (only for first window, it's window-independent)
         if window == WINDOWS[0]:

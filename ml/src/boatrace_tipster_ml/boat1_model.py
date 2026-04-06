@@ -13,7 +13,7 @@ from lightgbm import LGBMClassifier
 from sklearn.metrics import roc_auc_score
 
 from .db import get_connection
-from .evaluate import _load_payouts
+from .evaluate import load_payouts
 
 FIELD_SIZE = 6
 BET_UNIT = 100
@@ -124,7 +124,7 @@ def evaluate_boat1(
     # Business metrics: threshold-based ROI with actual payouts
     if db_path or payouts_cache is not None:
         race_ids = meta["race_id"].values
-        payouts_db = payouts_cache if payouts_cache is not None else _load_payouts(db_path, race_ids)
+        payouts_db = payouts_cache if payouts_cache is not None else load_payouts(db_path, race_ids)
 
         thresholds = _threshold_analysis(y_true, y_prob, race_ids, payouts_db)
         result["thresholds"] = thresholds
@@ -341,12 +341,6 @@ def load_boat1_model(model_dir: str) -> LGBMClassifier:
         return pickle.load(f)
 
 
-_LGB_PARAM_KEYS = {
-    "num_leaves", "max_depth", "min_child_samples",
-    "subsample", "colsample_bytree", "reg_alpha", "reg_lambda",
-}
-
-
 def load_boat1_training_params(model_dir: str) -> dict:
     """Load boat1 training hyperparameters from model_meta.json.
 
@@ -355,7 +349,7 @@ def load_boat1_training_params(model_dir: str) -> dict:
         n_estimators: int
         learning_rate: float
     """
-    from .model import load_model_meta
+    from .model import _LGB_PARAM_KEYS, load_model_meta
 
     meta = load_model_meta(model_dir)
     if not meta or "hyperparameters" not in meta:

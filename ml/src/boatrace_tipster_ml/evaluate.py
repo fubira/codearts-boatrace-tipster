@@ -65,7 +65,7 @@ def evaluate_model(
         race_ids = df["race_id"].unique()
         boat_by_pred = _boat_numbers_by_pred_rank(df)
 
-        payouts_db = payouts_cache if payouts_cache is not None else _load_payouts(db_path, race_ids)
+        payouts_db = payouts_cache if payouts_cache is not None else load_payouts(db_path, race_ids)
 
         all_stats = _simulate_all_bets(race_ids, boat_by_pred, payouts_db)
         payout_roi: dict[str, dict[str, float]] = {}
@@ -210,7 +210,7 @@ def _average_ndcg(
 # ---------------------------------------------------------------------------
 
 
-def _load_payouts(
+def load_payouts(
     db_path: str,
     race_ids: np.ndarray,
 ) -> dict[int, dict[str, dict[str, int]]]:

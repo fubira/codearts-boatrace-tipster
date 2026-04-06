@@ -15,7 +15,7 @@ from lightgbm import LGBMClassifier, early_stopping
 from sklearn.metrics import roc_auc_score
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
-from boatrace_tipster_ml.evaluate import _load_payouts
+from boatrace_tipster_ml.evaluate import load_payouts
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import time_series_split
 
@@ -192,7 +192,7 @@ def main():
     test_race_ids = splits["test"]["meta"]["race_id"].values
     print("\nLoading odds and payouts...")
     exacta_odds = _load_exacta_odds(test_race_ids)
-    payouts_db = _load_payouts(DB_PATH, test_race_ids)
+    payouts_db = load_payouts(DB_PATH, test_race_ids)
     print(f"  Odds: {len(exacta_odds)} races, Payouts: {len(payouts_db)} races")
 
     # Train and evaluate each pattern

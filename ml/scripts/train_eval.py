@@ -267,7 +267,7 @@ def run_importance(args, X, y, meta) -> None:
 def run_optuna(args, X, y, meta) -> None:
     """Hyperparameter optimization with Optuna using WF-CV 2連単 ROI."""
     import optuna
-    from boatrace_tipster_ml.evaluate import _load_payouts
+    from boatrace_tipster_ml.evaluate import load_payouts
 
     folds = walk_forward_splits(
         X, y, meta,
@@ -289,7 +289,7 @@ def run_optuna(args, X, y, meta) -> None:
     fold_payouts = []
     for fold in folds:
         test_race_ids = fold["test"]["meta"]["race_id"].unique()
-        payouts = _load_payouts(DB_PATH, test_race_ids)
+        payouts = load_payouts(DB_PATH, test_race_ids)
         fold_payouts.append(payouts)
     print(f"  Cached payouts for {len(folds)} folds")
 

@@ -30,7 +30,7 @@ from boatrace_tipster_ml.boat1_model import (
     train_boat1_model,
 )
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
-from boatrace_tipster_ml.evaluate import _load_payouts
+from boatrace_tipster_ml.evaluate import load_payouts
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import save_model_meta, time_series_split, walk_forward_splits
 
@@ -320,7 +320,7 @@ def run_optuna(args, X, y, meta) -> None:
     fold_payouts = []
     for fold in folds:
         test_race_ids = fold["test"]["meta"]["race_id"].unique()
-        payouts = _load_payouts(DB_PATH, test_race_ids)
+        payouts = load_payouts(DB_PATH, test_race_ids)
         fold_payouts.append(payouts)
 
     def objective(trial: optuna.Trial) -> float:
