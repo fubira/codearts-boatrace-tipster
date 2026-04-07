@@ -48,6 +48,53 @@ BOAT1_FEATURE_COLS: list[str] = [
     "b1_flying_count",
 ]
 
+# ---------------------------------------------------------------------------
+# Two-stage model feature definitions
+# ---------------------------------------------------------------------------
+
+# Stage 1: Market-visible features (勝率系) — approximate what the betting public sees
+STAGE1_COLS: list[str] = [
+    "b1_local_win_rate",
+    "b1_local_top3_rate",
+    "b1_racer_course_win_rate",
+    "b1_racer_course_top2_rate",
+    "b1_stadium_course_win_rate",
+    "b1_racer_class_code",
+    "b1_rolling_win_rate",
+    "b1_rolling_course_win_rate",
+    "b1_tourn_avg_position",
+    "b1_rel_national_win_rate",
+    "opp_max_national_win_rate",
+    "opp_spread_national_win_rate",
+    "opp_max_racer_course_win_rate",
+    "b1_vs_best_opp_win_rate",
+]
+
+# Stage 2: Non-market features + BOATCAST exhibition + stage1_score
+STAGE2_COLS: list[str] = [
+    "stage1_score",
+    # Non-market (14)
+    "b1_motor_top3_rate",
+    "b1_racer_weight",
+    "b1_average_st",
+    "b1_st_stability",
+    "b1_rolling_st_mean",
+    "b1_rel_exhibition_time",
+    "opp_best_exhibition_st",
+    "wind_speed",
+    "has_front_taking",
+    "b1_vs_best_opp_exhibition",
+    "opp_max_course_taking_rate",
+    "headwind",
+    "crosswind",
+    "b1_flying_count",
+    # BOATCAST exhibition z-scores (4)
+    "b1_bc_lap_zscore",
+    "b1_bc_turn_zscore",
+    "b1_bc_straight_zscore",
+    "b1_bc_slit_zscore",
+]
+
 # Columns from the full DataFrame to extract as boat 1 features (raw name → b1_ name)
 _B1_EXTRACT_COLS: list[str] = [
     "national_win_rate",
@@ -71,6 +118,11 @@ _B1_EXTRACT_COLS: list[str] = [
     "rel_exhibition_time",
     # Raw values needed for derived features
     "flying_count",
+    # BOATCAST exhibition z-scores
+    "bc_lap_zscore",
+    "bc_turn_zscore",
+    "bc_straight_zscore",
+    "bc_slit_zscore",
 ]
 
 FIELD_SIZE = 6
@@ -152,7 +204,11 @@ def reshape_to_boat1(
         "has_exhibition": has_exhibition,
     })
 
-    # Select final feature columns
-    X_b1 = result[BOAT1_FEATURE_COLS].copy()
+    # Select final feature columns (BOAT1_FEATURE_COLS + any additional extracted cols)
+    all_cols = list(BOAT1_FEATURE_COLS)
+    for col in result.columns:
+        if col.startswith("b1_bc_") and col not in all_cols:
+            all_cols.append(col)
+    X_b1 = result[[c for c in all_cols if c in result.columns]].copy()
 
     return X_b1, y_b1, meta_b1

@@ -62,6 +62,10 @@ SELECT
     re.stabilizer,
     re.start_timing,
     re.finish_position,
+    re.bc_lap_time,
+    re.bc_turn_time,
+    re.bc_straight_time,
+    re.bc_slit_diff,
     odds.odds AS tansho_odds,
     EXTRACT(MONTH FROM CAST(r.race_date AS DATE)) AS race_month
 FROM db.races r

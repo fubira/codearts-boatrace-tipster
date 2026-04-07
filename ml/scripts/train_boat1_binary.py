@@ -24,11 +24,19 @@ import time
 
 import numpy as np
 
-from boatrace_tipster_ml.boat1_features import BOAT1_FEATURE_COLS, reshape_to_boat1
+from boatrace_tipster_ml.boat1_features import (
+    BOAT1_FEATURE_COLS,
+    STAGE1_COLS,
+    STAGE2_COLS,
+    reshape_to_boat1,
+)
 from boatrace_tipster_ml.boat1_model import (
     evaluate_boat1,
     find_best_threshold,
+    predict_boat1_2stage,
+    save_boat1_2stage,
     save_boat1_model,
+    train_boat1_2stage,
     train_boat1_model,
 )
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
@@ -254,6 +262,145 @@ def run_wfcv(args, X, y, meta) -> dict:
                       f"{rois_str:>40s}  {bets_str:>20s}")
 
     return {"folds": fold_results}
+
+
+def run_single_2stage(args, X, y, meta) -> dict:
+    """Single train/val/test split evaluation with two-stage model."""
+    splits = time_series_split(X, y, meta)
+
+    for name, data in splits.items():
+        print(f"  {name}: {len(data['X'])} races")
+
+    print(f"\n  Boat 1 win rate: {y.mean():.1%} (overall)")
+
+    # Combine train+val for stage1 training, test for evaluation
+    import pandas as _pd
+    X_trainval = _pd.concat([splits["train"]["X"], splits["val"]["X"]], ignore_index=True)
+    y_trainval = _pd.concat([splits["train"]["y"], splits["val"]["y"]], ignore_index=True)
+
+    val_size = len(splits["val"]["X"])
+    val_mask = np.zeros(len(X_trainval), dtype=bool)
+    val_mask[-val_size:] = True
+
+    print("\nTraining 2-stage model...")
+    t0 = time.time()
+    stage1_model, stage2_model, metrics = train_boat1_2stage(
+        X_trainval, y_trainval, splits["train"]["meta"],
+        stage1_cols=STAGE1_COLS,
+        stage2_cols=STAGE2_COLS,
+        val_mask=val_mask,
+        n_estimators=args.n_estimators,
+        learning_rate=args.learning_rate,
+        extra_params=json.loads(args.params) if args.params else None,
+    )
+    print(f"  Trained in {time.time() - t0:.1f}s")
+    print(f"  Stage1 AUC: {metrics.get('stage1_auc', 'N/A')}")
+    print(f"  Stage2 AUC: {metrics.get('stage2_auc', 'N/A')}")
+    print(f"  Stage2 features used: {len(metrics.get('stage2_features_used', []))}")
+
+    _print_importance(metrics.get("stage2_importance", {}))
+
+    # Evaluate on test set
+    print("\nEvaluating on test set...")
+    test_X = splits["test"]["X"]
+    test_probs = predict_boat1_2stage(
+        stage1_model, stage2_model, test_X,
+        stage1_cols=STAGE1_COLS, stage2_cols=STAGE2_COLS,
+    )
+
+    # Use evaluate_boat1 with a wrapper model
+    class _TwoStageWrapper:
+        def predict_proba(self, X):
+            probs = predict_boat1_2stage(
+                stage1_model, stage2_model, X,
+                stage1_cols=STAGE1_COLS, stage2_cols=STAGE2_COLS,
+            )
+            return np.column_stack([1 - probs, probs])
+
+    result = evaluate_boat1(
+        _TwoStageWrapper(),
+        test_X,
+        splits["test"]["y"],
+        splits["test"]["meta"],
+        db_path=DB_PATH,
+    )
+
+    print(f"\nClassification Metrics:")
+    print(f"  AUC:       {result['auc']:.4f}")
+    print(f"  Accuracy:  {result['accuracy']:.1%}")
+    print(f"  Base rate: {result['base_hit_rate']:.1%} (boat 1 wins)")
+    print(f"  N races:   {result['n_races']}")
+
+    if "thresholds" in result:
+        print(f"\nThreshold Analysis (単勝1号艇):")
+        _print_thresholds(result["thresholds"])
+
+    if "ev_analysis" in result:
+        print(f"\nEV Analysis:")
+        _print_ev(result["ev_analysis"])
+
+    if "calibration" in result:
+        print(f"\nCalibration:")
+        _print_calibration(result["calibration"])
+
+    return result
+
+
+def run_save_2stage(args, X, y, meta, df) -> None:
+    """Train two-stage model on all data and save for production."""
+    dates = sorted(df["race_date"].unique())
+    end_date = dates[-1]
+    val_start_idx = max(0, len(dates) - 60)
+    val_start = dates[val_start_idx]
+
+    b1_dates = meta["race_date"].values
+    val_mask = b1_dates >= val_start
+
+    print(f"Training 2-stage model for production save...")
+    print(f"  Train: {(~val_mask).sum()}R, Val: {val_mask.sum()}R")
+
+    stage1_model, stage2_model, metrics = train_boat1_2stage(
+        X, y, meta,
+        stage1_cols=STAGE1_COLS,
+        stage2_cols=STAGE2_COLS,
+        val_mask=val_mask,
+        n_estimators=args.n_estimators,
+        learning_rate=args.learning_rate,
+        extra_params=json.loads(args.params) if args.params else None,
+    )
+
+    print(f"  Stage1 AUC: {metrics.get('stage1_auc', 'N/A')}")
+    print(f"  Stage2 AUC: {metrics.get('stage2_auc', 'N/A')}")
+
+    s2_used = metrics.get("stage2_features_used", STAGE2_COLS)
+    # Feature means for NaN fallback
+    feature_means = {}
+    for c in s2_used:
+        if c == "stage1_score":
+            # stage1_score mean from full dataset prediction
+            s1_probs = stage1_model.predict_proba(X[STAGE1_COLS])[:, 1]
+            feature_means[c] = float(np.mean(s1_probs))
+        elif c in X.columns:
+            feature_means[c] = float(X[c].astype("float64").mean())
+
+    s1_means = {c: float(X[c].astype("float64").mean()) for c in STAGE1_COLS if c in X.columns}
+
+    model_dir = args.model_dir
+    save_boat1_2stage(stage1_model, stage2_model, model_dir)
+    save_model_meta(
+        model_dir,
+        architecture="two_stage",
+        feature_columns=s2_used,
+        stage1_features=STAGE1_COLS,
+        hyperparameters={"n_estimators": args.n_estimators, "learning_rate": args.learning_rate},
+        training={"n_train": int((~val_mask).sum()), "n_val": int(val_mask.sum()),
+                  "date_range": f"{dates[0]} ~ {end_date}",
+                  "stage1_auc": metrics.get("stage1_auc"),
+                  "stage2_auc": metrics.get("stage2_auc")},
+        feature_means=feature_means,
+        stage1_feature_means=s1_means,
+    )
+    print(f"\n2-stage model saved to {model_dir}/")
 
 
 def run_save(args, X, y, meta, df) -> None:
@@ -486,6 +633,7 @@ def main():
     )
     parser.add_argument("--beta", type=float, default=1.5, help="F-beta for upset_fbeta (default: 1.5)")
     parser.add_argument("--save", action="store_true", help="Save model to --model-dir")
+    parser.add_argument("--two-stage", action="store_true", help="Use two-stage model architecture")
     parser.add_argument("--model-dir", default="models/boat1", help="Model output dir")
     args = parser.parse_args()
 
@@ -512,8 +660,12 @@ def main():
     print(f"  Boat 1 win rate: {y.mean():.1%}")
     print()
 
-    if args.save:
+    if args.save and args.two_stage:
+        run_save_2stage(args, X, y, meta, df)
+    elif args.save:
         run_save(args, X, y, meta, df)
+    elif args.two_stage and args.mode == "single":
+        run_single_2stage(args, X, y, meta)
     elif args.mode == "single":
         run_single(args, X, y, meta)
     elif args.mode == "wfcv":

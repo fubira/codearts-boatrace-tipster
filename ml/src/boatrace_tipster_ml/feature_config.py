@@ -119,6 +119,15 @@ def compute_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     df["rel_national_win_rate"] = _race_zscore(df, "national_win_rate")
     df["rel_exhibition_time"] = _race_zscore(df, "exhibition_time")
     df["rel_exhibition_st"] = _race_zscore(df, "exhibition_st")
+    # BOATCAST exhibition z-scores (NaN-safe: _race_zscore handles NaN via groupby)
+    for col, out in [
+        ("bc_lap_time", "bc_lap_zscore"),
+        ("bc_turn_time", "bc_turn_zscore"),
+        ("bc_straight_time", "bc_straight_zscore"),
+        ("bc_slit_diff", "bc_slit_zscore"),
+    ]:
+        if col in df.columns:
+            df[out] = _race_zscore(df, col)
     return df
 
 

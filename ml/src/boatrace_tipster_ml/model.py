@@ -231,6 +231,7 @@ def save_model_meta(
     hyperparameters: dict,
     training: dict,
     feature_means: dict[str, float] | None = None,
+    **extra,
 ) -> str:
     """Save model metadata for inference-time feature compatibility."""
     meta = {
@@ -241,6 +242,10 @@ def save_model_meta(
     }
     if feature_means is not None:
         meta["feature_means"] = feature_means
+    # Additional fields (architecture, stage1_features, stage1_feature_means, etc.)
+    for k, v in extra.items():
+        if v is not None:
+            meta[k] = v
     path = Path(output_dir) / "model_meta.json"
     with open(path, "w") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)

@@ -79,6 +79,10 @@ CREATE TABLE race_entries (
     stabilizer INTEGER,
     start_timing REAL,
     finish_position INTEGER,
+    bc_lap_time REAL,
+    bc_turn_time REAL,
+    bc_straight_time REAL,
+    bc_slit_diff REAL,
     FOREIGN KEY (race_id) REFERENCES races(id)
 )
 """
@@ -135,7 +139,7 @@ def _create_synthetic_db(db_path: str, n_days: int = 5, races_per_day: int = 2) 
                 racer_id = int(racers[boat - 1])
                 conn.execute(
                     """INSERT INTO race_entries VALUES
-                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         entry_id, race_id, racer_id, boat,
                         boat,  # course_number = boat_number (no front-taking)
@@ -160,6 +164,10 @@ def _create_synthetic_db(db_path: str, n_days: int = 5, races_per_day: int = 2) 
                         0,  # stabilizer
                         0.1 + rng.rand() * 0.2,  # start_timing
                         int(finish_order[boat - 1]),  # finish_position
+                        37.0 + rng.rand() * 2,  # bc_lap_time
+                        5.5 + rng.rand() * 0.5,  # bc_turn_time
+                        7.0 + rng.rand() * 0.5,  # bc_straight_time
+                        rng.rand() * 3,  # bc_slit_diff
                     ),
                 )
                 # Add tansho odds
