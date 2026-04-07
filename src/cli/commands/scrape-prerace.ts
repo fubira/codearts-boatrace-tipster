@@ -1,9 +1,15 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { getDatabase, initializeDatabase } from "@/features/database";
+import { saveBoatcastData } from "@/features/database/storage";
+import {
+  parseOriten,
+  parseStt,
+} from "@/features/scraper/sources/boatcast/parsers";
 import { MAX_RACES_PER_VENUE } from "@/features/scraper/sources/boatrace/constants";
 import { config } from "@/shared/config";
 import { logger } from "@/shared/logger";
+import { Glob } from "bun";
 import { Command } from "commander";
 
 const BOATCAST_BASE = "https://race.boatcast.jp";
@@ -108,13 +114,19 @@ export const scrapePreraceCommand = new Command("scrape-prerace")
   .option("--to <date>", "end date (YYYY-MM-DD, default: same as --date)")
   .option("-s, --stadium <id>", "stadium code (01-24)")
   .option("--sleep <ms>", "sleep between races in ms", String(DEFAULT_SLEEP_MS))
-  .option("--dry-run", "count only, do not download")
+  .option("--dry-run", "count only, do not download/import")
+  .option("--import", "import cached BOATCAST data into DB")
   .action(async (opts) => {
     const fromDate = opts.date;
     const toDate = opts.to ?? opts.date;
     const sleepMs = Number.parseInt(opts.sleep, 10);
 
     initializeDatabase();
+
+    if (opts.import) {
+      await importBoatcastCache(fromDate, toDate, opts.stadium, opts.dryRun);
+      return;
+    }
 
     const venueDays = getVenueDays(fromDate, toDate, opts.stadium);
     logger.info(`Period: ${fromDate} to ${toDate}`);
@@ -207,3 +219,135 @@ export const scrapePreraceCommand = new Command("scrape-prerace")
       `Done in ${(elapsed / 60).toFixed(1)}min: downloaded=${downloaded}, empty=${empty}`,
     );
   });
+
+/** Parse cache filename: YYYYMMDD_JJ_RR.txt → {date, stadiumId, raceNumber} */
+function parseCacheFilename(
+  filename: string,
+): { date: string; stadiumId: number; raceNumber: number } | null {
+  // YYYYMMDD_JJ_RR.txt → regex captures date, stadium code, race number
+  const match = filename.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})_(\d{2})\.txt$/);
+  if (!match) return null;
+  const [, y, m, d, jcd, rr] = match;
+  return {
+    date: `${y}-${m}-${d}`,
+    stadiumId: Number.parseInt(jcd, 10),
+    raceNumber: Number.parseInt(rr, 10),
+  };
+}
+
+/** Import cached BOATCAST data (oriten + stt) into DB */
+async function importBoatcastCache(
+  fromDate: string,
+  toDate: string,
+  stadium: string | undefined,
+  dryRun: boolean | undefined,
+): Promise<void> {
+  const cacheBase = resolve(config.dataDir, "cache/boatcast");
+  const oritenDir = resolve(cacheBase, "oriten");
+  const sttDir = resolve(cacheBase, "stt");
+
+  // Collect all oriten files within date range
+  const fromYM = fromDate.replace(/-/g, "").slice(0, 6);
+  const toYM = toDate.replace(/-/g, "").slice(0, 6);
+  const fromD = fromDate.replace(/-/g, "");
+  const toD = toDate.replace(/-/g, "");
+
+  const glob = new Glob("*/*.txt");
+  const files: { date: string; stadiumId: number; raceNumber: number }[] = [];
+
+  for await (const path of glob.scan(oritenDir)) {
+    const yyyymm = path.split("/")[0];
+    if (yyyymm < fromYM || yyyymm > toYM) continue;
+
+    const filename = basename(path);
+    const parsed = parseCacheFilename(filename);
+    if (!parsed) continue;
+
+    const dateStr = filename.slice(0, 8);
+    if (dateStr < fromD || dateStr > toD) continue;
+    if (stadium && parsed.stadiumId !== Number.parseInt(stadium, 10)) continue;
+
+    files.push(parsed);
+  }
+
+  files.sort(
+    (a, b) =>
+      a.date.localeCompare(b.date) ||
+      a.stadiumId - b.stadiumId ||
+      a.raceNumber - b.raceNumber,
+  );
+
+  logger.info(`Found ${files.length} cache file(s) to import`);
+  if (dryRun) {
+    logger.info("Dry run — exiting");
+    return;
+  }
+
+  if (files.length === 0) return;
+
+  const BATCH_SIZE = 500;
+  let totalUpdated = 0;
+  let totalSkipped = 0;
+  let totalEmpty = 0;
+
+  for (
+    let batchStart = 0;
+    batchStart < files.length;
+    batchStart += BATCH_SIZE
+  ) {
+    const batch = files.slice(batchStart, batchStart + BATCH_SIZE);
+    const dataList = [];
+
+    for (const f of batch) {
+      const dateStr = f.date.replace(/-/g, "");
+      const jcd = String(f.stadiumId).padStart(2, "0");
+      const rr = String(f.raceNumber).padStart(2, "0");
+      const yyyymm = dateStr.slice(0, 6);
+      const fname = `${dateStr}_${jcd}_${rr}.txt`;
+
+      const oritenPath = resolve(oritenDir, yyyymm, fname);
+      const sttPath = resolve(sttDir, yyyymm, fname);
+
+      const oritenContent = existsSync(oritenPath)
+        ? readFileSync(oritenPath, "utf-8")
+        : "";
+      const sttContent = existsSync(sttPath)
+        ? readFileSync(sttPath, "utf-8")
+        : "";
+
+      const oriten = parseOriten(oritenContent);
+      const stt = parseStt(sttContent);
+
+      if (oriten.length === 0 && stt.length === 0) {
+        totalEmpty++;
+        continue;
+      }
+
+      dataList.push({
+        stadiumId: f.stadiumId,
+        raceDate: f.date,
+        raceNumber: f.raceNumber,
+        oriten,
+        stt,
+      });
+    }
+
+    if (dataList.length > 0) {
+      const result = saveBoatcastData(dataList);
+      totalUpdated += result.updated;
+      totalSkipped += result.skipped;
+    }
+
+    if ((batchStart + BATCH_SIZE) % 1000 < BATCH_SIZE) {
+      const processed = Math.min(batchStart + BATCH_SIZE, files.length);
+      const pct = ((processed / files.length) * 100).toFixed(1);
+      logger.info(
+        `[${pct}%] ${processed}/${files.length} | updated=${totalUpdated} skipped=${totalSkipped} empty=${totalEmpty}`,
+      );
+    }
+  }
+
+  logger.info(
+    `Import complete: updated=${totalUpdated} entries, skipped=${totalSkipped} races, empty=${totalEmpty} files`,
+  );
+}

@@ -1,6 +1,6 @@
 /** SQLite schema definitions for boatrace data */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const CREATE_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -77,6 +77,14 @@ export const CREATE_TABLES_SQL = `
     start_timing REAL,
     finish_position INTEGER,
     race_time TEXT,
+    bc_lap_time REAL,
+    bc_turn_time REAL,
+    bc_straight_time REAL,
+    bc_course INTEGER,
+    bc_st1 REAL,
+    bc_st2 REAL,
+    bc_is_flying INTEGER,
+    bc_slit_diff REAL,
     UNIQUE(race_id, boat_number)
   );
 
@@ -155,5 +163,15 @@ export const MIGRATIONS: Record<number, string> = {
     );
     CREATE INDEX IF NOT EXISTS idx_odds_snapshots_race_timing
       ON race_odds_snapshots(race_id, timing);
+  `,
+  4: `
+    ALTER TABLE race_entries ADD COLUMN bc_lap_time REAL;
+    ALTER TABLE race_entries ADD COLUMN bc_turn_time REAL;
+    ALTER TABLE race_entries ADD COLUMN bc_straight_time REAL;
+    ALTER TABLE race_entries ADD COLUMN bc_course INTEGER;
+    ALTER TABLE race_entries ADD COLUMN bc_st1 REAL;
+    ALTER TABLE race_entries ADD COLUMN bc_st2 REAL;
+    ALTER TABLE race_entries ADD COLUMN bc_is_flying INTEGER;
+    ALTER TABLE race_entries ADD COLUMN bc_slit_diff REAL;
   `,
 };

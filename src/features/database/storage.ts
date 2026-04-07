@@ -597,6 +597,138 @@ export function saveOddsSnapshot(
   transaction();
 }
 
+// --- BOATCAST data types ---
+
+export interface BoatcastOritenEntry {
+  boatNumber: number;
+  lapTime: number | null;
+  turnTime: number | null;
+  straightTime: number | null;
+}
+
+export interface BoatcastSttEntry {
+  boatNumber: number;
+  course: number | null;
+  st1: number | null;
+  st2: number | null;
+  isFlying: boolean;
+  slitDiff: number | null;
+}
+
+export interface BoatcastData {
+  stadiumId: number;
+  raceDate: string;
+  raceNumber: number;
+  oriten: BoatcastOritenEntry[];
+  stt: BoatcastSttEntry[];
+}
+
+/** Save BOATCAST exhibition data (oriten + stt) to race_entries */
+export function saveBoatcastData(
+  dataList: BoatcastData[],
+  db?: Database,
+): { updated: number; skipped: number } {
+  const database = db ?? getDatabase();
+  let updated = 0;
+  let skipped = 0;
+
+  const transaction = database.transaction(() => {
+    for (const data of dataList) {
+      const race = database
+        .query(
+          `SELECT id FROM races
+           WHERE stadium_id = $stadiumId AND race_date = $raceDate AND race_number = $raceNumber`,
+        )
+        .get({
+          $stadiumId: data.stadiumId,
+          $raceDate: data.raceDate,
+          $raceNumber: data.raceNumber,
+        }) as { id: number } | null;
+
+      if (!race) {
+        skipped++;
+        continue;
+      }
+
+      // Build per-boat merged data
+      const byBoat = new Map<
+        number,
+        {
+          lapTime?: number | null;
+          turnTime?: number | null;
+          straightTime?: number | null;
+          course?: number | null;
+          st1?: number | null;
+          st2?: number | null;
+          isFlying?: boolean;
+          slitDiff?: number | null;
+        }
+      >();
+
+      for (const o of data.oriten) {
+        byBoat.set(o.boatNumber, {
+          lapTime: o.lapTime,
+          turnTime: o.turnTime,
+          straightTime: o.straightTime,
+        });
+      }
+
+      for (const s of data.stt) {
+        const existing = byBoat.get(s.boatNumber) ?? {};
+        byBoat.set(s.boatNumber, {
+          ...existing,
+          course: s.course,
+          st1: s.st1,
+          st2: s.st2,
+          isFlying: s.isFlying,
+          slitDiff: s.slitDiff,
+        });
+      }
+
+      for (const [boatNumber, entry] of byBoat) {
+        database
+          .query(
+            `UPDATE race_entries SET
+               bc_lap_time = COALESCE($bcLapTime, bc_lap_time),
+               bc_turn_time = COALESCE($bcTurnTime, bc_turn_time),
+               bc_straight_time = COALESCE($bcStraightTime, bc_straight_time),
+               bc_course = COALESCE($bcCourse, bc_course),
+               bc_st1 = COALESCE($bcSt1, bc_st1),
+               bc_st2 = COALESCE($bcSt2, bc_st2),
+               bc_is_flying = COALESCE($bcIsFlying, bc_is_flying),
+               bc_slit_diff = COALESCE($bcSlitDiff, bc_slit_diff)
+             WHERE race_id = $raceId AND boat_number = $boatNumber`,
+          )
+          .run({
+            $raceId: race.id,
+            $boatNumber: boatNumber,
+            $bcLapTime: entry.lapTime ?? null,
+            $bcTurnTime: entry.turnTime ?? null,
+            $bcStraightTime: entry.straightTime ?? null,
+            $bcCourse: entry.course ?? null,
+            $bcSt1: entry.st1 ?? null,
+            $bcSt2: entry.st2 ?? null,
+            $bcIsFlying: entry.isFlying
+              ? 1
+              : entry.isFlying === false
+                ? 0
+                : null,
+            $bcSlitDiff: entry.slitDiff ?? null,
+          });
+        updated++;
+      }
+    }
+  });
+
+  transaction();
+  if (updated > 0) {
+    logger.info(
+      `BOATCAST: updated ${updated} entries, skipped ${skipped} races`,
+    );
+  }
+  return { updated, skipped };
+}
+
 /** Check if a race has already been scraped (has finish_position data) */
 export function isRaceScraped(
   stadiumId: number,
