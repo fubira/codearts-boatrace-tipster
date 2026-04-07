@@ -26,7 +26,7 @@ const DATA_TYPES = {
 
 type DataType = keyof typeof DATA_TYPES;
 
-/** Cache path: data/boatcast-cache/{type}/{YYYYMM}/{YYYYMMDD}_{jcd}_{RR}.txt */
+/** Cache path: data/cache/boatcast/{type}/{YYYYMM}/{YYYYMMDD}_{jcd}_{RR}.txt */
 function cachePath(
   type: DataType,
   date: string,
@@ -35,7 +35,7 @@ function cachePath(
 ): string {
   const yyyymm = date.slice(0, 6);
   const filename = `${date}_${jcd}_${String(race).padStart(2, "0")}.txt`;
-  return resolve(config.dataDir, "boatcast-cache", type, yyyymm, filename);
+  return resolve(config.dataDir, "cache/boatcast", type, yyyymm, filename);
 }
 
 function hasCached(
