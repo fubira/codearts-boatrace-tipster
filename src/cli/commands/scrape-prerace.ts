@@ -1,10 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getDatabase, initializeDatabase } from "@/features/database";
-import {
-  MAX_RACES_PER_VENUE,
-  STADIUMS,
-} from "@/features/scraper/sources/boatrace/constants";
+import { MAX_RACES_PER_VENUE } from "@/features/scraper/sources/boatrace/constants";
 import { config } from "@/shared/config";
 import { logger } from "@/shared/logger";
 import { Command } from "commander";
@@ -75,32 +72,6 @@ async function fetchText(url: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/** Get races from DB for the given date range */
-function getRaces(
-  fromDate: string,
-  toDate: string,
-): { date: string; stadiumId: number; raceNumber: number }[] {
-  const db = getDatabase();
-  const rows = db
-    .query(
-      `SELECT DISTINCT race_date, stadium_id, race_number
-       FROM races
-       WHERE race_date >= $from AND race_date <= $to
-       ORDER BY race_date, stadium_id, race_number`,
-    )
-    .all({ $from: fromDate, $to: toDate }) as {
-    race_date: string;
-    stadium_id: number;
-    race_number: number;
-  }[];
-
-  return rows.map((r) => ({
-    date: r.race_date.replace(/-/g, ""),
-    stadiumId: r.stadium_id,
-    raceNumber: r.race_number,
-  }));
 }
 
 /** Get unique venue-days that have races in DB */
