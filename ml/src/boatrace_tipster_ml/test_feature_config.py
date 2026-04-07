@@ -89,6 +89,10 @@ def _make_race_df(n_races: int = 2, *, seed: int = 42) -> pd.DataFrame:
                 "tansho_odds": 2.0 + rng.rand() * 10,
                 "course_taking_rate": rng.rand() * 0.3,
                 "flying_count": int(rng.randint(0, 3)),
+                "bc_lap_time": 37.0 + rng.rand() * 2,
+                "bc_turn_time": 5.5 + rng.rand() * 0.5,
+                "bc_straight_time": 7.0 + rng.rand() * 0.5,
+                "bc_slit_diff": rng.rand() * 3,
             })
     return pd.DataFrame(rows)
 
@@ -136,10 +140,10 @@ class TestFeatureColumnDefinitions:
 
     def test_feature_cols_expected_count(self):
         """Guard against accidental additions/removals."""
-        assert len(FEATURE_COLS) == 24
+        assert len(FEATURE_COLS) == 28
 
     def test_boat1_feature_cols_expected_count(self):
-        assert len(BOAT1_FEATURE_COLS) == 28
+        assert len(BOAT1_FEATURE_COLS) == 32
 
     def test_leaked_cols_subset_of_feature_cols(self):
         """LEAKED_COLS must be a subset of FEATURE_COLS (or empty)."""

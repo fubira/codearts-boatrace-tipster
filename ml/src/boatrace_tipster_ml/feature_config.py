@@ -51,6 +51,11 @@ FEATURE_COLS: list[str] = [
     "class_x_boat",
     "weight_x_boat",
     "wind_speed_x_boat",
+    # --- BOATCAST exhibition z-scores (4) ---
+    "bc_lap_zscore",
+    "bc_turn_zscore",
+    "bc_straight_zscore",
+    "bc_slit_zscore",
 ]
 
 # Features with intentional intraday leakage.

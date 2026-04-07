@@ -143,48 +143,21 @@ def print_daily(results: list[dict], label: str = ""):
 
 def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, ranking_params=None, boat1_params=None):
     """Period backtest using saved production models (no retraining)."""
-    from boatrace_tipster_ml.boat1_features import STAGE1_COLS, STAGE2_COLS
-    from boatrace_tipster_ml.boat1_model import (
-        load_boat1_2stage,
-        load_boat1_model,
-        predict_boat1_2stage,
-    )
-    from boatrace_tipster_ml.model import load_model, load_model_meta
+    from boatrace_tipster_ml.boat1_model import load_boat1_model
+    from boatrace_tipster_ml.model import load_model
 
     test_df = df[
         (df["race_date"] >= args.from_date) & (df["race_date"] < args.to_date)
     ]
 
     print(f"Loading saved models from {args.model_dir}...", file=sys.stderr)
-    b1_dir = f"{args.model_dir}/boat1"
-    b1_meta = load_model_meta(b1_dir)
-    is_two_stage = b1_meta and b1_meta.get("architecture") == "two_stage"
+    b1_model = load_boat1_model(f"{args.model_dir}/boat1")
     rank_model = load_model(f"{args.model_dir}/ranking")
 
     # Inference with saved models
     with contextlib.redirect_stdout(io.StringIO()):
         X_b1, _, meta_b1 = reshape_to_boat1(test_df)
-
-    if is_two_stage:
-        stage1_model, stage2_model = load_boat1_2stage(b1_dir)
-        # Fill NaN with saved means
-        X_b1 = X_b1.astype("float64")
-        s1_means = b1_meta.get("stage1_feature_means", {})
-        for c in STAGE1_COLS:
-            if c in X_b1.columns and X_b1[c].isna().any() and c in s1_means:
-                X_b1[c] = X_b1[c].fillna(s1_means[c])
-        s2_means = b1_meta.get("feature_means", {})
-        for c in STAGE2_COLS:
-            if c in X_b1.columns and X_b1[c].isna().any() and c in s2_means:
-                X_b1[c] = X_b1[c].fillna(s2_means[c])
-        b1_probs = predict_boat1_2stage(
-            stage1_model, stage2_model, X_b1,
-            stage1_cols=STAGE1_COLS, stage2_cols=STAGE2_COLS,
-        )
-        print("Using two-stage b1 model", file=sys.stderr)
-    else:
-        b1_model = load_boat1_model(b1_dir)
-        b1_probs = b1_model.predict_proba(X_b1)[:, 1]
+    b1_probs = b1_model.predict_proba(X_b1)[:, 1]
 
     X_rank, _, meta_rank = prepare_feature_matrix(test_df)
     rank_scores = rank_model.predict(X_rank)

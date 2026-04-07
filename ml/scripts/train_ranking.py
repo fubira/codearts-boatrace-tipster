@@ -30,6 +30,8 @@ def main():
     parser.add_argument("--model-meta", default=None,
                         help="Load hyperparams from this model directory's model_meta.json")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
+    parser.add_argument("--end-date", default=None,
+                        help="Training data end date (exclusive, YYYY-MM-DD). Prevents OOS leakage.")
     # Individual param overrides (applied after --model-meta)
     parser.add_argument("--n-estimators", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
@@ -78,7 +80,7 @@ def main():
 
     t0 = time.time()
     print("Building features...")
-    df = build_features_df(args.db_path)
+    df = build_features_df(args.db_path, end_date=args.end_date)
     X, y, meta = prepare_feature_matrix(df)
     print(f"  {len(X)} entries ({len(X)//6} races), {len(FEATURE_COLS)} features")
 

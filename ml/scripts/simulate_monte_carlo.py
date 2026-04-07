@@ -416,10 +416,10 @@ def main():
     # Backtest-based parameter collection
     parser.add_argument("--from-backtest", action="store_true",
                         help="Collect empirical params from WF-CV backtest")
-    parser.add_argument("--ev-threshold", type=float, default=0.33,
-                        help="EV threshold for backtest (default: 0.33)")
-    parser.add_argument("--b1-threshold", type=float, default=0.40,
-                        help="B1 threshold for backtest (default: 0.40)")
+    parser.add_argument("--ev-threshold", type=float, default=0.36,
+                        help="EV threshold for backtest (default: 0.36)")
+    parser.add_argument("--b1-threshold", type=float, default=0.55,
+                        help="B1 threshold for backtest (default: 0.55)")
     parser.add_argument("--n-folds", type=int, default=4,
                         help="WF-CV folds (default: 4)")
     # Manual parameter override
@@ -428,8 +428,10 @@ def main():
     # Compare mode: train once, sweep thresholds
     parser.add_argument("--compare", type=str, default=None,
                         help="Compare multiple threshold sets: 'b1:ev,b1:ev,...'")
-    parser.add_argument("--all-flow", action="store_true",
-                        help="Use X-全流し (20 tickets) instead of X-noB1-noB1 (12 tickets)")
+    parser.add_argument("--all-flow", action="store_true", default=True,
+                        help="Use X-全流し (20 tickets, default)")
+    parser.add_argument("--no-all-flow", action="store_false", dest="all_flow",
+                        help="Use X-noB1-noB1 (12 tickets) instead of allflow")
     parser.add_argument("--mixed", action="store_true",
                         help="Use 3連単 X-全 + 2連単 X-全 combined (25 tickets)")
     parser.add_argument("--exacta-ratio", type=float, default=1.0,

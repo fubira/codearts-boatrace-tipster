@@ -22,12 +22,8 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
-from boatrace_tipster_ml.boat1_features import STAGE1_COLS, STAGE2_COLS, reshape_to_boat1
-from boatrace_tipster_ml.boat1_model import (
-    load_boat1_2stage,
-    load_boat1_model,
-    predict_boat1_2stage,
-)
+from boatrace_tipster_ml.boat1_features import reshape_to_boat1
+from boatrace_tipster_ml.boat1_model import load_boat1_model
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
 from boatrace_tipster_ml.feature_config import prepare_feature_matrix
 from boatrace_tipster_ml.features import build_features_df
@@ -157,8 +153,8 @@ def predict_trifecta(
 
     # --- Boat1 binary model ---
     b1_dir = f"{model_dir}/boat1"
+    b1_model = load_boat1_model(b1_dir)
     b1_meta = load_model_meta(b1_dir)
-    is_two_stage = b1_meta and b1_meta.get("architecture") == "two_stage"
 
     b1_rows = df[df["boat_number"] == 1][
         ["race_id", "stadium_id", "race_number", "race_date"]
@@ -168,12 +164,6 @@ def predict_trifecta(
 
     # Fill NaN with training means
     X_b1 = X_b1.astype("float64")
-    if is_two_stage:
-        # Fill stage1 features
-        s1_means = b1_meta.get("stage1_feature_means", {})
-        for c in STAGE1_COLS:
-            if c in X_b1.columns and X_b1[c].isna().any() and c in s1_means:
-                X_b1[c] = X_b1[c].fillna(s1_means[c])
     nan_cols = [c for c in X_b1.columns if X_b1[c].isna().any()]
     if nan_cols and b1_meta and b1_meta.get("feature_means"):
         for c in nan_cols:
@@ -186,16 +176,7 @@ def predict_trifecta(
                 file=sys.stderr,
             )
 
-    if is_two_stage:
-        stage1_model, stage2_model = load_boat1_2stage(b1_dir)
-        b1_probs = predict_boat1_2stage(
-            stage1_model, stage2_model, X_b1,
-            stage1_cols=STAGE1_COLS, stage2_cols=STAGE2_COLS,
-        )
-        print("Using two-stage b1 model", file=sys.stderr)
-    else:
-        b1_model = load_boat1_model(b1_dir)
-        b1_probs = b1_model.predict_proba(X_b1)[:, 1]
+    b1_probs = b1_model.predict_proba(X_b1)[:, 1]
     b1_map = {int(meta_b1["race_id"].values[i]): i for i in range(len(b1_probs))}
 
     # --- LambdaRank model ---
