@@ -43,6 +43,8 @@ RELEVANCE="top_heavy"
 SEED=42
 TRAIN_START=""
 WARM_START=false
+OBJECTIVE=""
+BETA=""
 
 SETUP_ONLY=false
 FOREGROUND=false
@@ -74,6 +76,8 @@ while [[ $# -gt 0 ]]; do
     --seed) SEED="$2"; shift 2 ;;
     --train-start) TRAIN_START="$2"; shift 2 ;;
     --warm-start) WARM_START=true; shift ;;
+    --objective) OBJECTIVE="$2"; shift 2 ;;
+    --beta) BETA="$2"; shift 2 ;;
     --help)
       cat <<'HELP'
 Usage: ./scripts/server-tune.sh [options]
@@ -95,6 +99,8 @@ Optuna options:
   --seed N          random seed (default: 42)
   --train-start D   学習開始日 (default: all)
   --warm-start      現行model_metaのパラメータで初期化
+  --objective O     boat1 objective: ev_roi | upset_fbeta (default: ev_roi)
+  --beta F          F-beta for upset_fbeta (default: 1.5)
 
 General:
   --skip-sync       コード・データ同期スキップ
@@ -243,6 +249,12 @@ _build_cmd() {
     boat1)
       cmd="uv run --directory ml python -m scripts.train_boat1_binary"
       cmd+=" --mode optuna"
+      if [ -n "$OBJECTIVE" ]; then
+        cmd+=" --objective ${OBJECTIVE}"
+      fi
+      if [ -n "$BETA" ]; then
+        cmd+=" --beta ${BETA}"
+      fi
       ;;
     trifecta)
       cmd="uv run --directory ml python -m scripts.tune_trifecta"

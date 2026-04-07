@@ -13,6 +13,8 @@ Options:
     --seed N                   Random seed (default: 42)
     --params JSON              Extra LightGBM params as JSON
     --n-trials N               Optuna trial count (default: 100)
+    --objective ev_roi|upset_fbeta  Optuna objective (default: ev_roi)
+    --beta F                   F-beta beta for upset_fbeta (default: 1.5)
 """
 
 import argparse
@@ -299,6 +301,22 @@ def run_save(args, X, y, meta, df) -> None:
     print(f"\nModel saved to {model_dir}/")
 
 
+def _suggest_lgb_params(trial):
+    """Suggest LightGBM hyperparameters for Optuna trial."""
+    params = {
+        "num_leaves": trial.suggest_int("num_leaves", 7, 63),
+        "max_depth": trial.suggest_int("max_depth", 3, 8),
+        "min_child_samples": trial.suggest_int("min_child_samples", 20, 200),
+        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 10.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10.0, log=True),
+    }
+    n_estimators = trial.suggest_int("n_estimators", 100, 1500)
+    learning_rate = trial.suggest_float("learning_rate", 0.005, 0.2, log=True)
+    return params, n_estimators, learning_rate
+
+
 def run_optuna(args, X, y, meta) -> None:
     """Hyperparameter optimization with Optuna."""
     import optuna
@@ -314,27 +332,19 @@ def run_optuna(args, X, y, meta) -> None:
         sys.exit(1)
 
     print(f"Folds: {len(folds)}")
+    print(f"Objective: {args.objective}")
 
-    # Pre-load payouts
-    print("Pre-loading payouts...")
+    # Pre-load payouts (only needed for ev_roi)
     fold_payouts = []
-    for fold in folds:
-        test_race_ids = fold["test"]["meta"]["race_id"].unique()
-        payouts = load_payouts(DB_PATH, test_race_ids)
-        fold_payouts.append(payouts)
+    if args.objective == "ev_roi":
+        print("Pre-loading payouts...")
+        for fold in folds:
+            test_race_ids = fold["test"]["meta"]["race_id"].unique()
+            payouts = load_payouts(DB_PATH, test_race_ids)
+            fold_payouts.append(payouts)
 
-    def objective(trial: optuna.Trial) -> float:
-        params = {
-            "num_leaves": trial.suggest_int("num_leaves", 7, 63),
-            "max_depth": trial.suggest_int("max_depth", 3, 8),
-            "min_child_samples": trial.suggest_int("min_child_samples", 20, 200),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0),
-            "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 10.0, log=True),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10.0, log=True),
-        }
-        n_estimators = trial.suggest_int("n_estimators", 100, 1500)
-        learning_rate = trial.suggest_float("learning_rate", 0.005, 0.2, log=True)
+    def objective_ev_roi(trial: optuna.Trial) -> float:
+        params, n_estimators, learning_rate = _suggest_lgb_params(trial)
 
         ev_rois = []
         for fold, payouts in zip(folds, fold_payouts):
@@ -359,29 +369,102 @@ def run_optuna(args, X, y, meta) -> None:
         trial.set_user_attr("rois", [round(r, 4) for r in ev_rois])
         return mean_roi
 
+    def objective_upset_fbeta(trial: optuna.Trial) -> float:
+        params, n_estimators, learning_rate = _suggest_lgb_params(trial)
+        threshold = trial.suggest_float("upset_threshold", 0.30, 0.55)
+
+        beta = args.beta
+        beta_sq = beta ** 2
+        fold_fbetas = []
+        fold_recalls = []
+        fold_precisions = []
+        fold_n_bets = []
+
+        for fold in folds:
+            model, _ = train_boat1_model(
+                fold["train"]["X"], fold["train"]["y"],
+                fold["val"]["X"], fold["val"]["y"],
+                n_estimators=n_estimators,
+                learning_rate=learning_rate,
+                extra_params=params,
+            )
+
+            y_prob = model.predict_proba(fold["test"]["X"])[:, 1]
+            y_true = fold["test"]["y"].values
+
+            # Upset detection: predict "boat 1 loses" when prob < threshold
+            pred_upset = y_prob < threshold
+            actual_upset = y_true == 0
+
+            tp = int((pred_upset & actual_upset).sum())
+            fp = int((pred_upset & ~actual_upset).sum())
+            fn = int((~pred_upset & actual_upset).sum())
+
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+            if precision + recall > 0:
+                fbeta = (1 + beta_sq) * precision * recall / (beta_sq * precision + recall)
+            else:
+                fbeta = 0.0
+
+            fold_fbetas.append(fbeta)
+            fold_recalls.append(recall)
+            fold_precisions.append(precision)
+            fold_n_bets.append(tp + fp)
+
+        mean_fbeta = float(np.mean(fold_fbetas))
+        trial.set_user_attr("upset_recall", round(float(np.mean(fold_recalls)), 4))
+        trial.set_user_attr("upset_precision", round(float(np.mean(fold_precisions)), 4))
+        trial.set_user_attr("n_bets_per_fold", fold_n_bets)
+        trial.set_user_attr("fbeta_per_fold", [round(f, 4) for f in fold_fbetas])
+        trial.set_user_attr("threshold", round(threshold, 4))
+        return mean_fbeta
+
+    objective = objective_upset_fbeta if args.objective == "upset_fbeta" else objective_ev_roi
+
     study = optuna.create_study(
         direction="maximize",
-        study_name="boat1-binary-hpo",
+        study_name=f"boat1-{args.objective}",
         sampler=optuna.samplers.TPESampler(seed=args.seed),
     )
     study.optimize(objective, n_trials=args.n_trials, show_progress_bar=True)
 
     print("\n" + "=" * 70)
-    print("Optuna Search Complete")
+    print(f"Optuna Search Complete — {args.objective}")
     print("=" * 70)
-    print(f"Best ROI: {study.best_value:.1%}")
-    print(f"  std={study.best_trial.user_attrs['roi_std']:.1%}")
-    print(f"  per fold: {study.best_trial.user_attrs['rois']}")
+
+    if args.objective == "upset_fbeta":
+        best = study.best_trial
+        print(f"Best F{args.beta}: {study.best_value:.4f}")
+        print(f"  Recall:      {best.user_attrs['upset_recall']:.4f}")
+        print(f"  Precision:   {best.user_attrs['upset_precision']:.4f}")
+        print(f"  Threshold:   {best.user_attrs['threshold']:.4f}")
+        print(f"  Bets/fold:   {best.user_attrs['n_bets_per_fold']}")
+        print(f"  F-beta/fold: {best.user_attrs['fbeta_per_fold']}")
+    else:
+        print(f"Best ROI: {study.best_value:.1%}")
+        print(f"  std={study.best_trial.user_attrs['roi_std']:.1%}")
+        print(f"  per fold: {study.best_trial.user_attrs['rois']}")
+
     print(f"\nBest params:")
     for k, v in study.best_params.items():
         print(f"  {k}: {v}")
 
     trials = sorted(study.trials, key=lambda t: t.value if t.value else 0, reverse=True)
-    print(f"\nTop 5 trials:")
-    for t in trials[:5]:
+    print(f"\nTop 10 trials:")
+    for t in trials[:10]:
         if t.value is None:
             continue
-        print(f"  #{t.number}: ROI={t.value:.1%} ±{t.user_attrs['roi_std']:.1%}")
+        if args.objective == "upset_fbeta":
+            thr = t.user_attrs.get("threshold", 0)
+            rec = t.user_attrs.get("upset_recall", 0)
+            prec = t.user_attrs.get("upset_precision", 0)
+            bets = t.user_attrs.get("n_bets_per_fold", [])
+            print(f"  #{t.number}: F{args.beta}={t.value:.4f} "
+                  f"recall={rec:.3f} prec={prec:.3f} thr={thr:.3f} bets={bets}")
+        else:
+            print(f"  #{t.number}: ROI={t.value:.1%} ±{t.user_attrs['roi_std']:.1%}")
 
 
 def main():
@@ -397,13 +480,22 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--params", default=None, help="Extra LightGBM params as JSON")
     parser.add_argument("--n-trials", type=int, default=100, help="Optuna trial count")
+    parser.add_argument(
+        "--objective", choices=["ev_roi", "upset_fbeta"], default="ev_roi",
+        help="Optuna objective: ev_roi (tansho ROI) or upset_fbeta (upset detection F-beta)",
+    )
+    parser.add_argument("--beta", type=float, default=1.5, help="F-beta for upset_fbeta (default: 1.5)")
     parser.add_argument("--save", action="store_true", help="Save model to --model-dir")
     parser.add_argument("--model-dir", default="models/boat1", help="Model output dir")
     args = parser.parse_args()
 
     print("Boat 1 Binary Classifier")
     print(f"Mode: {args.mode}")
-    if args.mode != "optuna":
+    if args.mode == "optuna":
+        print(f"Objective: {args.objective}")
+        if args.objective == "upset_fbeta":
+            print(f"Beta: {args.beta}")
+    else:
         print(f"Trees: {args.n_estimators}, LR: {args.learning_rate}")
     if args.start_date:
         print(f"Train start: {args.start_date}")
