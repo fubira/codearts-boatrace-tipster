@@ -495,15 +495,15 @@ def run_optuna(args, X, y, meta) -> None:
 
         ev_rois = []
         for fold, payouts in zip(folds, fold_payouts):
-            model, _ = train_boat1_model(
-                fold["train"]["X"], fold["train"]["y"],
-                fold["val"]["X"], fold["val"]["y"],
-                n_estimators=n_estimators,
-                learning_rate=learning_rate,
-                extra_params=params,
-            )
+            y_prob = _train_and_predict_fold(params, n_estimators, learning_rate, fold)
+
+            # Wrap as a model-like object for evaluate_boat1
+            class _ProbWrapper:
+                def predict_proba(self, X):
+                    return np.column_stack([1 - y_prob, y_prob])
+
             result = evaluate_boat1(
-                model, fold["test"]["X"], fold["test"]["y"], fold["test"]["meta"],
+                _ProbWrapper(), fold["test"]["X"], fold["test"]["y"], fold["test"]["meta"],
                 payouts_cache=payouts,
             )
             # Use EV≥0 ROI as objective (the actual deployment strategy)
@@ -515,6 +515,34 @@ def run_optuna(args, X, y, meta) -> None:
         trial.set_user_attr("roi_std", float(np.std(ev_rois)))
         trial.set_user_attr("rois", [round(r, 4) for r in ev_rois])
         return mean_roi
+
+    def _train_and_predict_fold(trial_params, trial_n_est, trial_lr, fold):
+        """Train and predict for a single fold, respecting --two-stage flag."""
+        if args.two_stage:
+            import pandas as _pd
+            X_tv = _pd.concat([fold["train"]["X"], fold["val"]["X"]], ignore_index=True)
+            y_tv = _pd.concat([fold["train"]["y"], fold["val"]["y"]], ignore_index=True)
+            val_mask = np.zeros(len(X_tv), dtype=bool)
+            val_mask[-len(fold["val"]["X"]):] = True
+            s1, s2, _ = train_boat1_2stage(
+                X_tv, y_tv, fold["train"]["meta"],
+                stage1_cols=STAGE1_COLS, stage2_cols=STAGE2_COLS,
+                val_mask=val_mask,
+                n_estimators=trial_n_est, learning_rate=trial_lr,
+                extra_params=trial_params,
+            )
+            return predict_boat1_2stage(
+                s1, s2, fold["test"]["X"],
+                stage1_cols=STAGE1_COLS, stage2_cols=STAGE2_COLS,
+            )
+        else:
+            model, _ = train_boat1_model(
+                fold["train"]["X"], fold["train"]["y"],
+                fold["val"]["X"], fold["val"]["y"],
+                n_estimators=trial_n_est, learning_rate=trial_lr,
+                extra_params=trial_params,
+            )
+            return model.predict_proba(fold["test"]["X"])[:, 1]
 
     def objective_upset_fbeta(trial: optuna.Trial) -> float:
         params, n_estimators, learning_rate = _suggest_lgb_params(trial)
@@ -528,15 +556,7 @@ def run_optuna(args, X, y, meta) -> None:
         fold_n_bets = []
 
         for fold in folds:
-            model, _ = train_boat1_model(
-                fold["train"]["X"], fold["train"]["y"],
-                fold["val"]["X"], fold["val"]["y"],
-                n_estimators=n_estimators,
-                learning_rate=learning_rate,
-                extra_params=params,
-            )
-
-            y_prob = model.predict_proba(fold["test"]["X"])[:, 1]
+            y_prob = _train_and_predict_fold(params, n_estimators, learning_rate, fold)
             y_true = fold["test"]["y"].values
 
             # Upset detection: predict "boat 1 loses" when prob < threshold

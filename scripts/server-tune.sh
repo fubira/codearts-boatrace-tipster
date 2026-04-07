@@ -45,6 +45,7 @@ TRAIN_START=""
 WARM_START=false
 OBJECTIVE=""
 BETA=""
+TWO_STAGE=false
 
 SETUP_ONLY=false
 FOREGROUND=false
@@ -78,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --warm-start) WARM_START=true; shift ;;
     --objective) OBJECTIVE="$2"; shift 2 ;;
     --beta) BETA="$2"; shift 2 ;;
+    --two-stage) TWO_STAGE=true; shift ;;
     --help)
       cat <<'HELP'
 Usage: ./scripts/server-tune.sh [options]
@@ -101,6 +103,7 @@ Optuna options:
   --warm-start      現行model_metaのパラメータで初期化
   --objective O     boat1 objective: ev_roi | upset_fbeta (default: ev_roi)
   --beta F          F-beta for upset_fbeta (default: 1.5)
+  --two-stage       2段階モデルでOptuna実行（boat1のみ）
 
 General:
   --skip-sync       コード・データ同期スキップ
@@ -254,6 +257,9 @@ _build_cmd() {
       fi
       if [ -n "$BETA" ]; then
         cmd+=" --beta ${BETA}"
+      fi
+      if [ "$TWO_STAGE" = true ]; then
+        cmd+=" --two-stage"
       fi
       ;;
     trifecta)
