@@ -38,7 +38,7 @@ export function isCacheRequired(): boolean {
 }
 
 /** Convert URL path to cache file path: /race/racelist?rno=1&jcd=04&hd=20250115 -> data/cache/race/racelist/202501/rno=1&jcd=04&hd=20250115.html.gz */
-function cachePathFor(path: string): string {
+export function cachePathFor(path: string): string {
   const normalized = path.startsWith("/") ? path.slice(1) : path;
   // Replace '?' with '/' to create directory structure from query params
   const safePath = normalized.replace("?", "/");
