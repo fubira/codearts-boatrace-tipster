@@ -6,7 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   cachePathFor,
@@ -89,10 +89,9 @@ describe("writeCache / readCache roundtrip", () => {
   test("hasCacheEntry returns true after write", () => {
     // Use a unique path unlikely to collide with real cache
     const path = "/owpc/pc/race/racelist?rno=99&jcd=99&hd=29990101";
-    // Clean up if leftover from a previous run
-    const { existsSync: ex, unlinkSync } = require("node:fs");
     const fullPath = cachePathFor(path);
-    if (ex(fullPath)) unlinkSync(fullPath);
+    // Clean up if leftover from a previous run
+    if (existsSync(fullPath)) unlinkSync(fullPath);
 
     expect(hasCacheEntry(path)).toBe(false);
 
@@ -100,7 +99,7 @@ describe("writeCache / readCache roundtrip", () => {
     expect(hasCacheEntry(path)).toBe(true);
 
     // Cleanup
-    if (ex(fullPath)) unlinkSync(fullPath);
+    if (existsSync(fullPath)) unlinkSync(fullPath);
   });
 
   test("readCache returns undefined for non-existent path", () => {

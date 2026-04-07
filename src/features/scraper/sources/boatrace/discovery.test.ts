@@ -71,6 +71,8 @@ describe("parseSchedulePage", () => {
     const $ = cheerio.load(html);
     const venues = parseSchedulePage($, "20260301");
 
+    // 実際の boatrace.jp では jcd は常に2桁 (01-24) なので問題ない。
+    // 正規表現 /jcd=(\d{2})/ は先頭2桁のみキャプチャする仕様。
     // jcd=4 doesn't match \d{2}, jcd=123 matches "12", jcd=04 matches "04"
     expect(venues).toHaveLength(2);
     expect(venues.map((v) => v.stadiumCode)).toEqual(["04", "12"]);
