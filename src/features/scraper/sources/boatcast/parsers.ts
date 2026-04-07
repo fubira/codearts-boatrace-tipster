@@ -17,7 +17,7 @@ export interface SttEntry {
 }
 
 function parseNumOrNull(value: string): number | null {
-  if (!value || value.includes("-")) return null;
+  if (!value || value === "------") return null;
   const n = Number.parseFloat(value);
   return Number.isNaN(n) ? null : n;
 }

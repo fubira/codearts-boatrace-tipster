@@ -599,28 +599,17 @@ export function saveOddsSnapshot(
 
 // --- BOATCAST data types ---
 
-export interface BoatcastOritenEntry {
-  boatNumber: number;
-  lapTime: number | null;
-  turnTime: number | null;
-  straightTime: number | null;
-}
-
-export interface BoatcastSttEntry {
-  boatNumber: number;
-  course: number | null;
-  st1: number | null;
-  st2: number | null;
-  isFlying: boolean;
-  slitDiff: number | null;
-}
+import type {
+  OritenEntry,
+  SttEntry,
+} from "@/features/scraper/sources/boatcast/parsers";
 
 export interface BoatcastData {
   stadiumId: number;
   raceDate: string;
   raceNumber: number;
-  oriten: BoatcastOritenEntry[];
-  stt: BoatcastSttEntry[];
+  oriten: OritenEntry[];
+  stt: SttEntry[];
 }
 
 /** Save BOATCAST exhibition data (oriten + stt) to race_entries */
@@ -708,11 +697,8 @@ export function saveBoatcastData(
             $bcCourse: entry.course ?? null,
             $bcSt1: entry.st1 ?? null,
             $bcSt2: entry.st2 ?? null,
-            $bcIsFlying: entry.isFlying
-              ? 1
-              : entry.isFlying === false
-                ? 0
-                : null,
+            $bcIsFlying:
+              entry.isFlying != null ? (entry.isFlying ? 1 : 0) : null,
             $bcSlitDiff: entry.slitDiff ?? null,
           });
         updated++;
