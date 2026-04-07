@@ -6,6 +6,7 @@ import { predictCommand } from "@/cli/commands/predict";
 import { runCommand } from "@/cli/commands/run";
 import { scrapeCommand } from "@/cli/commands/scrape";
 import { scrapeOddsCommand } from "@/cli/commands/scrape-odds";
+import { scrapePreraceCommand } from "@/cli/commands/scrape-prerace";
 import { setLogLevel } from "@/shared/logger";
 import { Command } from "commander";
 
@@ -24,6 +25,7 @@ program
 
 program.addCommand(scrapeCommand);
 program.addCommand(scrapeOddsCommand);
+program.addCommand(scrapePreraceCommand);
 program.addCommand(predictCommand);
 program.addCommand(analyzeCommand);
 program.addCommand(runCommand);
