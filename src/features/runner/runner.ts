@@ -19,6 +19,7 @@ import {
 } from "@/features/scraper/cache-manager";
 import { fetchPage } from "@/features/scraper/http-client";
 import { getScraper } from "@/features/scraper/registry";
+import { fetchAndSaveBoatcast } from "@/features/scraper/sources/boatcast/fetcher";
 import {
   type RaceParams,
   STADIUMS,
@@ -500,7 +501,7 @@ async function pollPredict(
   opts: RunnerOptions,
   bets: Map<number, BetDecision>,
 ): Promise<void> {
-  // Re-scrape before-info if exhibition data is missing
+  // Re-scrape before-info and BOATCAST if exhibition data is missing
   const db = getDatabase();
   let rescraped = 0;
   for (const slot of slots) {
@@ -516,6 +517,20 @@ async function pollPredict(
         rescraped++;
       } catch {
         // Prediction will proceed without exhibition data
+      }
+    }
+    // Ensure BOATCAST data is also present
+    const hasBc = db
+      .query(
+        `SELECT COUNT(*) as cnt FROM race_entries
+         WHERE race_id = ? AND bc_lap_time IS NOT NULL`,
+      )
+      .get(slot.raceId) as { cnt: number };
+    if (hasBc.cnt === 0) {
+      try {
+        await fetchAndSaveBoatcast(slot.stadiumId, state.date, slot.raceNumber);
+      } catch {
+        // Non-critical
       }
     }
   }
@@ -692,6 +707,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   // 1. Scrape before-info for races approaching deadline
   if (actionable.beforeInfo.length > 0) {
     let scraped = 0;
+    let bcFetched = 0;
     for (const slot of actionable.beforeInfo) {
       try {
         const ok = scrapeBeforeInfoForRace(slot, state.date);
@@ -705,9 +721,20 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
           err,
         );
       }
+      // Fetch BOATCAST exhibition data (oriten + stt)
+      try {
+        const bc = await fetchAndSaveBoatcast(
+          slot.stadiumId,
+          state.date,
+          slot.raceNumber,
+        );
+        if (bc) bcFetched++;
+      } catch {
+        // Non-critical: prediction proceeds without BOATCAST data
+      }
     }
     logger.info(
-      `Before-info: ${scraped}/${actionable.beforeInfo.length} scraped`,
+      `Before-info: ${scraped}/${actionable.beforeInfo.length} scraped, BOATCAST: ${bcFetched}`,
     );
   }
 
