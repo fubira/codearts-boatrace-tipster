@@ -552,9 +552,10 @@ _CACHE_KEY_FILE = _CACHE_DIR / "features.key"
 
 
 def _db_cache_key(db_path: str) -> str:
-    """Generate a cache key from DB mtime + size."""
+    """Generate a cache key from DB mtime + size + code mtime."""
     st = os.stat(db_path)
-    raw = f"{db_path}:{st.st_mtime_ns}:{st.st_size}"
+    code_mtime = os.stat(__file__).st_mtime_ns
+    raw = f"{db_path}:{st.st_mtime_ns}:{st.st_size}:{code_mtime}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -573,7 +574,7 @@ def _load_cached_base(db_path: str) -> pd.DataFrame | None:
 
 
 def _save_cache(df: pd.DataFrame, db_path: str) -> None:
-    """Save base DataFrame to parquet cache."""
+    """Save base DataFrame to pickle cache."""
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     df.to_pickle(_CACHE_FILE)
     _CACHE_KEY_FILE.write_text(_db_cache_key(db_path))
@@ -591,8 +592,8 @@ def build_features_df(
     before FEATURE_COLS filtering. Used by boat1 binary classifier
     which needs access to columns beyond the ranking model's feature set.
 
-    Caches the base DataFrame (pre-filter) as parquet. Cache is
-    invalidated when the DB file is modified.
+    Caches the base DataFrame (pre-filter) as pickle. Cache is
+    invalidated when the DB file or feature code is modified.
 
     Args:
         db_path: Path to the SQLite database.
