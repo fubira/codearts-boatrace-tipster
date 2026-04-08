@@ -355,13 +355,32 @@ def collect_all_candidates(model_dir: str = "models/trifecta_v1") -> list[dict]:
 
     # Load saved models
     b1_model = load_boat1_model(f"{model_dir}/boat1")
+    b1_meta = load_model_meta(f"{model_dir}/boat1")
     rank_model = load_model(f"{model_dir}/ranking")
+    rank_meta = load_model_meta(f"{model_dir}/ranking")
 
     with contextlib.redirect_stdout(io.StringIO()):
         X_b1, _, meta_b1 = reshape_to_boat1(df)
+
+    # Filter to model's feature columns
+    if b1_meta and b1_meta.get("feature_columns"):
+        model_cols = [c for c in b1_meta["feature_columns"] if c in X_b1.columns]
+        if len(model_cols) != len(X_b1.columns):
+            dropped = set(X_b1.columns) - set(model_cols)
+            print(f"b1: dropping {dropped}", file=sys.stderr)
+        X_b1 = X_b1[model_cols]
+
     b1_probs = b1_model.predict_proba(X_b1)[:, 1]
 
     X_rank, _, meta_rank = prepare_feature_matrix(df)
+
+    if rank_meta and rank_meta.get("feature_columns"):
+        model_cols = [c for c in rank_meta["feature_columns"] if c in X_rank.columns]
+        if len(model_cols) != len(X_rank.columns):
+            dropped = set(X_rank.columns) - set(model_cols)
+            print(f"ranking: dropping {dropped}", file=sys.stderr)
+        X_rank = X_rank[model_cols]
+
     rank_scores = rank_model.predict(X_rank)
 
     # Collect ALL rank-1 candidates (no filtering) so _extract_params can sweep thresholds.
