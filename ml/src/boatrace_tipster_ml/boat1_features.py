@@ -145,10 +145,6 @@ def reshape_to_boat1(
     result["b1_vs_best_opp_win_rate"] = (
         result["b1_national_win_rate"] - result["opp_max_national_win_rate"]
     )
-    result["b1_vs_best_opp_exhibition"] = (
-        result["b1_exhibition_time"] - opp_agg.reindex(b1["race_id"].values)["opp_best_exhibition_st"].values
-    )
-    # Use exhibition_time diff against best opponent's exhibition_time
     opp_best_ex = opps.groupby("race_id", sort=False)["exhibition_time"].min()
     result["b1_vs_best_opp_exhibition"] = (
         b1["exhibition_time"].values - b1["race_id"].map(opp_best_ex.to_dict()).values

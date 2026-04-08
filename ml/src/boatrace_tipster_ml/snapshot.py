@@ -80,6 +80,7 @@ def build_snapshot(
     df["_is_top2"] = (df["finish_position"] <= 2).astype(int)
     df["_is_top3"] = (df["finish_position"] <= 3).astype(int)
     df["_took_inner"] = (df["course_number"] < df["boat_number"]).astype(int)
+    df["_pos_alpha"] = (df["boat_number"] - df["finish_position"]).astype(float)
 
     # Write to SQLite
     cache = Path(cache_path)
@@ -186,6 +187,8 @@ _CUMULATIVE_DEFS: list[tuple[str, list[str], str, str]] = [
     ("racer_avg_exhibition_st", ["racer_id"], "exhibition_st", "mean"),
     # Cumulative std
     ("racer_st_stability", ["racer_id"], "start_timing", "std"),
+    # Position alpha (skill net of lane advantage)
+    ("racer_position_alpha", ["racer_id"], "_pos_alpha", "mean"),
 ]
 
 

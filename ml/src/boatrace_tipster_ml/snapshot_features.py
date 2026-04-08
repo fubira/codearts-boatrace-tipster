@@ -108,6 +108,9 @@ def build_features_from_snapshot(
     # ST stability (cumulative std)
     _apply_cumulative_std(df, snapshot, "racer_st_stability", ["racer_id"], "st_stability")
 
+    # Position alpha (skill net of lane advantage)
+    _apply_cumulative_mean(df, snapshot, "racer_position_alpha", ["racer_id"], "position_alpha")
+
     # --- Motor quality residual ---
     _apply_motor_residual(df, snapshot)
 

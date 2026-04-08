@@ -93,6 +93,7 @@ def _make_race_df(n_races: int = 2, *, seed: int = 42) -> pd.DataFrame:
                 "bc_turn_time": 5.5 + rng.rand() * 0.5,
                 "bc_straight_time": 7.0 + rng.rand() * 0.5,
                 "bc_slit_diff": rng.rand() * 3,
+                "position_alpha": rng.randn() * 0.5,
             })
     return pd.DataFrame(rows)
 

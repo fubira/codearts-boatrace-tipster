@@ -397,6 +397,22 @@ def _add_st_stability(df: pd.DataFrame) -> None:
     df["st_stability"] = _cumulative_std(df, ["racer_id"], "start_timing")
 
 
+def _add_position_alpha(df: pd.DataFrame) -> None:
+    """B11: Position alpha — skill net of lane advantage.
+
+    position_alpha = boat_number - finish_position
+    Positive = outperformed lane assignment (skill).
+    Cumulative mean per racer, leak-safe (same-day excluded).
+    Also rolling version for short-term form.
+    """
+    df["_pos_alpha"] = (df["boat_number"] - df["finish_position"]).astype(float)
+    df["position_alpha"] = _cumulative_mean(df, ["racer_id"], "_pos_alpha")
+    w = ROLLING_WINDOW_GENERAL or ROLLING_WINDOW
+    df["rolling_position_alpha"] = _rolling_mean_daily(
+        df, ["racer_id"], "_pos_alpha", w
+    )
+
+
 ROLLING_WINDOW: int = 5    # race-days; default for per-racer features
 ROLLING_WINDOW_GENERAL: int | None = None  # per-racer override (None = use ROLLING_WINDOW)
 ROLLING_WINDOW_COURSE: int | None = 20     # per-racer-course features (wider for sample size)
@@ -531,7 +547,7 @@ def _encode_categoricals(df: pd.DataFrame) -> None:
 # Cleanup
 # ---------------------------------------------------------------------------
 
-_TEMP_COLS = ["_is_win", "_is_top2", "_is_top3", "_took_inner", "_pos", "tournament_id"]
+_TEMP_COLS = ["_is_win", "_is_top2", "_is_top3", "_took_inner", "_pos", "_pos_alpha", "tournament_id"]
 
 
 def _cleanup_temp_cols(df: pd.DataFrame) -> None:
@@ -627,6 +643,7 @@ def build_features_df(
         _add_recent_form(df)
         _add_st_stability(df)
         _add_rolling_features(df)
+        _add_position_alpha(df)
         _add_tournament_features(df)
         _add_leaked_features(df)
 
