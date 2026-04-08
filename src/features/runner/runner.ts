@@ -6,6 +6,7 @@ import {
   closeDatabase,
   getDatabase,
   initializeDatabase,
+  loadSnapshotWinProbs,
   saveBeforeInfo,
   saveOdds,
   saveOddsSnapshot,
@@ -103,6 +104,62 @@ function todayYYYYMMDD(): string {
 
 function padStadiumCode(id: number): string {
   return String(id).padStart(2, "0");
+}
+
+// ---------------------------------------------------------------------------
+// Odds drift extrapolation coefficients (fitted on T-3 + T-1 → final data)
+// final_mp = DRIFT_COEF_T3 * mp_t3 + DRIFT_COEF_T1 * mp_t1 + DRIFT_INTERCEPT
+// ---------------------------------------------------------------------------
+const DRIFT_COEF_T3 = -0.857;
+const DRIFT_COEF_T1 = 1.891;
+const DRIFT_INTERCEPT = -0.006;
+
+/**
+ * Re-evaluate EV using T-3+T-1 odds extrapolation for races with cached predictions.
+ * Updates the prediction cache in-place with extrapolated EV.
+ */
+function reEvaluateWithExtrapolation(
+  slots: RaceSlot[],
+  state: RunnerState,
+): void {
+  if (!state.predictionCache) return;
+
+  let updated = 0;
+  for (const slot of slots) {
+    const cached = state.predictionCache.get(slot.raceId);
+    if (!cached || typeof cached === "string") continue;
+
+    const mpT3 = loadSnapshotWinProbs(slot.raceId, "T-3");
+    const mpT1 = loadSnapshotWinProbs(slot.raceId, "T-1");
+
+    if (mpT3.size === 0 || mpT1.size === 0) continue;
+
+    const boat = cached.winnerPick;
+    const t3 = mpT3.get(boat);
+    const t1 = mpT1.get(boat);
+    if (t3 === undefined || t1 === undefined) continue;
+
+    const extrapolatedMp =
+      DRIFT_COEF_T3 * t3 + DRIFT_COEF_T1 * t1 + DRIFT_INTERCEPT;
+    if (extrapolatedMp <= 0) continue;
+
+    const oldEv = cached.ev;
+    const newEv = (cached.winnerProb / extrapolatedMp) * 0.75 - 1;
+
+    cached.ev = newEv;
+    updated++;
+
+    const label = `${slot.stadiumName} R${slot.raceNumber}`;
+    const oldPct = (oldEv * 100).toFixed(1);
+    const newPct = (newEv * 100).toFixed(1);
+    logger.info(
+      `[DRIFT] ${label} | ${boat}号艇 | T-3 EV=${oldPct}% → extrap EV=${newPct}% (mp: T3=${(t3 * 100).toFixed(1)}% T1=${(t1 * 100).toFixed(1)}% → ${(extrapolatedMp * 100).toFixed(1)}%)`,
+    );
+  }
+
+  if (updated > 0) {
+    logger.info(`Drift extrapolation: ${updated}/${slots.length} updated`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -574,7 +631,19 @@ async function pollPredict(
       updatePredictionCache(state, result);
     }
 
-    await makeBetDecisions(slots, state, opts, bets);
+    // Log T-5 EV summary (bet decision deferred to T-1 re-evaluation)
+    for (const slot of slots) {
+      const cached = state.predictionCache?.get(slot.raceId);
+      if (cached && typeof cached !== "string") {
+        const label = `${slot.stadiumName} R${slot.raceNumber}`;
+        const evPct = (cached.ev * 100).toFixed(1);
+        const rankTag = cached.rankUsed === 2 ? "(r2)" : "";
+        logger.info(
+          `[T-5] ${label} | ${cached.winnerPick}号艇1着${rankTag} | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct}% (awaiting T-1)`,
+        );
+      }
+      slot.status = "predicted";
+    }
   } catch (err) {
     await notifyError("prediction", err);
     for (const slot of slots) {
@@ -764,7 +833,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     }
   }
 
-  // 3b. Fetch T-1 odds snapshot and transition to decided
+  // 3b. Fetch T-1 odds snapshot, re-evaluate EV with drift extrapolation, and make bet decisions
   if (actionable.odds.length > 0) {
     const t1Fetched = fetchTrifectaOdds(
       actionable.odds,
@@ -777,6 +846,12 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         `Odds snapshot (T-1): ${t1Fetched}/${actionable.odds.length} fetched`,
       );
     }
+
+    // Re-evaluate EV using T-3+T-1 extrapolation
+    reEvaluateWithExtrapolation(actionable.odds, state);
+
+    // Now make bet decisions with extrapolated EV
+    await makeBetDecisions(actionable.odds, state, opts, bets);
   }
   for (const slot of actionable.odds) {
     slot.status = "decided";

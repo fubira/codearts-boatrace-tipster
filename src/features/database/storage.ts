@@ -597,6 +597,34 @@ export function saveOddsSnapshot(
   transaction();
 }
 
+/**
+ * Load trifecta-implied win probabilities from odds snapshots for a given timing.
+ * Returns { boatNumber: sum(0.75 / odds) } for all 3連単 combos starting with that boat.
+ */
+export function loadSnapshotWinProbs(
+  raceId: number,
+  timing: string,
+  db?: Database,
+): Map<number, number> {
+  const database = db ?? getDatabase();
+  const rows = database
+    .query(
+      `SELECT combination, odds FROM race_odds_snapshots
+       WHERE race_id = $raceId AND timing = $timing AND bet_type = '3連単' AND odds > 0`,
+    )
+    .all({ $raceId: raceId, $timing: timing }) as {
+    combination: string;
+    odds: number;
+  }[];
+
+  const probs = new Map<number, number>();
+  for (const row of rows) {
+    const firstBoat = Number.parseInt(row.combination.split("-")[0], 10);
+    probs.set(firstBoat, (probs.get(firstBoat) ?? 0) + 0.75 / row.odds);
+  }
+  return probs;
+}
+
 // --- BOATCAST data types ---
 
 import type {

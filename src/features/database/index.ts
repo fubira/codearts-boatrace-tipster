@@ -7,6 +7,7 @@ export {
   saveRacerCourseStats,
   saveOdds,
   saveOddsSnapshot,
+  loadSnapshotWinProbs,
   savePurchaseRecord,
   isRaceScraped,
 } from "./storage";
