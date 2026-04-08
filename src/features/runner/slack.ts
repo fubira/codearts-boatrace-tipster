@@ -40,7 +40,8 @@ async function send(payload: SlackPayload): Promise<void> {
 
   if (!res.ok) {
     const body = await res.text();
-    logger.error(`Slack send failed (${res.status}): ${body}`);
+    const preview = payload.text ?? "unknown";
+    logger.error(`Slack send failed (${res.status}): ${body} [${preview}]`);
   }
 }
 
