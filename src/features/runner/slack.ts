@@ -191,7 +191,9 @@ export async function notifyError(
   context: string,
   error: unknown,
 ): Promise<void> {
-  const msg = error instanceof Error ? error.message : String(error);
+  const raw = error instanceof Error ? error.message : String(error);
+  // Truncate and sanitize for Block Kit (backticks/special chars can break blocks)
+  const msg = raw.slice(0, 500).replace(/[`*~]/g, " ");
   await send({
     text: `[boatrace] ERROR: ${context}: ${msg}`,
     blocks: [

@@ -651,7 +651,9 @@ async function pollPredict(
       slot.status = "predicted";
     }
   } catch (err) {
-    await notifyError("prediction", err);
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`Prediction failed: ${msg}`);
+    await notifyError("prediction", err).catch(() => {});
     for (const slot of slots) {
       slot.status = "predicted";
     }
