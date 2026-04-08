@@ -5,11 +5,16 @@ Optimizes LambdaRank + boat1 binary model jointly for 3連単 ROI.
 Usage:
     uv run --directory ml python -m scripts.tune_trifecta --trials 100
     uv run --directory ml python -m scripts.tune_trifecta --trials 100 --seed 123
+    uv run --directory ml python -m scripts.tune_trifecta --trials 200 --objective profit
+
+Objectives:
+    - sharpe (default): (mean_roi - 1) / std_roi — stability-adjusted ROI
+    - profit: total P/L across folds — rewards buying more when profitable
 
 Tuned parameters:
     - LambdaRank: num_leaves, max_depth, learning_rate, n_estimators, etc.
     - LambdaRank: relevance_scheme (linear, top_heavy, win_only, podium)
-    - Strategy: b1_threshold, ev_threshold
+    - Strategy: b1_threshold, ev_threshold, r2_ev_threshold
 """
 
 import argparse
@@ -65,9 +70,11 @@ def main():
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--warm-start", action="store_true",
                         help="Seed search with current best params from model_meta.json")
+    parser.add_argument("--objective", choices=["sharpe", "profit"], default="sharpe",
+                        help="Optimization objective: sharpe (stability) or profit (total P/L)")
     args = parser.parse_args()
 
-    print(f"Trials: {args.trials}, Folds: {args.n_folds}, Seed: {args.seed}")
+    print(f"Trials: {args.trials}, Folds: {args.n_folds}, Seed: {args.seed}, Objective: {args.objective}")
     t0 = time.time()
 
     # Load data
@@ -143,6 +150,8 @@ def main():
 
     print(f"Setup done in {time.time() - t0:.1f}s\n")
 
+    obj_mode = args.objective
+
     def objective(trial: optuna.Trial) -> float:
         # LambdaRank hyperparameters
         rank_params = {
@@ -167,6 +176,8 @@ def main():
 
         rois = []
         total_races = 0
+        total_cost = 0.0
+        total_payout = 0.0
         for i, fold in enumerate(folds):
             with contextlib.redirect_stdout(io.StringIO()):
                 rank_model, _ = train_model(
@@ -199,16 +210,19 @@ def main():
             )
             rois.append(result["roi"])
             total_races += result["races"]
+            total_cost += result["cost"]
+            total_payout += result["payout"]
 
         mean_roi = float(np.mean(rois))
         std_roi = float(np.std(rois))
         min_roi = float(np.min(rois))
 
-        # Require minimum bet volume (too few races = unreliable Sharpe)
+        # Require minimum bet volume
         if total_races < 50:
             return -999.0
 
         sharpe = (mean_roi - 1.0) / std_roi if std_roi > 0 else 0
+        profit = total_payout - total_cost
 
         trial.set_user_attr("mean_roi", mean_roi)
         trial.set_user_attr("roi_std", std_roi)
@@ -217,8 +231,10 @@ def main():
         trial.set_user_attr("rois", [round(r, 4) for r in rois])
         trial.set_user_attr("sharpe", round(sharpe, 3))
         trial.set_user_attr("total_races", total_races)
+        trial.set_user_attr("profit", round(profit, 1))
 
-        # Optimize Sharpe ratio (stability-adjusted ROI)
+        if obj_mode == "profit":
+            return profit
         return sharpe
 
     study = optuna.create_study(
@@ -256,9 +272,10 @@ def main():
 
     # Results
     print("\n" + "=" * 70)
-    print("Optuna Search Complete — Trifecta X-allflow")
+    print(f"Optuna Search Complete — Trifecta X-allflow (objective: {obj_mode})")
     print("=" * 70)
-    print(f"Best Sharpe: {study.best_value:.3f}")
+    obj_label = "Sharpe" if obj_mode == "sharpe" else "Profit"
+    print(f"Best {obj_label}: {study.best_value:.3f}")
     bp = study.best_params
     print(f"Best params:")
     for k, v in sorted(bp.items()):
@@ -271,6 +288,8 @@ def main():
     print(f"  ROI min:  {ba['roi_min']:.1%}")
     print(f"  ROI max:  {ba['roi_max']:.1%}")
     print(f"  Sharpe:   {ba['sharpe']:.3f}")
+    print(f"  Profit:   {ba['profit']:+.0f} (per ¥100 unit)")
+    print(f"  Races:    {ba['total_races']}")
     print(f"  Folds:    {ba['rois']}")
 
     # Top 10 trials
@@ -289,10 +308,10 @@ def main():
         evt = t.params.get("ev_threshold", 0)
         r2t = t.params.get("r2_ev_threshold", 0)
         races = ua.get("total_races", "?")
+        pft = ua.get("profit", 0)
         print(
-            f"  #{t.number:>3}: Sharpe={t.value:.2f} "
+            f"  #{t.number:>3}: Sharpe={ua['sharpe']:.2f} P/L={pft:+.0f} "
             f"ROI={ua['mean_roi']:.0%}±{ua['roi_std']:.0%} "
-            f"[{ua['roi_min']:.0%}-{ua['roi_max']:.0%}] "
             f"n={races} rel={rel} b1<{b1t:.0%} ev>{evt:+.0%} r2>{r2t:+.0%}"
         )
 
@@ -323,8 +342,8 @@ def main():
         feature_columns=FEATURE_COLS,
         hyperparameters=best_hp,
         training={
-            "note": f"Optuna {args.trials}t seed={args.seed} "
-                    f"#{study.best_trial.number} (Sharpe {study.best_value:.2f})",
+            "note": f"Optuna {args.trials}t seed={args.seed} obj={obj_mode} "
+                    f"#{study.best_trial.number} ({obj_label} {study.best_value:.2f})",
         },
     )
     # Append strategy to saved meta

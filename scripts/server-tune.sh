@@ -265,6 +265,9 @@ _build_cmd() {
       if [ "$WARM_START" = true ]; then
         cmd+=" --warm-start"
       fi
+      if [ -n "$OBJECTIVE" ]; then
+        cmd+=" --objective ${OBJECTIVE}"
+      fi
       echo "$cmd"
       return
       ;;
