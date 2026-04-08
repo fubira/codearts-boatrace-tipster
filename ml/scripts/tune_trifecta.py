@@ -163,6 +163,7 @@ def main():
         # Strategy parameters
         b1_threshold = trial.suggest_float("b1_threshold", 0.30, 0.55)
         ev_threshold = trial.suggest_float("ev_threshold", -0.1, 0.5)
+        r2_ev_threshold = trial.suggest_float("r2_ev_threshold", 0.5, 2.0)
 
         rois = []
         total_races = 0
@@ -194,6 +195,7 @@ def main():
                 tri_win_prob=tri_win_prob,
                 b1_threshold=b1_threshold,
                 ev_threshold=ev_threshold,
+                r2_ev_threshold=r2_ev_threshold,
             )
             rois.append(result["roi"])
             total_races += result["races"]
@@ -245,6 +247,7 @@ def main():
                 "relevance": hp.get("relevance_scheme", "win_only"),
                 "b1_threshold": st.get("b1_threshold", 0.42),
                 "ev_threshold": st.get("ev_threshold", 0.36),
+                "r2_ev_threshold": st.get("r2_ev_threshold", 1.20),
             }
             study.enqueue_trial(seed_params)
             print(f"Warm start: seeded with model_meta params (trial 0)")
@@ -284,12 +287,13 @@ def main():
         rel = t.params.get("relevance", "?")
         b1t = t.params.get("b1_threshold", 0)
         evt = t.params.get("ev_threshold", 0)
+        r2t = t.params.get("r2_ev_threshold", 0)
         races = ua.get("total_races", "?")
         print(
             f"  #{t.number:>3}: Sharpe={t.value:.2f} "
             f"ROI={ua['mean_roi']:.0%}±{ua['roi_std']:.0%} "
             f"[{ua['roi_min']:.0%}-{ua['roi_max']:.0%}] "
-            f"n={races} rel={rel} b1<{b1t:.0%} ev>{evt:+.0%}"
+            f"n={races} rel={rel} b1<{b1t:.0%} ev>{evt:+.0%} r2>{r2t:+.0%}"
         )
 
     # Auto-save best params to model_meta.json
@@ -308,7 +312,8 @@ def main():
     best_strategy = {
         "b1_threshold": bp["b1_threshold"],
         "ev_threshold": bp["ev_threshold"],
-        "bet_pattern": "X-allflow (20 tickets)",
+        "r2_ev_threshold": bp["r2_ev_threshold"],
+        "bet_pattern": "X-allflow (20pt) with rank-2 fallback",
         "ev_basis": "trifecta inverse (sum 0.75/odds)",
     }
     meta_dir = "models/trifecta_v1/ranking"

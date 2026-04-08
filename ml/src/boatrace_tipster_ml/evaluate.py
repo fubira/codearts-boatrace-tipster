@@ -415,6 +415,7 @@ def evaluate_trifecta_strategy(
     b1_threshold: float,
     ev_threshold: float,
     *,
+    r2_ev_threshold: float | None = None,
     race_date_map: dict[int, str] | None = None,
     exacta_odds: dict[tuple[int, str], float] | None = None,
     per_race: bool = False,
@@ -424,6 +425,10 @@ def evaluate_trifecta_strategy(
     Used by tune, backtest, and MC simulation.
 
     Args:
+        ev_threshold: Rank-1 EV threshold. Bet on rank-1 pick if EV >= this.
+        r2_ev_threshold: Rank-2 EV threshold. When rank-1 EV is below
+            ev_threshold, try rank-2 pick if its EV >= this value.
+            None disables rank-2 fallback (default, backward compatible).
         per_race: If True, return list of per-race dicts (for MC/backtest daily).
                   If False, return summary dict with races/cost/wins/payout/roi.
     """
@@ -446,6 +451,8 @@ def evaluate_trifecta_strategy(
     total_cost = 0.0
     total_wins = 0
     total_payout = 0.0
+    r2_races = 0
+    r2_wins = 0
     results: list[dict] = []
 
     for ri in range(n_races):
@@ -457,24 +464,53 @@ def evaluate_trifecta_strategy(
         if b1p >= b1_threshold:
             continue
 
-        wp = int(top_boats[ri, 0])
-        if wp == 1:
-            wp = int(top_boats[ri, 1])
+        # --- Rank-1 pick: top non-boat-1 ---
+        wp1 = int(top_boats[ri, 0])
+        if wp1 == 1:
+            wp1 = int(top_boats[ri, 1])
 
-        bidx = np.where(boats_2d[ri] == wp)[0]
-        if len(bidx) == 0:
+        bidx1 = np.where(boats_2d[ri] == wp1)[0]
+        if len(bidx1) == 0:
             continue
-        wprob = float(rank_probs[ri, bidx[0]])
+        wp1_prob = float(rank_probs[ri, bidx1[0]])
 
-        mkt_prob = tri_win_prob.get((rid, wp), 0)
-        if mkt_prob <= 0:
+        mkt_prob1 = tri_win_prob.get((rid, wp1), 0)
+        if mkt_prob1 <= 0:
             continue
-        ev = wprob / mkt_prob * 0.75 - 1
-        if ev < ev_threshold:
+        ev1 = wp1_prob / mkt_prob1 * 0.75 - 1
+
+        # --- Decide: rank-1, rank-2 fallback, or skip ---
+        if ev1 >= ev_threshold:
+            wp, ev, wprob, rank_used = wp1, ev1, wp1_prob, 1
+        elif r2_ev_threshold is not None:
+            # Rank-2: 2nd non-boat-1
+            non_b1_top = [int(top_boats[ri, k]) for k in range(field_size)
+                          if int(top_boats[ri, k]) != 1]
+            if len(non_b1_top) < 2:
+                continue
+            wp2 = non_b1_top[1]
+
+            bidx2 = np.where(boats_2d[ri] == wp2)[0]
+            if len(bidx2) == 0:
+                continue
+            wp2_prob = float(rank_probs[ri, bidx2[0]])
+
+            mkt_prob2 = tri_win_prob.get((rid, wp2), 0)
+            if mkt_prob2 <= 0:
+                continue
+            ev2 = wp2_prob / mkt_prob2 * 0.75 - 1
+
+            if ev2 >= r2_ev_threshold:
+                wp, ev, wprob, rank_used = wp2, ev2, wp2_prob, 2
+            else:
+                continue
+        else:
             continue
 
         total_races += 1
         total_cost += TRIFECTA_TICKETS_PER_BET
+        if rank_used == 2:
+            r2_races += 1
 
         pick_1st = finish_map.get((rid, wp)) == 1
         allflow_odds = 0.0
@@ -496,6 +532,8 @@ def evaluate_trifecta_strategy(
                     allflow_odds = ho
                     total_wins += 1
                     total_payout += ho
+                    if rank_used == 2:
+                        r2_wins += 1
                 if exacta_odds is not None:
                     ec = f"{wp}-{a2}"
                     eo = exacta_odds.get((rid, ec))
@@ -513,6 +551,7 @@ def evaluate_trifecta_strategy(
                 "pick_1st": pick_1st,
                 "allflow_odds": round(allflow_odds, 1),
                 "exacta_hit_odds": round(exacta_hit_odds, 1),
+                "rank_used": rank_used,
             })
 
     if per_race:
@@ -525,4 +564,6 @@ def evaluate_trifecta_strategy(
         "wins": total_wins,
         "payout": total_payout,
         "roi": roi,
+        "r2_races": r2_races,
+        "r2_wins": r2_wins,
     }

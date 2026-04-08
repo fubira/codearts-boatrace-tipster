@@ -112,6 +112,7 @@ def predict_trifecta(
     db_path: str,
     b1_threshold: float | None = None,
     ev_threshold: float | None = None,
+    r2_ev_threshold: float | None = None,
     snapshot_path: str | None = None,
     race_ids: list[int] | None = None,
     use_snapshots: bool = False,
@@ -191,7 +192,11 @@ def predict_trifecta(
     if ev_threshold is None:
         meta_ev = strategy.get("ev_threshold")
         ev_threshold = float(meta_ev) if isinstance(meta_ev, (int, float)) else DEFAULT_EV_THRESHOLD
-    print(f"Strategy: b1<{b1_threshold:.3f} EV>={ev_threshold:.2f}", file=sys.stderr)
+    if r2_ev_threshold is None:
+        meta_r2 = strategy.get("r2_ev_threshold")
+        r2_ev_threshold = float(meta_r2) if isinstance(meta_r2, (int, float)) else None
+    r2_label = f" R2>={r2_ev_threshold:.2f}" if r2_ev_threshold is not None else ""
+    print(f"Strategy: b1<{b1_threshold:.3f} EV>={ev_threshold:.2f}{r2_label}", file=sys.stderr)
 
     X_rank, _, meta_rank = prepare_feature_matrix(df)
 
@@ -252,28 +257,52 @@ def predict_trifecta(
         n_b1_pass += 1
         evaluated_race_ids.append(rid)
 
-        # Winner pick: top non-boat-1
-        wp = int(top_boats[ri, 0])
-        if wp == 1:
-            wp = int(top_boats[ri, 1])
+        # Winner pick: top non-boat-1 (rank-1)
+        wp1 = int(top_boats[ri, 0])
+        if wp1 == 1:
+            wp1 = int(top_boats[ri, 1])
 
-        # Winner's softmax probability
-        bidx = np.where(boats_2d[ri] == wp)[0]
-        if len(bidx) == 0:
+        bidx1 = np.where(boats_2d[ri] == wp1)[0]
+        if len(bidx1) == 0:
             skipped[rid] = {"b1_prob": round(b1p, 4), "reason": "no_winner"}
             continue
-        wprob = float(rank_probs[ri, bidx[0]])
+        wp1_prob = float(rank_probs[ri, bidx1[0]])
 
-        # Trifecta-implied EV
-        mkt_prob = tri_win_prob.get((rid, wp), 0)
-        if mkt_prob <= 0:
+        mkt_prob1 = tri_win_prob.get((rid, wp1), 0)
+        if mkt_prob1 <= 0:
             skipped[rid] = {"b1_prob": round(b1p, 4), "reason": "no_odds"}
             continue
         n_has_odds += 1
 
-        ev = wprob / mkt_prob * 0.75 - 1
-        if ev < ev_threshold:
-            skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev, 4), "pick": int(wp), "reason": "ev_low"}
+        ev1 = wp1_prob / mkt_prob1 * 0.75 - 1
+
+        # Decide: rank-1, rank-2 fallback, or skip
+        if ev1 >= ev_threshold:
+            wp, ev, wprob, rank_used = wp1, ev1, wp1_prob, 1
+        elif r2_ev_threshold is not None:
+            non_b1_top = [int(top_boats[ri, k]) for k in range(FIELD_SIZE)
+                          if int(top_boats[ri, k]) != 1]
+            if len(non_b1_top) < 2:
+                skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
+                continue
+            wp2 = non_b1_top[1]
+            bidx2 = np.where(boats_2d[ri] == wp2)[0]
+            if len(bidx2) == 0:
+                skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
+                continue
+            wp2_prob = float(rank_probs[ri, bidx2[0]])
+            mkt_prob2 = tri_win_prob.get((rid, wp2), 0)
+            if mkt_prob2 <= 0:
+                skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
+                continue
+            ev2 = wp2_prob / mkt_prob2 * 0.75 - 1
+            if ev2 >= r2_ev_threshold:
+                wp, ev, wprob, rank_used = wp2, ev2, wp2_prob, 2
+            else:
+                skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
+                continue
+        else:
+            skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
             continue
         n_ev_pass += 1
 
@@ -301,6 +330,7 @@ def predict_trifecta(
             "b1_prob": round(b1p, 4),
             "winner_prob": round(wprob, 4),
             "ev": round(ev, 4),
+            "rank_used": rank_used,
             "tickets": tickets,
             "has_exhibition": bool(meta_b1["has_exhibition"].values[bi]),
         })
@@ -310,6 +340,7 @@ def predict_trifecta(
         "model_dir": model_dir,
         "b1_threshold": b1_threshold,
         "ev_threshold": ev_threshold,
+        "r2_ev_threshold": r2_ev_threshold,
         "n_races": len(predictions),
         "predictions": predictions,
         "evaluated_race_ids": evaluated_race_ids,
@@ -334,6 +365,8 @@ def main():
                         help="Override b1_threshold (default: from model_meta)")
     parser.add_argument("--ev-threshold", type=float, default=None,
                         help="Override ev_threshold (default: from model_meta)")
+    parser.add_argument("--r2-threshold", type=float, default=None,
+                        help="Rank-2 EV threshold for fallback (default: from model_meta)")
     parser.add_argument("--snapshot", default=None,
                         help="Stats snapshot path for fast inference")
     parser.add_argument("--race-ids", default=None,
@@ -350,6 +383,7 @@ def main():
         args.date, args.model_dir, args.db_path,
         b1_threshold=args.b1_threshold,
         ev_threshold=args.ev_threshold,
+        r2_ev_threshold=args.r2_threshold,
         snapshot_path=args.snapshot,
         race_ids=rid_list,
         use_snapshots=args.use_snapshots,

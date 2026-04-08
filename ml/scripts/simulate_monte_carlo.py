@@ -223,6 +223,7 @@ def _extract_params(
     all_flow: bool = False,
     mixed: bool = False,
     exacta_ratio: float = 1.0,
+    r2_ev_threshold: float | None = None,
 ) -> dict:
     """Extract MC parameters from backtest results by filtering with thresholds.
 
@@ -230,9 +231,24 @@ def _extract_params(
         default: X-noB1-noB1 (12 tickets)
         all_flow: X-全流し (20 tickets)
         mixed: 3連単 X-全 + 2連単 X-全 (20 + 5*ratio tickets)
+
+    When r2_ev_threshold is set, also includes rank-2 fallback bets
+    (races where rank-1 EV < ev_threshold but rank-2 EV >= r2_ev_threshold).
     """
+    # rank-1 bets: rank_used==1 (or no rank_used field for backward compat)
     filtered = [r for r in all_results
-                if r["b1_prob"] < b1_threshold and r["ev"] >= ev_threshold]
+                if r["b1_prob"] < b1_threshold
+                and r["ev"] >= ev_threshold
+                and r.get("rank_used", 1) == 1]
+    # rank-2 fallback bets
+    if r2_ev_threshold is not None:
+        r1_rids = {r["race_id"] for r in filtered}
+        r2_candidates = [r for r in all_results
+                         if r["b1_prob"] < b1_threshold
+                         and r["ev"] >= r2_ev_threshold
+                         and r.get("rank_used") == 2
+                         and r["race_id"] not in r1_rids]
+        filtered.extend(r2_candidates)
 
     n_bets = len(filtered)
     if n_bets == 0:
@@ -348,7 +364,7 @@ def collect_all_candidates(model_dir: str = "models/trifecta_v1") -> list[dict]:
     X_rank, _, meta_rank = prepare_feature_matrix(df)
     rank_scores = rank_model.predict(X_rank)
 
-    # Collect ALL candidates (no filtering) so _extract_params can sweep thresholds
+    # Collect ALL rank-1 candidates (no filtering) so _extract_params can sweep thresholds.
     all_results = evaluate_trifecta_strategy(
         b1_probs=b1_probs,
         meta_b1=meta_b1,
@@ -358,11 +374,30 @@ def collect_all_candidates(model_dir: str = "models/trifecta_v1") -> list[dict]:
         trifecta_odds=trifecta_odds,
         tri_win_prob=tri_win_prob,
         b1_threshold=1.0,       # no b1 filtering
-        ev_threshold=-999.0,    # no EV filtering
+        ev_threshold=-999.0,    # no EV filtering — all rank-1 picks
         race_date_map=race_date_map,
         exacta_odds=exacta_odds,
         per_race=True,
     )
+
+    # Also collect rank-2 candidates: force rank-1 EV high so rank-2 path is taken
+    r2_results = evaluate_trifecta_strategy(
+        b1_probs=b1_probs,
+        meta_b1=meta_b1,
+        rank_scores=rank_scores,
+        meta_rank=meta_rank,
+        finish_map=finish_map,
+        trifecta_odds=trifecta_odds,
+        tri_win_prob=tri_win_prob,
+        b1_threshold=1.0,
+        ev_threshold=9999.0,    # rank-1 always fails EV
+        r2_ev_threshold=-999.0, # rank-2 always passes
+        race_date_map=race_date_map,
+        exacta_odds=exacta_odds,
+        per_race=True,
+    )
+    # Tag rank-2 results and merge
+    all_results = all_results + r2_results
 
     print(f"  {len(all_results)} candidates from OOS ({oos_start}~) in {time.time()-t0:.0f}s",
           file=sys.stderr)
@@ -375,16 +410,18 @@ def collect_from_backtest(
     all_flow: bool = False,
     mixed: bool = False,
     exacta_ratio: float = 1.0,
+    r2_ev_threshold: float | None = None,
 ) -> dict:
     """Collect empirical distribution parameters from saved model OOS evaluation."""
     all_results = collect_all_candidates()
     params = _extract_params(
         all_results, b1_threshold, ev_threshold,
         all_flow=all_flow, mixed=mixed, exacta_ratio=exacta_ratio,
+        r2_ev_threshold=r2_ev_threshold,
     )
 
-    print(f"  b1<{b1_threshold} ev>+{ev_threshold:.0%}: "
-          f"{sum(1 for r in all_results if r['b1_prob'] < b1_threshold and r['ev'] >= ev_threshold)} bets, "
+    r2_label = f" r2>{r2_ev_threshold:+.0%}" if r2_ev_threshold is not None else ""
+    print(f"  b1<{b1_threshold} ev>+{ev_threshold:.0%}{r2_label}: "
           f"{params['bets_per_day']:.2f}/day, hit={params['hit_rate']:.1%}",
           file=sys.stderr)
     return params
@@ -418,6 +455,8 @@ def main():
                         help="Collect empirical params from WF-CV backtest")
     parser.add_argument("--ev-threshold", type=float, default=0.36,
                         help="EV threshold for backtest (default: 0.36)")
+    parser.add_argument("--r2-threshold", type=float, default=None,
+                        help="Rank-2 EV threshold for fallback (default: None)")
     parser.add_argument("--b1-threshold", type=float, default=0.55,
                         help="B1 threshold for backtest (default: 0.55)")
     parser.add_argument("--n-folds", type=int, default=4,
@@ -446,26 +485,29 @@ def main():
         periods = {"1ヶ月": 30, "3ヶ月": 90, "6ヶ月": 180, "1年": 365}
 
     # Compare mode: single backtest, multiple threshold sweeps
+    # Format: "b1:ev" or "b1:ev:r2ev"
     if args.compare:
         all_results = collect_all_candidates()
         if args.mixed:
-            flow_label = f"混合(25点×{args.exacta_ratio})"
+            flow_label = f"混合(25点x{args.exacta_ratio})"
         elif args.all_flow:
             flow_label = "全流し(20点)"
         else:
             flow_label = "noB1(12点)"
-        pairs = [p.strip().split(":") for p in args.compare.split(",")]
-        for b1s, evs in pairs:
-            b1_thr, ev_thr = float(b1s), float(evs)
+        entries = [p.strip().split(":") for p in args.compare.split(",")]
+        for entry in entries:
+            b1_thr = float(entry[0])
+            ev_thr = float(entry[1])
+            r2_thr = float(entry[2]) if len(entry) > 2 else None
             params = _extract_params(
                 all_results, b1_thr, ev_thr,
                 all_flow=args.all_flow or args.mixed,
                 mixed=args.mixed, exacta_ratio=args.exacta_ratio,
+                r2_ev_threshold=r2_thr,
             )
-            n = sum(1 for r in all_results
-                    if r["b1_prob"] < b1_thr and r["ev"] >= ev_thr)
+            r2_label = f" r2>{r2_thr:+.0%}" if r2_thr is not None else ""
             print(f"\n{'='*70}")
-            print(f"[{flow_label}] b1<{b1_thr} ev>+{ev_thr:.0%} — {n} bets, "
+            print(f"[{flow_label}] b1<{b1_thr} ev>+{ev_thr:.0%}{r2_label} — "
                   f"{params['bets_per_day']:.2f}/day, hit={params['hit_rate']:.1%}")
             print(f"{'='*70}")
             run_projection(
@@ -483,6 +525,7 @@ def main():
             all_flow=args.all_flow or args.mixed,
             mixed=args.mixed,
             exacta_ratio=args.exacta_ratio,
+            r2_ev_threshold=args.r2_threshold,
         )
     else:
         params = dict(DEFAULTS)

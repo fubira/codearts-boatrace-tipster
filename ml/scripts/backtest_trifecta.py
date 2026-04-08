@@ -172,22 +172,42 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map,
         tri_win_prob=tri_win_prob,
         b1_threshold=args.b1_threshold,
         ev_threshold=args.ev_threshold,
+        r2_ev_threshold=args.r2_threshold,
         race_date_map=race_date_map,
         per_race=True,
     )
 
-    summary = print_daily(
-        results,
-        f"X-allflow(20pt), b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%} "
-        f"({args.from_date} ~ {args.to_date})",
-    )
-
     if args.json:
+        # Compute summary without printing
+        from collections import defaultdict as _dd
+        TICKETS = 20
+        daily: dict = _dd(lambda: {"races": 0, "wins": 0, "payout": 0.0})
+        for r in results:
+            d = daily[r["date"]]
+            d["races"] += 1
+            if r["pick_1st"] and r.get("allflow_odds", 0) > 0:
+                d["wins"] += 1
+                d["payout"] += r["allflow_odds"]
+        total_r = sum(d["races"] for d in daily.values())
+        total_w = sum(d["wins"] for d in daily.values())
+        total_cost = total_r * TICKETS
+        total_p = sum(d["payout"] for d in daily.values())
+        summary = {
+            "days": len(daily), "races": total_r, "tickets_per_bet": TICKETS,
+            "wins": total_w, "payout": total_p, "cost": total_cost,
+            "roi": total_p / total_cost if total_cost > 0 else 0,
+        }
         json.dump(
             {"params": vars(args), "summary": summary, "races": results},
             sys.stdout,
             ensure_ascii=False,
             default=str,
+        )
+    else:
+        print_daily(
+            results,
+            f"X-allflow(20pt), b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%} "
+            f"({args.from_date} ~ {args.to_date})",
         )
 
 
@@ -263,6 +283,7 @@ def run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, e
             tri_win_prob=tri_win_prob,
             b1_threshold=args.b1_threshold,
             ev_threshold=args.ev_threshold,
+            r2_ev_threshold=args.r2_threshold,
         )
         fold_rois.append(result["roi"])
 
@@ -352,6 +373,7 @@ def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_ma
                 tri_win_prob=tri_win_prob,
                 b1_threshold=args.b1_threshold,
                 ev_threshold=ev_thr,
+                r2_ev_threshold=args.r2_threshold,
             )
 
             roi = result["roi"]
@@ -381,6 +403,8 @@ def main():
                         help="Model directory to load hyperparams from")
     parser.add_argument("--b1-threshold", type=float, default=None)
     parser.add_argument("--ev-threshold", type=float, default=None)
+    parser.add_argument("--r2-threshold", type=float, default=None,
+                        help="Rank-2 EV threshold for fallback (default: from model_meta or None)")
     parser.add_argument("--start-date", default=None,
                         help="Earliest date for training data (YYYY-MM-DD)")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
@@ -401,12 +425,16 @@ def main():
         args.b1_threshold = strategy.get("b1_threshold", 0.42)
     if args.ev_threshold is None:
         args.ev_threshold = strategy.get("ev_threshold", 0.36)
+    if args.r2_threshold is None:
+        r2 = strategy.get("r2_ev_threshold")
+        args.r2_threshold = float(r2) if r2 is not None else None
 
+    r2_label = f", R2>={args.r2_threshold:.0%}" if args.r2_threshold is not None else ""
     print(f"Model: {args.model_dir}", file=sys.stderr)
     print(f"  Ranking: relevance={ranking_params['relevance_scheme']}, "
           f"n_est={ranking_params['n_estimators']}, lr={ranking_params['learning_rate']:.4f}, "
           f"extra={ranking_params['extra_params']}", file=sys.stderr)
-    print(f"  Strategy: b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%}", file=sys.stderr)
+    print(f"  Strategy: b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%}{r2_label}", file=sys.stderr)
 
     t0 = time.time()
     print("Loading data...", file=sys.stderr)
