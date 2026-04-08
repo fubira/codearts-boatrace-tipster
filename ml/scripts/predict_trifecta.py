@@ -166,6 +166,9 @@ def predict_trifecta(
     # Filter to model's feature columns (model may have fewer features than pipeline)
     if b1_meta and b1_meta.get("feature_columns"):
         model_cols = [c for c in b1_meta["feature_columns"] if c in X_b1.columns]
+        if len(model_cols) != len(X_b1.columns):
+            dropped = set(X_b1.columns) - set(model_cols)
+            print(f"b1: pipeline has {len(X_b1.columns)} features, model expects {len(model_cols)}, dropping {dropped}", file=sys.stderr)
         X_b1 = X_b1[model_cols]
 
     # Fill NaN with training means
@@ -208,6 +211,9 @@ def predict_trifecta(
     # Filter to model's feature columns
     if rank_meta and rank_meta.get("feature_columns"):
         model_cols = [c for c in rank_meta["feature_columns"] if c in X_rank.columns]
+        if len(model_cols) != len(X_rank.columns):
+            dropped = set(X_rank.columns) - set(model_cols)
+            print(f"ranking: pipeline has {len(X_rank.columns)} features, model expects {len(model_cols)}, dropping {dropped}", file=sys.stderr)
         X_rank = X_rank[model_cols]
 
     # Fill NaN for ranking features
