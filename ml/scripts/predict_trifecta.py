@@ -163,6 +163,11 @@ def predict_trifecta(
 
     X_b1, _, meta_b1 = reshape_to_boat1(df)
 
+    # Filter to model's feature columns (model may have fewer features than pipeline)
+    if b1_meta and b1_meta.get("feature_columns"):
+        model_cols = [c for c in b1_meta["feature_columns"] if c in X_b1.columns]
+        X_b1 = X_b1[model_cols]
+
     # Fill NaN with training means
     X_b1 = X_b1.astype("float64")
     nan_cols = [c for c in X_b1.columns if X_b1[c].isna().any()]
@@ -199,6 +204,11 @@ def predict_trifecta(
     print(f"Strategy: b1<{b1_threshold:.3f} EV>={ev_threshold:.2f}{r2_label}", file=sys.stderr)
 
     X_rank, _, meta_rank = prepare_feature_matrix(df)
+
+    # Filter to model's feature columns
+    if rank_meta and rank_meta.get("feature_columns"):
+        model_cols = [c for c in rank_meta["feature_columns"] if c in X_rank.columns]
+        X_rank = X_rank[model_cols]
 
     # Fill NaN for ranking features
     X_rank = X_rank.astype("float64")
