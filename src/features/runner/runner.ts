@@ -132,7 +132,13 @@ function reEvaluateWithExtrapolation(
     const mpT3 = loadSnapshotWinProbs(slot.raceId, "T-3");
     const mpT1 = loadSnapshotWinProbs(slot.raceId, "T-1");
 
-    if (mpT3.size === 0 || mpT1.size === 0) continue;
+    if (mpT3.size === 0 || mpT1.size === 0) {
+      // T-3/T-1 missing — force skip to prevent bet on unreliable T-5 EV
+      cached.ev = -1;
+      const label = `${slot.stadiumName} R${slot.raceNumber}`;
+      logger.warn(`[DRIFT] ${label} | T-3/T-1 snapshot missing, forcing skip`);
+      continue;
+    }
 
     const boat = cached.winnerPick;
     const t3 = mpT3.get(boat);
@@ -153,7 +159,7 @@ function reEvaluateWithExtrapolation(
     const oldPct = (oldEv * 100).toFixed(1);
     const newPct = (newEv * 100).toFixed(1);
     logger.info(
-      `[DRIFT] ${label} | ${boat}号艇 | T-3 EV=${oldPct}% → extrap EV=${newPct}% (mp: T3=${(t3 * 100).toFixed(1)}% T1=${(t1 * 100).toFixed(1)}% → ${(extrapolatedMp * 100).toFixed(1)}%)`,
+      `[DRIFT] ${label} | ${boat}号艇 | T-5 EV=${oldPct}% → extrap EV=${newPct}% (mp: T3=${(t3 * 100).toFixed(1)}% T1=${(t1 * 100).toFixed(1)}% → ${(extrapolatedMp * 100).toFixed(1)}%)`,
     );
   }
 
