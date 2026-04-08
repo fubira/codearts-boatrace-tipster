@@ -72,6 +72,8 @@ def main():
                         help="Seed search with current best params from model_meta.json")
     parser.add_argument("--objective", choices=["sharpe", "profit"], default="sharpe",
                         help="Optimization objective: sharpe (stability) or profit (total P/L)")
+    parser.add_argument("--relevance", default=None,
+                        help="Fix relevance scheme (linear/top_heavy/win_only/podium). If omitted, included in search space.")
     args = parser.parse_args()
 
     print(f"Trials: {args.trials}, Folds: {args.n_folds}, Seed: {args.seed}, Objective: {args.objective}")
@@ -151,6 +153,7 @@ def main():
     print(f"Setup done in {time.time() - t0:.1f}s\n")
 
     obj_mode = args.objective
+    fixed_relevance = args.relevance
 
     def objective(trial: optuna.Trial) -> float:
         # LambdaRank hyperparameters
@@ -165,9 +168,12 @@ def main():
         }
         n_estimators = trial.suggest_int("n_estimators", 100, 1500)
         learning_rate = trial.suggest_float("learning_rate", 0.005, 0.2, log=True)
-        relevance = trial.suggest_categorical(
-            "relevance", ["linear", "top_heavy", "win_only", "podium"]
-        )
+        if fixed_relevance:
+            relevance = fixed_relevance
+        else:
+            relevance = trial.suggest_categorical(
+                "relevance", ["linear", "top_heavy", "win_only", "podium"]
+            )
 
         # Strategy parameters
         b1_threshold = trial.suggest_float("b1_threshold", 0.30, 0.55)

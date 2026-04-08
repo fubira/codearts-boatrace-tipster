@@ -39,7 +39,7 @@ MODEL="ranking"   # ranking | boat1
 TRIALS=100
 FOLDS=4
 FOLD_MONTHS=2
-RELEVANCE="top_heavy"
+RELEVANCE=""
 SEED=42
 TRAIN_START=""
 WARM_START=false
@@ -244,7 +244,7 @@ _build_cmd() {
     ranking)
       cmd="uv run --directory ml python -m scripts.train_eval"
       cmd+=" --mode optuna"
-      cmd+=" --relevance ${RELEVANCE}"
+      cmd+=" --relevance ${RELEVANCE:-top_heavy}"
       ;;
     boat1)
       cmd="uv run --directory ml python -m scripts.train_boat1_binary"
@@ -267,6 +267,9 @@ _build_cmd() {
       fi
       if [ -n "$OBJECTIVE" ]; then
         cmd+=" --objective ${OBJECTIVE}"
+      fi
+      if [ -n "$RELEVANCE" ]; then
+        cmd+=" --relevance ${RELEVANCE}"
       fi
       echo "$cmd"
       return
