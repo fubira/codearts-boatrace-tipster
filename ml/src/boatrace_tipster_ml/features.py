@@ -5,6 +5,11 @@ Historical features use the cum_all - cum_daily pattern to prevent
 temporal leakage (same-day races are fully excluded from history).
 """
 
+import hashlib
+import os
+import time
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -541,6 +546,39 @@ def _cleanup_temp_cols(df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 
 
+_CACHE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data" / "cache"
+_CACHE_FILE = _CACHE_DIR / "features.pkl"
+_CACHE_KEY_FILE = _CACHE_DIR / "features.key"
+
+
+def _db_cache_key(db_path: str) -> str:
+    """Generate a cache key from DB mtime + size."""
+    st = os.stat(db_path)
+    raw = f"{db_path}:{st.st_mtime_ns}:{st.st_size}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _load_cached_base(db_path: str) -> pd.DataFrame | None:
+    """Load cached base DataFrame if DB hasn't changed."""
+    if not _CACHE_FILE.exists() or not _CACHE_KEY_FILE.exists():
+        return None
+    stored_key = _CACHE_KEY_FILE.read_text().strip()
+    if stored_key != _db_cache_key(db_path):
+        return None
+    print("Loading features from cache...")
+    t0 = time.time()
+    df = pd.read_pickle(_CACHE_FILE)
+    print(f"  Loaded {len(df)} entries from cache ({time.time() - t0:.1f}s)")
+    return df
+
+
+def _save_cache(df: pd.DataFrame, db_path: str) -> None:
+    """Save base DataFrame to parquet cache."""
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_pickle(_CACHE_FILE)
+    _CACHE_KEY_FILE.write_text(_db_cache_key(db_path))
+
+
 def build_features_df(
     db_path: str,
     *,
@@ -553,6 +591,9 @@ def build_features_df(
     before FEATURE_COLS filtering. Used by boat1 binary classifier
     which needs access to columns beyond the ranking model's feature set.
 
+    Caches the base DataFrame (pre-filter) as parquet. Cache is
+    invalidated when the DB file is modified.
+
     Args:
         db_path: Path to the SQLite database.
         start_date: Include races on or after this date (YYYY-MM-DD).
@@ -561,31 +602,38 @@ def build_features_df(
     Returns:
         DataFrame with all computed features (6 rows per race).
     """
-    conn = get_connection(db_path)
+    # Try loading from cache (pre-filter base)
+    df = _load_cached_base(db_path)
 
-    try:
-        print("Loading data from database...")
-        df = _load_all_data(conn)
-        print(f"  Loaded {len(df)} entries")
-    finally:
-        conn.close()
+    if df is None:
+        conn = get_connection(db_path)
 
-    # Generate tournament ID for tournament-scoped features
-    _generate_tournament_id(df)
+        try:
+            print("Loading data from database...")
+            df = _load_all_data(conn)
+            print(f"  Loaded {len(df)} entries")
+        finally:
+            conn.close()
 
-    # Historical features (must be computed on full dataset before filtering)
-    print("Computing historical features...")
-    _add_racer_course_stats(df)
-    _add_stadium_course_stats(df)
-    _add_course_taking_rate(df)
-    _add_recent_form(df)
-    _add_st_stability(df)
-    _add_rolling_features(df)
-    _add_tournament_features(df)
-    _add_leaked_features(df)
+        # Generate tournament ID for tournament-scoped features
+        _generate_tournament_id(df)
 
-    _cleanup_temp_cols(df)
-    _encode_categoricals(df)
+        # Historical features (must be computed on full dataset before filtering)
+        print("Computing historical features...")
+        _add_racer_course_stats(df)
+        _add_stadium_course_stats(df)
+        _add_course_taking_rate(df)
+        _add_recent_form(df)
+        _add_st_stability(df)
+        _add_rolling_features(df)
+        _add_tournament_features(df)
+        _add_leaked_features(df)
+
+        _cleanup_temp_cols(df)
+        _encode_categoricals(df)
+
+        _save_cache(df, db_path)
+        print("  Saved features to cache")
 
     # Filter to target date range
     if start_date is not None:
