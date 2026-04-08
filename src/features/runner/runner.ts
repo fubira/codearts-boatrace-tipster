@@ -71,6 +71,7 @@ interface TrifectaPrediction {
   b1Prob: number;
   winnerProb: number;
   ev: number;
+  rankUsed: number;
   tickets: string[];
   hasExhibition: boolean;
 }
@@ -253,6 +254,7 @@ interface PredictionResult {
     b1Prob: number;
     winnerProb: number;
     ev: number;
+    rankUsed: number;
     tickets: string[];
     hasExhibition: boolean;
   }[];
@@ -330,6 +332,7 @@ async function runPrediction(
       b1_prob: number;
       winner_prob: number;
       ev: number;
+      rank_used?: number;
       tickets: string[];
       has_exhibition: boolean;
     }) => ({
@@ -338,6 +341,7 @@ async function runPrediction(
       b1Prob: p.b1_prob,
       winnerProb: p.winner_prob,
       ev: p.ev,
+      rankUsed: p.rank_used ?? 1,
       tickets: p.tickets,
       hasExhibition: p.has_exhibition,
     }),
@@ -485,6 +489,7 @@ function updatePredictionCache(
       b1Prob: p.b1Prob,
       winnerProb: p.winnerProb,
       ev: p.ev,
+      rankUsed: p.rankUsed,
       tickets: p.tickets,
       hasExhibition: p.hasExhibition,
     });
@@ -618,7 +623,8 @@ async function makeBetDecisions(
           : "";
     }
 
-    const base = `${label} | ${cached.winnerPick}号艇1着 | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct.toFixed(1)}% | ${cached.tickets.length}pt`;
+    const rankTag = cached.rankUsed === 2 ? "(r2)" : "";
+    const base = `${label} | ${cached.winnerPick}号艇1着${rankTag} | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct.toFixed(1)}% | ${cached.tickets.length}pt`;
 
     if (isBet) {
       const unit = calcTrifectaUnit(state.bankroll, opts.betCap);
@@ -1027,7 +1033,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
       await Bun.sleep(POLL_INTERVAL_MS);
       try {
         await poll(state, opts);
-        if (allDone(schedule)) {
+        if (allDone(state.schedule)) {
           logger.info("All races done for today");
           dayDone = true;
         }
