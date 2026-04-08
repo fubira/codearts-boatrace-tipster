@@ -82,8 +82,8 @@ def load_data(db_path: str):
     return df, trifecta_odds, dict(tri_win_prob), finish_map, race_date_map, exacta_odds
 
 
-def print_daily(results: list[dict], label: str = ""):
-    """Print daily breakdown from per-race results."""
+def print_daily(results: list[dict], label: str = "", *, weekly: bool = False):
+    """Print daily or weekly breakdown from per-race results."""
     if label:
         print(f"\n=== {label} ===")
 
@@ -105,23 +105,67 @@ def print_daily(results: list[dict], label: str = ""):
     total_p = 0.0
     win_days = 0
 
-    for date in sorted(daily.keys()):
-        d = daily[date]
-        cost = d["races"] * TICKETS_PER_BET
-        pl = d["payout"] - cost
-        cum += pl
-        total_r += d["races"]
-        total_cost += cost
-        total_w += d["wins"]
-        total_p += d["payout"]
-        if pl > 0:
-            win_days += 1
-        marker = "+" if pl > 0 else "-"
-        hit_pct = d["wins"] / d["races"] * 100 if d["races"] > 0 else 0
-        print(
-            f"  {date}: {d['races']:>2}R {d['wins']}W({hit_pct:>3.0f}%) "
-            f"P/L {pl:>+8.1f} cum {cum:>+9.1f} {marker}"
+    if weekly:
+        from datetime import datetime
+        weeks: dict[str, dict] = defaultdict(
+            lambda: {"races": 0, "wins": 0, "payout": 0.0, "days": 0,
+                     "win_days": 0, "first": "", "last": ""}
         )
+        for date in sorted(daily.keys()):
+            d = daily[date]
+            dt = datetime.strptime(date, "%Y-%m-%d")
+            iso = dt.isocalendar()
+            week_key = f"{iso[0]}-W{iso[1]:02d}"
+            w = weeks[week_key]
+            w["races"] += d["races"]
+            w["wins"] += d["wins"]
+            w["payout"] += d["payout"]
+            w["days"] += 1
+            if d["payout"] - d["races"] * TICKETS_PER_BET > 0:
+                w["win_days"] += 1
+            if not w["first"] or date < w["first"]:
+                w["first"] = date
+            if not w["last"] or date > w["last"]:
+                w["last"] = date
+
+        for week_key in sorted(weeks.keys()):
+            w = weeks[week_key]
+            cost = w["races"] * TICKETS_PER_BET
+            pl = w["payout"] - cost
+            cum += pl
+            total_r += w["races"]
+            total_cost += cost
+            total_w += w["wins"]
+            total_p += w["payout"]
+            win_days += w["win_days"]
+            roi_w = w["payout"] / cost if cost > 0 else 0
+            hit_pct = w["wins"] / w["races"] * 100 if w["races"] > 0 else 0
+            rpd = w["races"] / w["days"] if w["days"] > 0 else 0
+            marker = "+" if pl > 0 else "-"
+            print(
+                f"  {week_key} ({w['first']}~{w['last']}): "
+                f"{w['races']:>3}R {w['wins']}W({hit_pct:>3.0f}%) "
+                f"{rpd:.1f}R/d ROI {roi_w:>4.0%} "
+                f"P/L {pl:>+8.1f} cum {cum:>+9.1f} {marker}"
+            )
+    else:
+        for date in sorted(daily.keys()):
+            d = daily[date]
+            cost = d["races"] * TICKETS_PER_BET
+            pl = d["payout"] - cost
+            cum += pl
+            total_r += d["races"]
+            total_cost += cost
+            total_w += d["wins"]
+            total_p += d["payout"]
+            if pl > 0:
+                win_days += 1
+            marker = "+" if pl > 0 else "-"
+            hit_pct = d["wins"] / d["races"] * 100 if d["races"] > 0 else 0
+            print(
+                f"  {date}: {d['races']:>2}R {d['wins']}W({hit_pct:>3.0f}%) "
+                f"P/L {pl:>+8.1f} cum {cum:>+9.1f} {marker}"
+            )
 
     days = len(daily)
     if total_cost > 0:
@@ -208,6 +252,7 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map,
             results,
             f"X-allflow(20pt), b1<{args.b1_threshold:.0%}, EV>={args.ev_threshold:.0%} "
             f"({args.from_date} ~ {args.to_date})",
+            weekly=args.weekly,
         )
 
 
@@ -409,6 +454,7 @@ def main():
                         help="Earliest date for training data (YYYY-MM-DD)")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--weekly", action="store_true", help="Show weekly summary instead of daily")
     args = parser.parse_args()
 
     # Load hyperparameters from model_meta.json (single source of truth)
