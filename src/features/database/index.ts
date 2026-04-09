@@ -23,4 +23,5 @@ export type {
   SaveResult,
   OddsData,
   PurchaseRecordData,
+  OddsTiming,
 } from "./storage";

@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  type OddsTiming,
   closeDatabase,
   getDatabase,
   initializeDatabase,
@@ -100,7 +101,7 @@ interface RunnerState {
   bets: Map<number, BetDecision>; // raceId → decision
   results: Map<number, { won: boolean; payout: number }>;
   predictionCache: PredictionCache | null; // null = not yet loaded
-  oddsTimings: Map<number, Set<string>>; // raceId → collected timing labels
+  oddsTimings: Map<number, Set<OddsTiming>>; // raceId → collected timing labels
   bankroll: number;
   date: string;
   lastStatusLine: string;
@@ -148,10 +149,15 @@ function reEvaluateWithExtrapolation(
     const mpT1 = loadSnapshotWinProbs(slot.raceId, "T-1");
 
     if (mpT3.size === 0 || mpT1.size === 0) {
-      // T-3/T-1 missing — force skip to prevent bet on unreliable T-5 EV
-      cached.ev = -1;
+      // T-3/T-1 missing — replace with SkippedPrediction to prevent bet
       const label = `${slot.stadiumName} R${slot.raceNumber}`;
       logger.warn(`[DRIFT] ${label} | T-3/T-1 snapshot missing, forcing skip`);
+      state.predictionCache.set(slot.raceId, {
+        skipReason: "no_drift_data",
+        b1Prob: cached.b1Prob,
+        winnerPick: cached.winnerPick,
+        ev: cached.ev,
+      });
       continue;
     }
 
@@ -460,8 +466,8 @@ export function calcTrifectaUnit(bankroll: number, betCap: number): number {
 function fetchTrifectaOdds(
   slots: RaceSlot[],
   date: string,
-  timing: string,
-  oddsTimings: Map<number, Set<string>>,
+  timing: OddsTiming,
+  oddsTimings: Map<number, Set<OddsTiming>>,
 ): number {
   let fetched = 0;
   const isConfirmed = timing === "final";

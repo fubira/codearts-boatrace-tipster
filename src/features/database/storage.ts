@@ -2,6 +2,9 @@ import type { Database } from "bun:sqlite";
 import { logger } from "@/shared/logger";
 import { getDatabase } from "./client";
 
+/** Odds snapshot timing labels. "final" writes to race_odds table. */
+export type OddsTiming = "T-5" | "T-3" | "T-1" | "final";
+
 // --- Input types ---
 
 export interface RaceEntryData {
@@ -571,7 +574,7 @@ export function savePurchaseRecord(
 /** Save odds snapshot (append-only, for multi-timing analysis) */
 export function saveOddsSnapshot(
   raceId: number,
-  timing: string,
+  timing: OddsTiming,
   entries: { betType: string; combination: string; odds: number }[],
   db?: Database,
 ): void {
@@ -603,7 +606,7 @@ export function saveOddsSnapshot(
  */
 export function loadSnapshotWinProbs(
   raceId: number,
-  timing: string,
+  timing: OddsTiming,
   db?: Database,
 ): Map<number, number> {
   const database = db ?? getDatabase();
