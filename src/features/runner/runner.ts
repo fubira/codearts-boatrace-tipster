@@ -448,11 +448,22 @@ async function pollPredict(
 ): Promise<void> {
   const racesToPredict = getRacesToPredict(slots, state.predictionCache, 1);
 
-  try {
-    if (racesToPredict.length > 0) {
-      getDatabase().exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  // Wait for scrape-daemon to write odds before running prediction
+  const db = getDatabase();
+  const readyRaces = racesToPredict.filter((s) => {
+    const row = db
+      .query(
+        "SELECT COUNT(*) as cnt FROM race_odds_snapshots WHERE race_id = ? AND timing = 'T-5'",
+      )
+      .get(s.raceId) as { cnt: number };
+    return row.cnt > 0;
+  });
 
-      const targetRaceIds = racesToPredict.map((s) => s.raceId);
+  try {
+    if (readyRaces.length > 0) {
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+
+      const targetRaceIds = readyRaces.map((s) => s.raceId);
       logger.info(
         `Running trifecta prediction for ${targetRaceIds.length} race(s)...`,
       );
