@@ -113,6 +113,9 @@ export function getActionableRaces(
     switch (slot.status) {
       case "waiting":
         if (minutesToDeadline <= -SKIP_THRESHOLD) {
+          logger.warn(
+            `Auto-skip: ${slot.stadiumName} R${slot.raceNumber} | deadline passed (${slot.status})`,
+          );
           slot.status = "done";
         } else if (minutesToDeadline <= BEFORE_INFO_LEAD) {
           beforeInfo.push(slot);
@@ -120,6 +123,9 @@ export function getActionableRaces(
         break;
       case "before_info":
         if (minutesToDeadline <= -SKIP_THRESHOLD) {
+          logger.warn(
+            `Auto-skip: ${slot.stadiumName} R${slot.raceNumber} | deadline passed (${slot.status})`,
+          );
           slot.status = "done";
         } else if (minutesToDeadline <= PREDICT_LEAD) {
           predict.push(slot);
@@ -127,6 +133,9 @@ export function getActionableRaces(
         break;
       case "predicted":
         if (minutesToDeadline <= -SKIP_THRESHOLD) {
+          logger.warn(
+            `Auto-skip: ${slot.stadiumName} R${slot.raceNumber} | deadline passed (${slot.status})`,
+          );
           slot.status = "done";
         } else if (minutesToDeadline <= ODDS_LEAD) {
           odds.push(slot);

@@ -355,7 +355,7 @@ async function runPrediction(
     "--db-path",
     config.dbPath,
     "--ev-threshold",
-    "0", // Return all EV>0 candidates; runner filters by opts.evThreshold
+    "0", // Python returns all b1-pass races; runner filters by opts.evThreshold after drift
   ];
   if (snapshotPath) {
     args.push("--snapshot", snapshotPath);
@@ -657,6 +657,9 @@ async function pollPredict(
     for (const slot of slots) {
       const cached = state.predictionCache?.get(slot.raceId);
       if (!cached) {
+        logger.info(
+          `[T-5] ${slot.stadiumName} R${slot.raceNumber} | no prediction returned`,
+        );
         slot.status = "predicted";
         continue;
       }

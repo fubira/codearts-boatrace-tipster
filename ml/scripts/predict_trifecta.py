@@ -292,34 +292,24 @@ def predict_trifecta(
 
         ev1 = wp1_prob / mkt_prob1 * 0.75 - 1
 
-        # Decide: rank-1, rank-2 fallback, or skip
-        if ev1 >= ev_threshold:
-            wp, ev, wprob, rank_used = wp1, ev1, wp1_prob, 1
-        elif r2_ev_threshold is not None:
+        # Decide: rank-1 or rank-2 fallback.
+        # EV threshold filtering is deferred to the runner (drift extrapolation
+        # may change EV between T-5 and T-1). All b1-pass races with valid
+        # odds are returned as predictions.
+        wp, ev, wprob, rank_used = wp1, ev1, wp1_prob, 1
+        if ev1 < ev_threshold and r2_ev_threshold is not None:
             non_b1_top = [int(top_boats[ri, k]) for k in range(FIELD_SIZE)
                           if int(top_boats[ri, k]) != 1]
-            if len(non_b1_top) < 2:
-                skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
-                continue
-            wp2 = non_b1_top[1]
-            bidx2 = np.where(boats_2d[ri] == wp2)[0]
-            if len(bidx2) == 0:
-                skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
-                continue
-            wp2_prob = float(rank_probs[ri, bidx2[0]])
-            mkt_prob2 = tri_win_prob.get((rid, wp2), 0)
-            if mkt_prob2 <= 0:
-                skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
-                continue
-            ev2 = wp2_prob / mkt_prob2 * 0.75 - 1
-            if ev2 >= r2_ev_threshold:
-                wp, ev, wprob, rank_used = wp2, ev2, wp2_prob, 2
-            else:
-                skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
-                continue
-        else:
-            skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev1, 4), "pick": int(wp1), "reason": "ev_low"}
-            continue
+            if len(non_b1_top) >= 2:
+                wp2 = non_b1_top[1]
+                bidx2 = np.where(boats_2d[ri] == wp2)[0]
+                if len(bidx2) > 0:
+                    wp2_prob = float(rank_probs[ri, bidx2[0]])
+                    mkt_prob2 = tri_win_prob.get((rid, wp2), 0)
+                    if mkt_prob2 > 0:
+                        ev2 = wp2_prob / mkt_prob2 * 0.75 - 1
+                        if ev2 >= r2_ev_threshold:
+                            wp, ev, wprob, rank_used = wp2, ev2, wp2_prob, 2
         n_ev_pass += 1
 
         # Build X-全流し tickets (20 combinations: wp fixed 1st, all others 2-3)
@@ -333,6 +323,7 @@ def predict_trifecta(
                         tickets.append(combo)
 
         if not tickets:
+            skipped[rid] = {"b1_prob": round(b1p, 4), "ev": round(ev, 4), "pick": wp, "reason": "no_tickets"}
             continue
 
         sid = int(b1_rows["stadium_id"].values[i])
