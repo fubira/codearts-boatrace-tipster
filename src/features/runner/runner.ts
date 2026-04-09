@@ -1,26 +1,14 @@
-/** Daemon that automates scrape → predict → notify cycle. */
+/** Daemon that automates predict → notify cycle. Reads data from DB (scrape-daemon writes). */
 
 import { existsSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  type OddsTiming,
   closeDatabase,
   getDatabase,
   initializeDatabase,
   loadSnapshotWinProbs,
-  saveBeforeInfo,
-  saveRaceResults,
-  saveRaces,
 } from "@/features/database";
-import {
-  disableCacheRead,
-  enableCache,
-  enableCacheRead,
-} from "@/features/scraper/cache-manager";
-import { getScraper } from "@/features/scraper/registry";
-import { fetchAndSaveBoatcast } from "@/features/scraper/sources/boatcast/fetcher";
 import { STADIUMS } from "@/features/scraper/sources/boatrace/constants";
-import { discoverDateSchedule } from "@/features/scraper/sources/boatrace/discovery";
 import type { PurchaseExecutor } from "@/features/teleboat";
 import { config } from "@/shared/config";
 import { enableFileLog, logger } from "@/shared/logger";
@@ -32,11 +20,6 @@ import {
   buildSchedule,
   getActionableRaces,
 } from "./race-scheduler";
-import {
-  fetchTrifectaOdds,
-  scrapeBeforeInfoForRace,
-  scrapeResultForRace,
-} from "./scrape-helpers";
 import {
   notifyDailySummary,
   notifyError,
@@ -92,7 +75,6 @@ interface RunnerState {
   bets: Map<number, BetDecision>; // raceId → decision
   results: Map<number, { won: boolean; payout: number }>;
   predictionCache: PredictionCache | null; // null = not yet loaded
-  oddsTimings: Map<number, Set<OddsTiming>>; // raceId → collected timing labels
   bankroll: number;
   date: string;
   lastStatusLine: string;
@@ -454,58 +436,14 @@ function updatePredictionCache(
   );
 }
 
-/** Predict and make bet decisions for actionable races. Odds saved as T-5 snapshot. */
+/** Predict for actionable races. Reads odds from DB (written by scrape-daemon). */
 async function pollPredict(
   state: RunnerState,
   slots: RaceSlot[],
   opts: RunnerOptions,
   bets: Map<number, BetDecision>,
 ): Promise<void> {
-  // Re-scrape before-info and BOATCAST if exhibition data is missing
-  const db = getDatabase();
-  let rescraped = 0;
-  for (const slot of slots) {
-    const counts = db
-      .query(
-        `SELECT
-           SUM(CASE WHEN exhibition_time IS NOT NULL THEN 1 ELSE 0 END) as exh,
-           SUM(CASE WHEN bc_lap_time IS NOT NULL THEN 1 ELSE 0 END) as bc
-         FROM race_entries WHERE race_id = ?`,
-      )
-      .get(slot.raceId) as { exh: number; bc: number };
-    if (counts.exh === 0) {
-      try {
-        scrapeBeforeInfoForRace(slot, state.date);
-        rescraped++;
-      } catch {
-        // Prediction will proceed without exhibition data
-      }
-    }
-    if (counts.bc === 0) {
-      try {
-        await fetchAndSaveBoatcast(slot.stadiumId, state.date, slot.raceNumber);
-      } catch {
-        // Non-critical
-      }
-    }
-  }
-  if (rescraped > 0) {
-    logger.info(`Re-scraped exhibition data for ${rescraped} race(s)`);
-  }
-
-  const oddsFetched = fetchTrifectaOdds(
-    slots,
-    state.date,
-    "T-5",
-    state.oddsTimings,
-  );
-  logger.info(`Trifecta odds (T-5): ${oddsFetched}/${slots.length} fetched`);
-
-  const racesToPredict = getRacesToPredict(
-    slots,
-    state.predictionCache,
-    oddsFetched,
-  );
+  const racesToPredict = getRacesToPredict(slots, state.predictionCache, 1);
 
   try {
     if (racesToPredict.length > 0) {
@@ -684,105 +622,38 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     state.lastStatusLine = statusLine;
   }
 
-  // 1. Scrape before-info for races approaching deadline
-  if (actionable.beforeInfo.length > 0) {
-    let scraped = 0;
-    let bcFetched = 0;
-    for (const slot of actionable.beforeInfo) {
-      try {
-        const ok = scrapeBeforeInfoForRace(slot, state.date);
-        if (ok) {
-          slot.status = "before_info";
-          scraped++;
-        }
-      } catch (err) {
-        await notifyError(
-          `before-info ${slot.stadiumName} R${slot.raceNumber}`,
-          err,
-        );
-      }
-      // Fetch BOATCAST exhibition data (oriten + stt)
-      try {
-        const bc = await fetchAndSaveBoatcast(
-          slot.stadiumId,
-          state.date,
-          slot.raceNumber,
-        );
-        if (bc) bcFetched++;
-      } catch {
-        // Non-critical: prediction proceeds without BOATCAST data
-      }
-    }
-    logger.info(
-      `Before-info: ${scraped}/${actionable.beforeInfo.length} scraped, BOATCAST: ${bcFetched}`,
-    );
+  // 1. Transition before-info races (scrape-daemon handles actual scraping)
+  for (const slot of actionable.beforeInfo) {
+    slot.status = "before_info";
   }
 
-  // 2. Predict for races near deadline (trifecta strategy)
+  // 2. Predict for races near deadline (reads odds from DB)
   if (actionable.predict.length > 0) {
     await pollPredict(state, actionable.predict, opts, bets);
   }
 
-  // 3a. Fetch T-3 odds snapshot (no status change)
-  if (actionable.oddsT3.length > 0) {
-    const t3Fetched = fetchTrifectaOdds(
-      actionable.oddsT3,
-      state.date,
-      "T-3",
-      state.oddsTimings,
-    );
-    if (t3Fetched > 0) {
-      logger.info(
-        `Odds snapshot (T-3): ${t3Fetched}/${actionable.oddsT3.length} fetched`,
-      );
-    }
-  }
-
-  // 3b. Fetch T-1 odds snapshot, re-evaluate EV with drift extrapolation, and make bet decisions
+  // 3. Re-evaluate EV with drift extrapolation and make bet decisions
   if (actionable.odds.length > 0) {
-    const t1Fetched = fetchTrifectaOdds(
-      actionable.odds,
-      state.date,
-      "T-1",
-      state.oddsTimings,
-    );
-    if (t1Fetched > 0) {
-      logger.info(
-        `Odds snapshot (T-1): ${t1Fetched}/${actionable.odds.length} fetched`,
-      );
-    }
-
-    // Re-evaluate EV using T-3+T-1 extrapolation
     reEvaluateWithExtrapolation(actionable.odds, state);
-
-    // Now make bet decisions with extrapolated EV
     await makeBetDecisions(actionable.odds, state, opts, bets);
   }
   for (const slot of actionable.odds) {
     slot.status = "decided";
   }
 
-  // 4. Check results for finished races (always scrape, even without bets)
-  // Fetch final (confirmed) odds for all results races
-  if (actionable.results.length > 0) {
-    const finalFetched = fetchTrifectaOdds(
-      actionable.results,
-      state.date,
-      "final",
-      state.oddsTimings,
-    );
-    if (finalFetched > 0) {
-      logger.info(
-        `Odds snapshot (final): ${finalFetched}/${actionable.results.length} fetched`,
-      );
-    }
-  }
-
+  // 4. Check results from DB (scrape-daemon handles actual scraping)
   for (const slot of actionable.results) {
     try {
-      const raceResult = scrapeResultForRace(slot, state.date);
+      const db = getDatabase();
+      const entries = db
+        .query(
+          `SELECT boat_number, finish_position FROM race_entries
+           WHERE race_id = ? AND finish_position IS NOT NULL
+           ORDER BY finish_position`,
+        )
+        .all(slot.raceId) as { boat_number: number; finish_position: number }[];
 
-      if (raceResult === null) {
+      if (entries.length === 0) {
         slot.status = "result_pending";
         continue;
       }
@@ -793,16 +664,10 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         continue;
       }
 
-      // Find actual finishing order
-      const entries = raceResult.entries
-        .filter((e) => e.finishPosition != null)
-        .sort((a, b) => (a.finishPosition ?? 99) - (b.finishPosition ?? 99));
+      const actual1st = entries[0]?.boat_number;
+      const actual2nd = entries[1]?.boat_number;
+      const actual3rd = entries[2]?.boat_number;
 
-      const actual1st = entries[0]?.boatNumber;
-      const actual2nd = entries[1]?.boatNumber;
-      const actual3rd = entries[2]?.boatNumber;
-
-      // Check if any of our trifecta tickets hit
       const cached = state.predictionCache?.get(slot.raceId);
       const tickets = cached && !("skipReason" in cached) ? cached.tickets : [];
       const hitCombo =
@@ -811,23 +676,23 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
           : null;
       const won = hitCombo != null && tickets.includes(hitCombo);
 
-      // Get trifecta payout from race_payouts
       let payout = 0;
-      if (won) {
-        const trifectaPayout = raceResult.payouts?.find(
-          (p) => p.betType === "3連単" && p.combination === hitCombo,
-        );
-        if (trifectaPayout) {
-          // betAmount = unit × nTickets. unit = betAmount / nTickets
+      if (won && hitCombo) {
+        const payoutRow = db
+          .query(
+            `SELECT payout FROM race_payouts
+             WHERE race_id = ? AND bet_type = '3連単' AND combination = ?`,
+          )
+          .get(slot.raceId, hitCombo) as { payout: number } | null;
+        if (payoutRow) {
           const unit = tickets.length > 0 ? bet.betAmount / tickets.length : 0;
-          payout = Math.round((unit / 100) * trifectaPayout.payout);
+          payout = Math.round((unit / 100) * payoutRow.payout);
         }
       }
 
       state.bankroll += payout;
       results.set(slot.raceId, { won, payout });
 
-      // Log result with finishing order detail
       const resultStr = hitCombo ?? "N/A";
       const pickHit = actual1st === bet.boatNumber ? "1着○" : "1着×";
       const pl = payout - bet.betAmount;
@@ -860,8 +725,8 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 // Day setup (shared by initial startup and daily restart)
 // ---------------------------------------------------------------------------
 
-const DISCOVER_RETRY_INTERVAL_MS = 5 * 60_000;
-const DISCOVER_MAX_RETRIES = 6;
+const SCHEDULE_RETRY_INTERVAL_MS = 60_000;
+const SCHEDULE_MAX_RETRIES = 30; // wait up to 30 min for scrape-daemon
 
 const stadiumNames = new Map(
   Object.entries(STADIUMS).map(([code, name]) => [
@@ -870,70 +735,44 @@ const stadiumNames = new Map(
   ]),
 );
 
-/** Discover venues, scrape race lists, build schedule and snapshot.
- *  Returns null if no venues found. */
+/** Read schedule from DB (scrape-daemon populates it), build snapshot.
+ *  Retries if DB has no races yet. Returns null if no races found. */
 async function setupDay(opts: RunnerOptions): Promise<RunnerState | null> {
   const date = todayJST();
-  const yyyymmdd = todayYYYYMMDD();
 
   logger.info(
     `Starting runner v${config.version} for ${date} (${opts.dryRun ? "DRY RUN" : "LIVE"})`,
   );
 
-  // 1. Discover venues (retry up to 30 min if schedule not yet published)
-  let venueCodes: { stadiumCode: string; date: string }[] = [];
-  for (let attempt = 0; attempt <= DISCOVER_MAX_RETRIES; attempt++) {
-    if (attempt > 0) disableCacheRead();
-    venueCodes = discoverDateSchedule(yyyymmdd);
-    if (attempt > 0) enableCacheRead();
-    if (venueCodes.length > 0) break;
-    if (attempt < DISCOVER_MAX_RETRIES) {
-      logger.warn(
-        `No venues found yet (attempt ${attempt + 1}/${DISCOVER_MAX_RETRIES + 1}), retrying in 5 min...`,
-      );
-      await Bun.sleep(DISCOVER_RETRY_INTERVAL_MS);
-    }
-  }
-
-  if (venueCodes.length === 0) {
-    logger.warn("No venues found after retries — no races today?");
-    return null;
-  }
-
-  // 2. Scrape race lists
-  logger.info(`Found ${venueCodes.length} venues, scraping race lists...`);
-  const scraper = getScraper("boatrace");
-  if (!scraper) {
-    logger.error("Scraper 'boatrace' not found");
-    return null;
-  }
-
-  let totalScraped = 0;
-  scraper.scrape({
-    date: yyyymmdd,
-    skipResults: true,
-    onBatchComplete: (batch) => {
-      if (batch.races.length > 0) saveRaces(batch.races);
-      if (batch.results.length > 0) saveRaceResults(batch.results);
-      if (batch.beforeInfo.length > 0) saveBeforeInfo(batch.beforeInfo);
-      totalScraped += batch.races.length;
-    },
-  });
-  logger.info(`Scraped ${totalScraped} races`);
-
-  // 3. Build schedule from DB
+  // Wait for scrape-daemon to populate races in DB
   const db = getDatabase();
-  const races = db
-    .query(
-      `SELECT id, stadium_id, race_number, deadline FROM races
-       WHERE race_date = ? ORDER BY deadline, stadium_id, race_number`,
-    )
-    .all(date) as {
+  let races: {
     id: number;
     stadium_id: number;
     race_number: number;
     deadline: string | null;
-  }[];
+  }[] = [];
+
+  for (let attempt = 0; attempt <= SCHEDULE_MAX_RETRIES; attempt++) {
+    races = db
+      .query(
+        `SELECT id, stadium_id, race_number, deadline FROM races
+         WHERE race_date = ? ORDER BY deadline, stadium_id, race_number`,
+      )
+      .all(date) as typeof races;
+    if (races.length > 0) break;
+    if (attempt < SCHEDULE_MAX_RETRIES) {
+      logger.warn(
+        `No races in DB yet (attempt ${attempt + 1}/${SCHEDULE_MAX_RETRIES + 1}), waiting for scrape-daemon...`,
+      );
+      await Bun.sleep(SCHEDULE_RETRY_INTERVAL_MS);
+    }
+  }
+
+  if (races.length === 0) {
+    logger.warn("No races found in DB after retries");
+    return null;
+  }
 
   const schedule = buildSchedule(races, stadiumNames, date);
   if (schedule.length > 0) {
@@ -947,7 +786,6 @@ async function setupDay(opts: RunnerOptions): Promise<RunnerState | null> {
     logger.info("Schedule: 0 races");
   }
 
-  // 4. Build stats snapshot for fast inference
   const snapshotPath = await buildStatsSnapshot(date);
 
   const state: RunnerState = {
@@ -955,7 +793,6 @@ async function setupDay(opts: RunnerOptions): Promise<RunnerState | null> {
     bets: new Map(),
     results: new Map(),
     predictionCache: null,
-    oddsTimings: new Map(),
     bankroll: opts.bankroll,
     date,
     lastStatusLine: "",
@@ -965,7 +802,7 @@ async function setupDay(opts: RunnerOptions): Promise<RunnerState | null> {
   await notifyStartup({
     version: config.version,
     date,
-    venues: venueCodes.length,
+    venues: new Set(races.map((r) => r.stadium_id)).size,
     races: schedule.length,
     dryRun: opts.dryRun,
     evThreshold: opts.evThreshold,
@@ -981,7 +818,6 @@ async function setupDay(opts: RunnerOptions): Promise<RunnerState | null> {
 export async function runDaemon(opts: RunnerOptions): Promise<void> {
   setSlackWebhook(opts.slackWebhookUrl);
   enableFileLog(resolve(config.projectRoot, "logs"));
-  enableCache();
   initializeDatabase();
 
   const state = await setupDay(opts);
