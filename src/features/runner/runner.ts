@@ -731,7 +731,7 @@ async function makeBetDecisions(
     }
 
     const rankTag = cached.rankUsed === 2 ? "(r2)" : "";
-    const base = `${label} | ${cached.winnerPick}号艇1着${rankTag} | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct.toFixed(1)}% | ${cached.tickets.length}pt`;
+    const base = `${label} | ${cached.winnerPick}号艇1着${rankTag} | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=${evPct.toFixed(1)}% | ${cached.tickets.length}pt`;
 
     if (isBet) {
       const unit = calcTrifectaUnit(state.bankroll, opts.betCap);
