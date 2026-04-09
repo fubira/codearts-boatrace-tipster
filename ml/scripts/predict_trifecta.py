@@ -1,16 +1,15 @@
-"""Predict trifecta X-noB1-noB1 strategy (12-ticket fixed 1st place).
+"""Predict trifecta X-allflow strategy (20-ticket fixed 1st place).
 
 Flow:
   1. Boat1 binary model: predict b1_prob for each race
   2. Filter: b1_prob < b1_threshold (boat 1 likely to lose)
-  3. LambdaRank: pick winner X (top non-boat-1)
+  3. LambdaRank: pick winner X (top non-boat-1, rank-2 fallback)
   4. Compute trifecta-implied EV = softmax_prob / market_prob * 0.75 - 1
-  5. Filter: EV >= ev_threshold
-  6. Generate 12 tickets: X-{non-1, non-X}-{non-1, non-X}
+  5. Generate 20 tickets: X-allflow
+  6. Return all predictions (EV filtering deferred to runner after drift)
 
 Usage:
     uv run --directory ml python -m scripts.predict_trifecta --date 2026-04-04
-    uv run --directory ml python -m scripts.predict_trifecta --date 2026-04-04 --ev-threshold 0.33
 """
 
 import argparse
@@ -257,7 +256,7 @@ def predict_trifecta(
     n_total = len(b1_rows)
     n_b1_pass = 0
     n_has_odds = 0
-    n_ev_pass = 0
+    n_predicted = 0
 
     for i in range(n_total):
         rid = int(b1_rows["race_id"].values[i])
@@ -310,7 +309,7 @@ def predict_trifecta(
                         ev2 = wp2_prob / mkt_prob2 * 0.75 - 1
                         if ev2 >= r2_ev_threshold:
                             wp, ev, wprob, rank_used = wp2, ev2, wp2_prob, 2
-        n_ev_pass += 1
+        n_predicted += 1
 
         # Build X-全流し tickets (20 combinations: wp fixed 1st, all others 2-3)
         flow = [int(b) for b in boats_2d[ri] if int(b) != wp]
@@ -356,7 +355,7 @@ def predict_trifecta(
             "total": n_total,
             "b1_pass": n_b1_pass,
             "has_odds": n_has_odds,
-            "ev_pass": n_ev_pass,
+            "predicted": n_predicted,
         },
     }
 

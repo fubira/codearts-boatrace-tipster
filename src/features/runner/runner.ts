@@ -397,7 +397,7 @@ async function runPrediction(
   if (result.stats) {
     const s = result.stats;
     logger.debug(
-      `Trifecta stats: ${s.total} races, ${s.b1_pass} upset, ${s.has_odds} with odds, ${s.ev_pass} EV-pass`,
+      `Trifecta stats: ${s.total} races, ${s.b1_pass} upset, ${s.has_odds} with odds, ${s.predicted} predicted`,
     );
   }
 
