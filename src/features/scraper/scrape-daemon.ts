@@ -97,16 +97,23 @@ function getScrapableRaces(
             `Auto-skip: ${slot.stadiumName} R${slot.raceNumber} | deadline passed (${slot.status})`,
           );
           slot.status = "done";
-        } else if (minutesToDeadline <= ODDS_T1_LEAD) {
-          oddsT1.push(slot);
-        } else if (minutesToDeadline <= ODDS_T3_LEAD) {
-          oddsT3.push(slot);
         } else if (minutesToDeadline <= ODDS_T5_LEAD) {
           oddsT5.push(slot);
         }
         break;
-      case "predicted": // odds_done — waiting for results
-      case "decided":
+      case "predicted": // T-5 done, collecting T-3/T-1
+        if (minutesToDeadline <= -SKIP_THRESHOLD) {
+          logger.warn(
+            `Auto-skip: ${slot.stadiumName} R${slot.raceNumber} | deadline passed (${slot.status})`,
+          );
+          slot.status = "done";
+        } else if (minutesToDeadline <= ODDS_T1_LEAD) {
+          oddsT1.push(slot);
+        } else if (minutesToDeadline <= ODDS_T3_LEAD) {
+          oddsT3.push(slot);
+        }
+        break;
+      case "decided": // T-1 done, waiting for results
       case "result_pending":
         if (minutesToDeadline <= -RESULT_DELAY) {
           results.push(slot);
@@ -260,6 +267,9 @@ async function poll(state: ScrapeState): Promise<void> {
       logger.info(
         `[SCRAPER] Odds (T-5): ${fetched}/${actionable.oddsT5.length} fetched`,
       );
+    }
+    for (const slot of actionable.oddsT5) {
+      slot.status = "predicted";
     }
   }
   if (actionable.oddsT3.length > 0) {
