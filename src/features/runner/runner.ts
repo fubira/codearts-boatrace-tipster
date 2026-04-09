@@ -15,10 +15,11 @@ import { enableFileLog, logger } from "@/shared/logger";
 import { pythonCommand } from "@/shared/python";
 import {
   type BetDecision,
+  ODDS_LEAD,
   type RaceSlot,
   allDone,
   buildSchedule,
-  getActionableRaces,
+  getActiveRaces,
 } from "./race-scheduler";
 import {
   notifyDailySummary,
@@ -30,9 +31,9 @@ import {
   setSlackWebhook,
 } from "./slack";
 
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 10_000;
 const POLL_INTERVAL_FAST_MS = 5_000;
-// When any predicted race is within this window of deadline, use fast polling
+// When any active race with prediction is within T-1 window, use fast polling
 const FAST_POLL_WINDOW_MIN = 2;
 
 export interface RunnerOptions {
@@ -101,62 +102,6 @@ function todayYYYYMMDD(): string {
 const DRIFT_COEF_T3 = -0.857;
 const DRIFT_COEF_T1 = 1.891;
 const DRIFT_INTERCEPT = -0.006;
-
-/**
- * Re-evaluate EV using T-3+T-1 odds extrapolation for races with cached predictions.
- * Updates the prediction cache in-place with extrapolated EV.
- */
-function reEvaluateWithExtrapolation(
-  slots: RaceSlot[],
-  state: RunnerState,
-): void {
-  if (!state.predictionCache) return;
-
-  let updated = 0;
-  for (const slot of slots) {
-    const cached = state.predictionCache.get(slot.raceId);
-    if (!cached || "skipReason" in cached) continue;
-
-    const mpT3 = loadSnapshotWinProbs(slot.raceId, "T-3");
-    const mpT1 = loadSnapshotWinProbs(slot.raceId, "T-1");
-
-    if (mpT3.size === 0 || mpT1.size === 0) {
-      // T-3/T-1 not yet written by scrape-daemon — mark for retry
-      const label = `${slot.stadiumName} R${slot.raceNumber}`;
-      logger.warn(
-        `[DRIFT] ${label} | T-3/T-1 snapshot missing, retrying next poll`,
-      );
-      slot.status = "before_info";
-      continue;
-    }
-
-    const boat = cached.winnerPick;
-    const t3 = mpT3.get(boat);
-    const t1 = mpT1.get(boat);
-    if (t3 === undefined || t1 === undefined) continue;
-
-    const extrapolatedMp =
-      DRIFT_COEF_T3 * t3 + DRIFT_COEF_T1 * t1 + DRIFT_INTERCEPT;
-    if (extrapolatedMp <= 0) continue;
-
-    const oldEv = cached.ev;
-    const newEv = (cached.winnerProb / extrapolatedMp) * 0.75 - 1;
-
-    cached.ev = newEv;
-    updated++;
-
-    const label = `${slot.stadiumName} R${slot.raceNumber}`;
-    const oldPct = (oldEv * 100).toFixed(1);
-    const newPct = (newEv * 100).toFixed(1);
-    logger.info(
-      `[DRIFT] ${label} | ${boat}号艇 | T-5 EV=${oldPct}% → extrap EV=${newPct}% (mp: T3=${(t3 * 100).toFixed(1)}% T1=${(t1 * 100).toFixed(1)}% → ${(extrapolatedMp * 100).toFixed(1)}%)`,
-    );
-  }
-
-  if (updated > 0) {
-    logger.info(`Drift extrapolation: ${updated}/${slots.length} updated`);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Stats snapshot
@@ -376,32 +321,6 @@ export function calcTrifectaUnit(bankroll: number, betCap: number): number {
 // Poll helpers (extracted from poll() for readability)
 // ---------------------------------------------------------------------------
 
-/** Determine which races need prediction based on cache state. */
-function getRacesToPredict(
-  slots: RaceSlot[],
-  cache: PredictionCache | null,
-  oddsFetched: number,
-): RaceSlot[] {
-  const uncached = slots.filter((s) => !cache?.has(s.raceId));
-  const exhibitionUpdated = slots.filter((s) => {
-    if (!cache?.has(s.raceId)) return false;
-    const cached = cache.get(s.raceId);
-    if (!cached) return false;
-    if ("skipReason" in cached) return true;
-    return !cached.hasExhibition;
-  });
-  const oddsUpdated =
-    oddsFetched > 0 ? slots.filter((s) => cache?.has(s.raceId)) : [];
-  return [
-    ...new Map(
-      [...uncached, ...exhibitionUpdated, ...oddsUpdated].map((s) => [
-        s.raceId,
-        s,
-      ]),
-    ).values(),
-  ];
-}
-
 /** Update prediction cache from ML result. */
 function updatePredictionCache(
   state: RunnerState,
@@ -436,86 +355,6 @@ function updatePredictionCache(
   );
 }
 
-/** Predict for actionable races. Reads odds from DB (written by scrape-daemon). */
-async function pollPredict(
-  state: RunnerState,
-  slots: RaceSlot[],
-  opts: RunnerOptions,
-  bets: Map<number, BetDecision>,
-): Promise<void> {
-  const racesToPredict = getRacesToPredict(slots, state.predictionCache, 1);
-
-  // Wait for scrape-daemon to write odds before running prediction
-  const db = getDatabase();
-  const readyRaces = racesToPredict.filter((s) => {
-    const row = db
-      .query(
-        "SELECT COUNT(*) as cnt FROM race_odds_snapshots WHERE race_id = ? AND timing = 'T-5'",
-      )
-      .get(s.raceId) as { cnt: number };
-    return row.cnt > 0;
-  });
-
-  try {
-    if (readyRaces.length > 0) {
-      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-
-      const targetRaceIds = readyRaces.map((s) => s.raceId);
-      logger.info(
-        `Running trifecta prediction for ${targetRaceIds.length} race(s)...`,
-      );
-      const result = await runPrediction(
-        state.date,
-        opts,
-        state.snapshotPath,
-        targetRaceIds,
-      );
-      updatePredictionCache(state, result);
-    }
-
-    // Log T-5 EV summary (bet decision deferred to T-1 re-evaluation)
-    for (const slot of slots) {
-      const cached = state.predictionCache?.get(slot.raceId);
-      if (!cached) {
-        // Not yet predicted (odds not available) — stay in before_info for retry
-        logger.info(
-          `[T-5] ${slot.stadiumName} R${slot.raceNumber} | waiting for odds`,
-        );
-        slot.status = "before_info";
-        continue;
-      }
-      const label = `${slot.stadiumName} R${slot.raceNumber}`;
-      if ("skipReason" in cached) {
-        // Retryable skips (data not yet available) → stay in before_info for retry
-        const retryable =
-          cached.skipReason === "no_odds" || cached.skipReason === "no_tickets";
-        if (retryable) {
-          logger.info(`[T-5] ${label} | ${formatSkipLabel(cached)} (retrying)`);
-          slot.status = "before_info";
-          state.predictionCache?.delete(slot.raceId);
-        } else {
-          logger.info(`[T-5] ${label} | ${formatSkipLabel(cached)}`);
-          slot.status = "predicted";
-        }
-      } else {
-        const evPct = (cached.ev * 100).toFixed(1);
-        const rankTag = cached.rankUsed === 2 ? "(r2)" : "";
-        logger.info(
-          `[T-5] ${label} | ${cached.winnerPick}号艇1着${rankTag} | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=${evPct}%`,
-        );
-        slot.status = "predicted";
-      }
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`Prediction failed: ${msg}`);
-    await notifyError("prediction", err).catch(() => {});
-    for (const slot of slots) {
-      slot.status = "predicted";
-    }
-  }
-}
-
 /** Make bet decisions for each slot based on cached predictions. */
 async function makeBetDecisions(
   slots: RaceSlot[],
@@ -527,19 +366,6 @@ async function makeBetDecisions(
   for (const slot of slots) {
     const cached = state.predictionCache?.get(slot.raceId);
     if (!cached || "skipReason" in cached) {
-      const reason = cached ? formatSkipLabel(cached) : "unknown";
-      logger.info(
-        `[TRI] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${reason}`,
-      );
-      slot.status = "predicted";
-      continue;
-    }
-
-    if (!cached.hasExhibition) {
-      logger.info(
-        `[TRI] WAIT: ${slot.stadiumName} R${slot.raceNumber} | exhibition data missing, retrying next poll`,
-      );
-      slot.status = "before_info";
       continue;
     }
 
@@ -606,8 +432,6 @@ async function makeBetDecisions(
         `[TRI] ---: ${base} | <${evThresholdPct.toFixed(0)}%${thresholdTag}`,
       );
     }
-
-    slot.status = "predicted";
   }
 }
 
@@ -615,11 +439,11 @@ async function makeBetDecisions(
 // Main poll loop
 // ---------------------------------------------------------------------------
 
-/** Use fast polling (5s) when any predicted race is near T-1 deadline. */
+/** Use fast polling (5s) when any active race with prediction is near T-1 deadline. */
 function getPollInterval(schedule: RaceSlot[]): number {
   const now = Date.now();
   for (const slot of schedule) {
-    if (slot.status !== "predicted") continue;
+    if (slot.status !== "active") continue;
     const minutesToDeadline = (slot.deadlineMs - now) / 60_000;
     if (minutesToDeadline <= FAST_POLL_WINDOW_MIN && minutesToDeadline > 0) {
       return POLL_INTERVAL_FAST_MS;
@@ -628,60 +452,138 @@ function getPollInterval(schedule: RaceSlot[]): number {
   return POLL_INTERVAL_MS;
 }
 
+/** Check if DB has odds snapshot for given race and timing. */
+function hasSnapshot(raceId: number, timing: string): boolean {
+  const row = getDatabase()
+    .query(
+      "SELECT COUNT(*) as cnt FROM race_odds_snapshots WHERE race_id = ? AND timing = ?",
+    )
+    .get(raceId, timing) as { cnt: number };
+  return row.cnt > 0;
+}
+
 async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   const { schedule, bets, results } = state;
   const now = Date.now();
-  const actionable = getActionableRaces(schedule, now);
+  const {
+    activate,
+    active,
+    results: resultSlots,
+  } = getActiveRaces(schedule, now);
 
   // Status log
-  const counts = {
-    waiting: 0,
-    before_info: 0,
-    predicted: 0,
-    decided: 0,
-    result_pending: 0,
-    done: 0,
-  };
-  for (const s of schedule) counts[s.status]++;
-  const active =
-    actionable.beforeInfo.length +
-    actionable.predict.length +
-    actionable.oddsT3.length +
-    actionable.odds.length +
-    actionable.results.length;
-  const statusLine = `${counts.waiting}/${counts.before_info}/${counts.predicted + counts.decided + counts.result_pending}/${counts.done}`;
+  const counts = { waiting: 0, active: 0, decided: 0, done: 0 };
+  for (const s of schedule) {
+    if (s.status === "waiting") counts.waiting++;
+    else if (s.status === "active") counts.active++;
+    else if (s.status === "decided" || s.status === "result_pending")
+      counts.decided++;
+    else if (s.status === "done") counts.done++;
+  }
+  const statusLine = `${counts.waiting}/${counts.active}/${counts.decided}/${counts.done}`;
   if (statusLine !== state.lastStatusLine) {
     logger.info(
-      `Status: ${schedule.length}R | wait:${counts.waiting} exh:${counts.before_info} pred:${counts.predicted} bet:${counts.decided + counts.result_pending} done:${counts.done} | action:${active}`,
+      `Status: ${schedule.length}R | wait:${counts.waiting} active:${counts.active} bet:${counts.decided} done:${counts.done}`,
     );
     state.lastStatusLine = statusLine;
   }
 
-  // 1. Transition before-info races (scrape-daemon handles actual scraping)
-  for (const slot of actionable.beforeInfo) {
-    slot.status = "before_info";
+  // 1. Activate races approaching deadline
+  for (const slot of activate) {
+    slot.status = "active";
   }
 
-  // 2. Predict for races near deadline (reads odds from DB)
-  if (actionable.predict.length > 0) {
-    await pollPredict(state, actionable.predict, opts, bets);
-  }
+  // 2. Process active races: predict when data available, drift+bet at T-1
+  // 2a. Collect races needing prediction (have T-5 odds, no cache yet)
+  const toPredictSlots = active.filter((s) => {
+    if (state.predictionCache?.has(s.raceId)) return false;
+    return hasSnapshot(s.raceId, "T-5");
+  });
 
-  // 3. Re-evaluate EV with drift extrapolation and make bet decisions
-  if (actionable.odds.length > 0) {
-    reEvaluateWithExtrapolation(actionable.odds, state);
-    // Only process slots that weren't reverted by drift (missing T-3/T-1)
-    const driftReady = actionable.odds.filter((s) => s.status === "predicted");
-    if (driftReady.length > 0) {
-      await makeBetDecisions(driftReady, state, opts, bets);
+  if (toPredictSlots.length > 0) {
+    try {
+      getDatabase().exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      const targetRaceIds = toPredictSlots.map((s) => s.raceId);
+      logger.info(
+        `Running trifecta prediction for ${targetRaceIds.length} race(s)...`,
+      );
+      const result = await runPrediction(
+        state.date,
+        opts,
+        state.snapshotPath,
+        targetRaceIds,
+      );
+      updatePredictionCache(state, result);
+
+      // Log T-5 EV summary
+      for (const slot of toPredictSlots) {
+        const cached = state.predictionCache?.get(slot.raceId);
+        if (!cached) continue;
+        const label = `${slot.stadiumName} R${slot.raceNumber}`;
+        if ("skipReason" in cached) {
+          logger.info(`[T-5] ${label} | ${formatSkipLabel(cached)}`);
+        } else {
+          const evPct = (cached.ev * 100).toFixed(1);
+          const rankTag = cached.rankUsed === 2 ? "(r2)" : "";
+          logger.info(
+            `[T-5] ${label} | ${cached.winnerPick}号艇1着${rankTag} | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=${evPct}%`,
+          );
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Prediction failed: ${msg}`);
+      await notifyError("prediction", err).catch(() => {});
     }
-    for (const slot of driftReady) {
+  }
+
+  // 2b. T-1 drift evaluation + bet decision
+  for (const slot of active) {
+    const minutesToDeadline = (slot.deadlineMs - now) / 60_000;
+    if (minutesToDeadline > ODDS_LEAD) continue;
+
+    const cached = state.predictionCache?.get(slot.raceId);
+    if (!cached) continue;
+    if ("skipReason" in cached) {
+      logger.info(
+        `[TRI] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${formatSkipLabel(cached)}`,
+      );
       slot.status = "decided";
+      continue;
     }
+
+    // Need T-3 and T-1 snapshots for drift
+    if (!hasSnapshot(slot.raceId, "T-3") || !hasSnapshot(slot.raceId, "T-1")) {
+      continue; // Not yet available, try next poll
+    }
+
+    // Drift extrapolation
+    const mpT3 = loadSnapshotWinProbs(slot.raceId, "T-3");
+    const mpT1 = loadSnapshotWinProbs(slot.raceId, "T-1");
+    const boat = cached.winnerPick;
+    const t3 = mpT3.get(boat);
+    const t1 = mpT1.get(boat);
+
+    if (t3 !== undefined && t1 !== undefined) {
+      const extrapolatedMp =
+        DRIFT_COEF_T3 * t3 + DRIFT_COEF_T1 * t1 + DRIFT_INTERCEPT;
+      if (extrapolatedMp > 0) {
+        const oldEv = cached.ev;
+        cached.ev = (cached.winnerProb / extrapolatedMp) * 0.75 - 1;
+        const label = `${slot.stadiumName} R${slot.raceNumber}`;
+        logger.info(
+          `[DRIFT] ${label} | ${boat}号艇 | T-5 EV=${(oldEv * 100).toFixed(1)}% → extrap EV=${(cached.ev * 100).toFixed(1)}% (mp: T3=${(t3 * 100).toFixed(1)}% T1=${(t1 * 100).toFixed(1)}% → ${(extrapolatedMp * 100).toFixed(1)}%)`,
+        );
+      }
+    }
+
+    // Bet decision
+    await makeBetDecisions([slot], state, opts, bets);
+    slot.status = "decided";
   }
 
-  // 4. Check results from DB (scrape-daemon handles actual scraping)
-  for (const slot of actionable.results) {
+  // 3. Check results from DB
+  for (const slot of resultSlots) {
     try {
       const db = getDatabase();
       const entries = db

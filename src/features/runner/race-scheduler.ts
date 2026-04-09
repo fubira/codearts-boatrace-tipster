@@ -11,9 +11,10 @@ export interface RaceSlot {
   deadlineMs: number; // epoch ms (JST deadline converted to UTC epoch)
   status:
     | "waiting"
-    | "before_info"
-    | "predicted"
-    | "decided"
+    | "active" // runner: DB data-driven processing
+    | "before_info" // scrape-daemon: exhibition scraped
+    | "predicted" // scrape-daemon: T-5 odds scraped
+    | "decided" // both: bet decision made / T-1 odds scraped
     | "result_pending"
     | "done";
 }
@@ -31,15 +32,11 @@ export interface BetDecision {
   recommend: boolean;
 }
 
-// Minutes before deadline to trigger each action
-const BEFORE_INFO_LEAD = 7; // exhibition data fetch
-const PREDICT_LEAD = 5; // odds fetch + ML prediction + EV decision
-const ODDS_T3_LEAD = 3; // T-3 odds snapshot
-const ODDS_LEAD = 1; // T-1 odds snapshot + transition to decided
-// Minutes after deadline to check for results
-const RESULT_DELAY = 12;
-// If deadline passed by this many minutes and still "waiting", skip entirely
-const SKIP_THRESHOLD = 5;
+// Timing constants (minutes relative to deadline)
+export const ACTIVATE_LEAD = 7; // waiting → active
+export const ODDS_LEAD = 1; // T-1 drift evaluation window
+const SKIP_THRESHOLD = 5; // auto-skip if deadline passed by this much
+const RESULT_DELAY = 12; // wait before checking results
 
 /**
  * Parse "HH:MM" deadline string to epoch ms for a given date (JST).
@@ -86,6 +83,56 @@ export function buildSchedule(
   return slots.sort((a, b) => a.deadlineMs - b.deadlineMs);
 }
 
+/** Categorize races for runner polling. */
+export function getActiveRaces(
+  schedule: RaceSlot[],
+  now: number = Date.now(),
+): {
+  activate: RaceSlot[];
+  active: RaceSlot[];
+  results: RaceSlot[];
+} {
+  const activate: RaceSlot[] = [];
+  const active: RaceSlot[] = [];
+  const results: RaceSlot[] = [];
+
+  for (const slot of schedule) {
+    const minutesToDeadline = (slot.deadlineMs - now) / 60_000;
+
+    switch (slot.status) {
+      case "waiting":
+        if (minutesToDeadline <= -SKIP_THRESHOLD) {
+          logger.warn(
+            `Auto-skip: ${slot.stadiumName} R${slot.raceNumber} | deadline passed (${slot.status})`,
+          );
+          slot.status = "done";
+        } else if (minutesToDeadline <= ACTIVATE_LEAD) {
+          activate.push(slot);
+        }
+        break;
+      case "active":
+        if (minutesToDeadline <= -SKIP_THRESHOLD) {
+          logger.warn(
+            `Auto-skip: ${slot.stadiumName} R${slot.raceNumber} | deadline passed (${slot.status})`,
+          );
+          slot.status = "done";
+        } else {
+          active.push(slot);
+        }
+        break;
+      case "decided":
+      case "result_pending":
+        if (minutesToDeadline <= -RESULT_DELAY) {
+          results.push(slot);
+        }
+        break;
+    }
+  }
+
+  return { activate, active, results };
+}
+
+// Legacy function used by scrape-daemon and tests
 export interface ActionableRaces {
   beforeInfo: RaceSlot[];
   predict: RaceSlot[];
@@ -94,9 +141,10 @@ export interface ActionableRaces {
   results: RaceSlot[];
 }
 
-/**
- * Determine which races need action based on current time.
- */
+export const BEFORE_INFO_LEAD = 7;
+export const PREDICT_LEAD = 5;
+export const ODDS_T3_LEAD = 3;
+
 export function getActionableRaces(
   schedule: RaceSlot[],
   now: number = Date.now(),
@@ -109,7 +157,6 @@ export function getActionableRaces(
 
   for (const slot of schedule) {
     const minutesToDeadline = (slot.deadlineMs - now) / 60_000;
-
     switch (slot.status) {
       case "waiting":
         if (minutesToDeadline <= -SKIP_THRESHOLD) {
@@ -151,7 +198,6 @@ export function getActionableRaces(
         break;
     }
   }
-
   return { beforeInfo, predict, oddsT3, odds, results };
 }
 
