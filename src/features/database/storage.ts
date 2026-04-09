@@ -544,7 +544,7 @@ export function saveOddsSnapshot(
     for (const entry of entries) {
       database
         .query(
-          `INSERT INTO race_odds_snapshots (race_id, timing, bet_type, combination, odds)
+          `INSERT OR REPLACE INTO race_odds_snapshots (race_id, timing, bet_type, combination, odds)
            VALUES ($raceId, $timing, $betType, $combination, $odds)`,
         )
         .run({
@@ -572,7 +572,7 @@ export function loadSnapshotWinProbs(
   const database = db ?? getDatabase();
   const rows = database
     .query(
-      `SELECT combination, odds FROM race_odds_snapshots
+      `SELECT DISTINCT combination, odds FROM race_odds_snapshots
        WHERE race_id = $raceId AND timing = $timing AND bet_type = '3連単' AND odds > 0`,
     )
     .all({ $raceId: raceId, $timing: timing }) as {

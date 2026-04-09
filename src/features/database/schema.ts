@@ -1,6 +1,6 @@
 /** SQLite schema definitions for boatrace data */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const CREATE_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS schema_version (
@@ -173,5 +173,13 @@ export const MIGRATIONS: Record<number, string> = {
     ALTER TABLE race_entries ADD COLUMN bc_st2 REAL;
     ALTER TABLE race_entries ADD COLUMN bc_is_flying INTEGER;
     ALTER TABLE race_entries ADD COLUMN bc_slit_diff REAL;
+  `,
+  5: `
+    DELETE FROM race_odds_snapshots WHERE id NOT IN (
+      SELECT MIN(id) FROM race_odds_snapshots
+      GROUP BY race_id, timing, bet_type, combination
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_odds_snapshots_unique
+      ON race_odds_snapshots(race_id, timing, bet_type, combination);
   `,
 };
