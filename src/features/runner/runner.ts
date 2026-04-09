@@ -272,7 +272,6 @@ async function buildStatsSnapshot(date: string): Promise<string | undefined> {
     snapshotPath,
   ]);
 
-  const SNAPSHOT_TIMEOUT_MS = 120_000;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
 
   try {
@@ -290,11 +289,10 @@ async function buildStatsSnapshot(date: string): Promise<string | undefined> {
     logger.info(`Snapshot built: ${throughDate}.db`);
     rotateSnapshots();
     return snapshotPath;
-  } catch {
+  } catch (err) {
     proc.kill(9);
-    logger.error(
-      `Snapshot build timed out after ${SNAPSHOT_TIMEOUT_MS / 1000}s`,
-    );
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`Snapshot build failed: ${msg}`);
     return undefined;
   }
 }

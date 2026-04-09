@@ -11,7 +11,6 @@ import { logger } from "@/shared/logger";
 import {
   COOLDOWN_BETWEEN_PAGES_MS,
   COOLDOWN_BETWEEN_VENUES_MS,
-  MAX_CONCURRENCY,
   MAX_RACES_PER_VENUE,
   type RaceParams,
   STADIUMS,

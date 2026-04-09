@@ -24,8 +24,7 @@ Thumbs.db
 ml/.venv/
 ml/cache/
 ml/models/
-ml/__pycache__/
-ml/src/**/__pycache__/
+ml/**/__pycache__/
 *.pyc
 *.pkl
 
