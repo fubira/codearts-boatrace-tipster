@@ -70,10 +70,12 @@ def main():
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--warm-start", action="store_true",
                         help="Seed search with current best params from model_meta.json")
-    parser.add_argument("--objective", choices=["sharpe", "profit"], default="sharpe",
-                        help="Optimization objective: sharpe (stability) or profit (total P/L)")
+    parser.add_argument("--objective", choices=["growth", "sharpe", "profit", "kelly"], default="growth",
+                        help="Optimization objective: growth (daily compound growth, default), kelly (geometric mean ROI), sharpe (stability), or profit (total P/L)")
     parser.add_argument("--relevance", default=None,
                         help="Fix relevance scheme (linear/top_heavy/win_only/podium). If omitted, included in search space.")
+    parser.add_argument("--with-r2", action="store_true",
+                        help="Enable rank-2 fallback (search r2_ev_threshold). Disabled by default.")
     args = parser.parse_args()
 
     print(f"Trials: {args.trials}, Folds: {args.n_folds}, Seed: {args.seed}, Objective: {args.objective}")
@@ -178,9 +180,10 @@ def main():
         # Strategy parameters
         b1_threshold = trial.suggest_float("b1_threshold", 0.30, 0.55)
         ev_threshold = trial.suggest_float("ev_threshold", -0.1, 0.5)
-        r2_ev_threshold = trial.suggest_float("r2_ev_threshold", 0.5, 2.0)
+        r2_ev_threshold = None if not args.with_r2 else trial.suggest_float("r2_ev_threshold", 0.5, 2.0)
 
         rois = []
+        fold_profits = []
         total_races = 0
         total_cost = 0.0
         total_payout = 0.0
@@ -215,6 +218,8 @@ def main():
                 r2_ev_threshold=r2_ev_threshold,
             )
             rois.append(result["roi"])
+            fold_profit = result["payout"] - result["cost"]
+            fold_profits.append(fold_profit)
             total_races += result["races"]
             total_cost += result["cost"]
             total_payout += result["payout"]
@@ -229,6 +234,18 @@ def main():
 
         sharpe = (mean_roi - 1.0) / std_roi if std_roi > 0 else 0
         profit = total_payout - total_cost
+        # Kelly: geometric mean of fold ROIs (log-space average)
+        log_rois = np.log(np.clip(rois, 1e-6, None))
+        kelly = float(np.mean(log_rois))
+        # Growth: daily compound growth rate with bankroll-relative sizing
+        # Rewards both volume and quality — n_bets × per_bet_profit naturally balanced
+        bankroll = 70000.0
+        days_per_fold = args.fold_months * 30
+        growth_rates = []
+        for fp in fold_profits:
+            daily_profit = fp / days_per_fold
+            growth_rates.append(np.log(max(1 + daily_profit / bankroll, 1e-6)))
+        growth = float(np.mean(growth_rates))
 
         trial.set_user_attr("mean_roi", mean_roi)
         trial.set_user_attr("roi_std", std_roi)
@@ -236,11 +253,18 @@ def main():
         trial.set_user_attr("roi_max", float(np.max(rois)))
         trial.set_user_attr("rois", [round(r, 4) for r in rois])
         trial.set_user_attr("sharpe", round(sharpe, 3))
+        trial.set_user_attr("kelly", round(kelly, 4))
+        trial.set_user_attr("growth", round(growth, 6))
         trial.set_user_attr("total_races", total_races)
         trial.set_user_attr("profit", round(profit, 1))
+        trial.set_user_attr("relevance", relevance)
 
         if obj_mode == "profit":
             return profit
+        if obj_mode == "kelly":
+            return kelly
+        if obj_mode == "growth":
+            return growth
         return sharpe
 
     study = optuna.create_study(
@@ -269,8 +293,9 @@ def main():
                 "relevance": hp.get("relevance_scheme", "win_only"),
                 "b1_threshold": st.get("b1_threshold", 0.42),
                 "ev_threshold": st.get("ev_threshold", 0.36),
-                "r2_ev_threshold": st.get("r2_ev_threshold", 1.20),
             }
+            if not not args.with_r2:
+                seed_params["r2_ev_threshold"] = st.get("r2_ev_threshold", 1.20)
             study.enqueue_trial(seed_params)
             print(f"Warm start: seeded with model_meta params (trial 0)")
 
@@ -280,7 +305,7 @@ def main():
     print("\n" + "=" * 70)
     print(f"Optuna Search Complete — Trifecta X-allflow (objective: {obj_mode})")
     print("=" * 70)
-    obj_label = "Sharpe" if obj_mode == "sharpe" else "Profit"
+    obj_label = {"sharpe": "Sharpe", "profit": "Profit", "kelly": "Kelly", "growth": "Growth"}[obj_mode]
     print(f"Best {obj_label}: {study.best_value:.3f}")
     bp = study.best_params
     print(f"Best params:")
@@ -294,12 +319,14 @@ def main():
     print(f"  ROI min:  {ba['roi_min']:.1%}")
     print(f"  ROI max:  {ba['roi_max']:.1%}")
     print(f"  Sharpe:   {ba['sharpe']:.3f}")
+    print(f"  Kelly:    {ba.get('kelly', 'N/A')}")
+    print(f"  Growth:   {ba.get('growth', 'N/A')}")
     print(f"  Profit:   {ba['profit']:+.0f} (per ¥100 unit)")
     print(f"  Races:    {ba['total_races']}")
     print(f"  Folds:    {ba['rois']}")
 
     # Top 10 trials
-    print(f"\nTop 10 trials (by Sharpe):")
+    print(f"\nTop 10 trials (by {obj_label}):")
     trials = sorted(
         study.trials,
         key=lambda t: t.value if t.value else -999,
@@ -309,16 +336,17 @@ def main():
         if t.value is None:
             continue
         ua = t.user_attrs
-        rel = t.params.get("relevance", "?")
+        rel = t.params.get("relevance") or t.user_attrs.get("relevance", "?")
         b1t = t.params.get("b1_threshold", 0)
         evt = t.params.get("ev_threshold", 0)
-        r2t = t.params.get("r2_ev_threshold", 0)
+        r2t = t.params.get("r2_ev_threshold")
         races = ua.get("total_races", "?")
         pft = ua.get("profit", 0)
+        r2_str = f" r2>{r2t:+.0%}" if r2t is not None else ""
         print(
             f"  #{t.number:>3}: Sharpe={ua['sharpe']:.2f} P/L={pft:+.0f} "
             f"ROI={ua['mean_roi']:.0%}±{ua['roi_std']:.0%} "
-            f"n={races} rel={rel} b1<{b1t:.0%} ev>{evt:+.0%} r2>{r2t:+.0%}"
+            f"n={races} rel={rel} b1<{b1t:.0%} ev>{evt:+.0%}{r2_str}"
         )
 
     # Auto-save best params to model_meta.json
@@ -332,15 +360,16 @@ def main():
         "reg_lambda": bp["reg_lambda"],
         "n_estimators": bp["n_estimators"],
         "learning_rate": bp["learning_rate"],
-        "relevance_scheme": bp["relevance"],
+        "relevance_scheme": bp.get("relevance") or study.best_trial.user_attrs.get("relevance", "top_heavy"),
     }
     best_strategy = {
         "b1_threshold": bp["b1_threshold"],
         "ev_threshold": bp["ev_threshold"],
-        "r2_ev_threshold": bp["r2_ev_threshold"],
-        "bet_pattern": "X-allflow (20pt) with rank-2 fallback",
+        "bet_pattern": "X-allflow (20pt)" + (" with rank-2 fallback" if not not args.with_r2 else ""),
         "ev_basis": "trifecta inverse (sum 0.75/odds)",
     }
+    if not not args.with_r2:
+        best_strategy["r2_ev_threshold"] = bp["r2_ev_threshold"]
     meta_dir = "models/trifecta_v1/ranking"
     from boatrace_tipster_ml.model import save_model_meta
     save_model_meta(

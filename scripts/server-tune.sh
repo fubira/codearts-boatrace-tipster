@@ -35,7 +35,7 @@ if [ -f "$CONF" ]; then
 fi
 
 # --- Defaults ---
-MODEL="ranking"   # ranking | boat1
+MODEL="trifecta"  # trifecta | ranking | boat1
 TRIALS=100
 FOLDS=4
 FOLD_MONTHS=2
@@ -45,6 +45,7 @@ TRAIN_START=""
 WARM_START=false
 OBJECTIVE=""
 BETA=""
+WITH_R2=false
 
 SETUP_ONLY=false
 FOREGROUND=false
@@ -78,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --warm-start) WARM_START=true; shift ;;
     --objective) OBJECTIVE="$2"; shift 2 ;;
     --beta) BETA="$2"; shift 2 ;;
+    --with-r2) WITH_R2=true; shift ;;
     --help)
       cat <<'HELP'
 Usage: ./scripts/server-tune.sh [options]
@@ -91,7 +93,7 @@ Modes:
   --setup           初回セットアップ（uv + workspace + deps）
 
 Optuna options:
-  --model M         モデル: ranking | boat1 (default: ranking)
+  --model M         モデル: trifecta | ranking | boat1 (default: trifecta)
   --trials N        trial数 (default: 100)
   --folds N         WF-CV fold数 (default: 4)
   --fold-months N   fold幅（月数、default: 2）
@@ -99,6 +101,7 @@ Optuna options:
   --seed N          random seed (default: 42)
   --train-start D   学習開始日 (default: all)
   --warm-start      現行model_metaのパラメータで初期化
+  --with-r2         rank-2フォールバック有効化（trifecta, default: 無効）
   --objective O     boat1 objective: ev_roi | upset_fbeta (default: ev_roi)
   --beta F          F-beta for upset_fbeta (default: 1.5)
 
@@ -270,6 +273,9 @@ _build_cmd() {
       fi
       if [ -n "$RELEVANCE" ]; then
         cmd+=" --relevance ${RELEVANCE}"
+      fi
+      if [ "$WITH_R2" = true ]; then
+        cmd+=" --with-r2"
       fi
       echo "$cmd"
       return

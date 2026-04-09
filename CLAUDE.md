@@ -83,7 +83,7 @@ simulate_monte_carlo.py [--from-backtest] [--bankroll 70000] [--unit-divisor 800
 
 ```
 --setup                          # 初回セットアップ
---model ranking|trifecta|boat1 --trials N  # Optuna 実行
+--model trifecta|ranking|boat1 --trials N  # Optuna 実行（default: trifecta）
 --watch                          # ログ監視
 --fetch                          # 結果取得
 ```
