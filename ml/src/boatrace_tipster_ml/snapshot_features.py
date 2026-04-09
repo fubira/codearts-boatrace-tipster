@@ -124,6 +124,7 @@ def build_features_from_snapshot(
     _apply_rolling(df, snapshot, "racer_course_win", ["racer_id", "course_number"], "rolling_course_win_rate", w_course)
     _apply_rolling(df, snapshot, "racer_course_st", ["racer_id", "course_number"], "rolling_course_st", w_course)
     _apply_rolling(df, snapshot, "racer_position_alpha", ["racer_id"], "rolling_position_alpha", w_general)
+    _apply_rolling(df, snapshot, "racer_course_position_alpha", ["racer_id", "course_number"], "rolling_course_position_alpha", w_course)
 
     # --- Tournament features (on-the-fly from DB) ---
     _apply_tournament_features(df, db_path, target_date)

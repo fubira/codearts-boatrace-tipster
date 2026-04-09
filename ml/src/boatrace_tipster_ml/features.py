@@ -411,6 +411,10 @@ def _add_position_alpha(df: pd.DataFrame) -> None:
     df["rolling_position_alpha"] = _rolling_mean_daily(
         df, ["racer_id"], "_pos_alpha", w
     )
+    w_course = ROLLING_WINDOW_COURSE or ROLLING_WINDOW
+    df["rolling_course_position_alpha"] = _rolling_mean_daily(
+        df, ["racer_id", "course_number"], "_pos_alpha", w_course
+    )
 
 
 ROLLING_WINDOW: int = 5    # race-days; default for per-racer features
