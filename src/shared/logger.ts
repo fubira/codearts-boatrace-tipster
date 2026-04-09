@@ -12,15 +12,18 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 
 let currentLevel: LogLevel = "info";
 let logDir: string | null = null;
+let logPrefix = "runner";
 
 export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
 }
 
-/** Enable file logging to the specified directory (daily rotation). */
-export function enableFileLog(dir: string): void {
+/** Enable file logging to the specified directory (daily rotation).
+ *  Optional prefix changes the log filename (default: "runner"). */
+export function enableFileLog(dir: string, prefix?: string): void {
   mkdirSync(dir, { recursive: true });
   logDir = dir;
+  if (prefix) logPrefix = prefix;
 }
 
 function shouldLog(level: LogLevel): boolean {
@@ -39,7 +42,7 @@ function writeToFile(formatted: string): void {
   const date = new Date()
     .toLocaleDateString("sv-SE", { timeZone: "Asia/Tokyo" })
     .replace(/\//g, "-");
-  const filePath = resolve(logDir, `runner-${date}.log`);
+  const filePath = resolve(logDir, `${logPrefix}-${date}.log`);
   appendFileSync(filePath, `${formatted}\n`);
 }
 
