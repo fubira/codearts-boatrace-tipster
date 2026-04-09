@@ -477,10 +477,11 @@ async function pollPredict(
     for (const slot of slots) {
       const cached = state.predictionCache?.get(slot.raceId);
       if (!cached) {
+        // Not yet predicted (odds not available) — stay in before_info for retry
         logger.info(
-          `[T-5] ${slot.stadiumName} R${slot.raceNumber} | no prediction returned`,
+          `[T-5] ${slot.stadiumName} R${slot.raceNumber} | waiting for odds`,
         );
-        slot.status = "predicted";
+        slot.status = "before_info";
         continue;
       }
       const label = `${slot.stadiumName} R${slot.raceNumber}`;
