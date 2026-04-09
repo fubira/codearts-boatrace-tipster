@@ -121,15 +121,12 @@ function reEvaluateWithExtrapolation(
     const mpT1 = loadSnapshotWinProbs(slot.raceId, "T-1");
 
     if (mpT3.size === 0 || mpT1.size === 0) {
-      // T-3/T-1 missing — replace with SkippedPrediction to prevent bet
+      // T-3/T-1 not yet written by scrape-daemon — revert to predicted for retry
       const label = `${slot.stadiumName} R${slot.raceNumber}`;
-      logger.warn(`[DRIFT] ${label} | T-3/T-1 snapshot missing, forcing skip`);
-      state.predictionCache.set(slot.raceId, {
-        skipReason: "no_drift_data",
-        b1Prob: cached.b1Prob,
-        winnerPick: cached.winnerPick,
-        ev: cached.ev,
-      });
+      logger.warn(
+        `[DRIFT] ${label} | T-3/T-1 snapshot missing, retrying next poll`,
+      );
+      slot.status = "predicted";
       continue;
     }
 
@@ -488,15 +485,25 @@ async function pollPredict(
       }
       const label = `${slot.stadiumName} R${slot.raceNumber}`;
       if ("skipReason" in cached) {
-        logger.info(`[T-5] ${label} | ${formatSkipLabel(cached)}`);
+        // Retryable skips (data not yet available) → stay in before_info for retry
+        const retryable =
+          cached.skipReason === "no_odds" || cached.skipReason === "no_tickets";
+        if (retryable) {
+          logger.info(`[T-5] ${label} | ${formatSkipLabel(cached)} (retrying)`);
+          slot.status = "before_info";
+          state.predictionCache?.delete(slot.raceId);
+        } else {
+          logger.info(`[T-5] ${label} | ${formatSkipLabel(cached)}`);
+          slot.status = "predicted";
+        }
       } else {
         const evPct = (cached.ev * 100).toFixed(1);
         const rankTag = cached.rankUsed === 2 ? "(r2)" : "";
         logger.info(
           `[T-5] ${label} | ${cached.winnerPick}号艇1着${rankTag} | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=${evPct}%`,
         );
+        slot.status = "predicted";
       }
-      slot.status = "predicted";
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -662,10 +669,16 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   // 3. Re-evaluate EV with drift extrapolation and make bet decisions
   if (actionable.odds.length > 0) {
     reEvaluateWithExtrapolation(actionable.odds, state);
-    await makeBetDecisions(actionable.odds, state, opts, bets);
+    // Only process slots that weren't reverted to predicted by drift
+    const driftReady = actionable.odds.filter((s) => s.status !== "predicted");
+    if (driftReady.length > 0) {
+      await makeBetDecisions(driftReady, state, opts, bets);
+    }
   }
   for (const slot of actionable.odds) {
-    slot.status = "decided";
+    if (slot.status !== "predicted") {
+      slot.status = "decided";
+    }
   }
 
   // 4. Check results from DB (scrape-daemon handles actual scraping)
