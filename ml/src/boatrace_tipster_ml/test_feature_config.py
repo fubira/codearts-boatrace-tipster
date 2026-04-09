@@ -95,7 +95,6 @@ def _make_race_df(n_races: int = 2, *, seed: int = 42) -> pd.DataFrame:
                 "bc_slit_diff": rng.rand() * 3,
                 "position_alpha": rng.randn() * 0.5,
                 "rolling_position_alpha": rng.randn() * 0.5,
-                "rolling_course_position_alpha": rng.randn() * 0.5,
             })
     return pd.DataFrame(rows)
 
@@ -143,7 +142,7 @@ class TestFeatureColumnDefinitions:
 
     def test_feature_cols_expected_count(self):
         """Guard against accidental additions/removals."""
-        assert len(FEATURE_COLS) == 31
+        assert len(FEATURE_COLS) == 30
 
     def test_boat1_feature_cols_expected_count(self):
         assert len(BOAT1_FEATURE_COLS) == 32

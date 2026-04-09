@@ -306,7 +306,6 @@ _ROLLING_DEFS: list[tuple[str, list[str], str, int]] = [
     ("racer_course_win", ["racer_id", "course_number"], "_is_win", ROLLING_WINDOW_COURSE or ROLLING_WINDOW),
     ("racer_course_st", ["racer_id", "course_number"], "start_timing", ROLLING_WINDOW_COURSE or ROLLING_WINDOW),
     ("racer_position_alpha", ["racer_id"], "_pos_alpha", ROLLING_WINDOW_GENERAL or ROLLING_WINDOW),
-    ("racer_course_position_alpha", ["racer_id", "course_number"], "_pos_alpha", ROLLING_WINDOW_COURSE or ROLLING_WINDOW),
 ]
 
 

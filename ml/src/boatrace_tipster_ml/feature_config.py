@@ -56,10 +56,9 @@ FEATURE_COLS: list[str] = [
     "bc_turn_zscore",
     "bc_straight_zscore",
     "bc_slit_zscore",
-    # --- Position alpha (3) ---
+    # --- Position alpha (2) ---
     "position_alpha",
     "rolling_position_alpha",
-    "rolling_course_position_alpha",
 ]
 
 # Features with intentional intraday leakage.
