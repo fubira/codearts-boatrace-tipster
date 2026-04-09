@@ -294,7 +294,7 @@ def main():
                 "b1_threshold": st.get("b1_threshold", 0.42),
                 "ev_threshold": st.get("ev_threshold", 0.36),
             }
-            if not not args.with_r2:
+            if args.with_r2:
                 seed_params["r2_ev_threshold"] = st.get("r2_ev_threshold", 1.20)
             study.enqueue_trial(seed_params)
             print(f"Warm start: seeded with model_meta params (trial 0)")
@@ -306,7 +306,8 @@ def main():
     print(f"Optuna Search Complete — Trifecta X-allflow (objective: {obj_mode})")
     print("=" * 70)
     obj_label = {"sharpe": "Sharpe", "profit": "Profit", "kelly": "Kelly", "growth": "Growth"}[obj_mode]
-    print(f"Best {obj_label}: {study.best_value:.3f}")
+    fmt = ".6f" if obj_mode == "growth" else ".3f"
+    print(f"Best {obj_label}: {study.best_value:{fmt}}")
     bp = study.best_params
     print(f"Best params:")
     for k, v in sorted(bp.items()):
@@ -365,10 +366,10 @@ def main():
     best_strategy = {
         "b1_threshold": bp["b1_threshold"],
         "ev_threshold": bp["ev_threshold"],
-        "bet_pattern": "X-allflow (20pt)" + (" with rank-2 fallback" if not not args.with_r2 else ""),
+        "bet_pattern": "X-allflow (20pt)" + (" with rank-2 fallback" if args.with_r2 else ""),
         "ev_basis": "trifecta inverse (sum 0.75/odds)",
     }
-    if not not args.with_r2:
+    if args.with_r2:
         best_strategy["r2_ev_threshold"] = bp["r2_ev_threshold"]
     meta_dir = "models/trifecta_v1/ranking"
     from boatrace_tipster_ml.model import save_model_meta
