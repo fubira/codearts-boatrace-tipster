@@ -31,6 +31,9 @@ import {
 } from "./slack";
 
 const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_FAST_MS = 5_000;
+// When any predicted race is within this window of deadline, use fast polling
+const FAST_POLL_WINDOW_MIN = 2;
 
 export interface RunnerOptions {
   dryRun: boolean;
@@ -593,6 +596,19 @@ async function makeBetDecisions(
 // Main poll loop
 // ---------------------------------------------------------------------------
 
+/** Use fast polling (5s) when any predicted race is near T-1 deadline. */
+function getPollInterval(schedule: RaceSlot[]): number {
+  const now = Date.now();
+  for (const slot of schedule) {
+    if (slot.status !== "predicted") continue;
+    const minutesToDeadline = (slot.deadlineMs - now) / 60_000;
+    if (minutesToDeadline <= FAST_POLL_WINDOW_MIN && minutesToDeadline > 0) {
+      return POLL_INTERVAL_FAST_MS;
+    }
+  }
+  return POLL_INTERVAL_MS;
+}
+
 async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   const { schedule, bets, results } = state;
   const now = Date.now();
@@ -848,7 +864,8 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     // Polling loop for the day
     let dayDone = false;
     while (!dayDone) {
-      await Bun.sleep(POLL_INTERVAL_MS);
+      const interval = getPollInterval(state.schedule);
+      await Bun.sleep(interval);
       try {
         await poll(state, opts);
         if (allDone(state.schedule)) {
