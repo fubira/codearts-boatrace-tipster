@@ -32,18 +32,18 @@ COPY --link --from=ghcr.io/astral-sh/uv:0.10.12 /uv /usr/local/bin/
 WORKDIR /app
 
 # Python runtime (--link makes layer hash independent of base image changes)
-COPY --link --chown=bun:bun --from=builder /opt/python /opt/python
+COPY --link --chown=1000:1000 --from=builder /opt/python /opt/python
 
 # Installed dependencies
-COPY --link --chown=bun:bun --from=builder /app/node_modules node_modules/
-COPY --link --chown=bun:bun --from=builder /app/ml/.venv ml/.venv/
+COPY --link --chown=1000:1000 --from=builder /app/node_modules node_modules/
+COPY --link --chown=1000:1000 --from=builder /app/ml/.venv ml/.venv/
 
 # Source code
-COPY --link --chown=bun:bun package.json tsconfig.json ./
-COPY --link --chown=bun:bun src/ src/
-COPY --link --chown=bun:bun ml/pyproject.toml ml/uv.lock ml/
-COPY --link --chown=bun:bun ml/src/ ml/src/
-COPY --link --chown=bun:bun ml/scripts/ ml/scripts/
+COPY --link --chown=1000:1000 package.json tsconfig.json ./
+COPY --link --chown=1000:1000 src/ src/
+COPY --link --chown=1000:1000 ml/pyproject.toml ml/uv.lock ml/
+COPY --link --chown=1000:1000 ml/src/ ml/src/
+COPY --link --chown=1000:1000 ml/scripts/ ml/scripts/
 
 RUN mkdir -p data ml/models && chown -R bun:bun data ml/models
 
