@@ -591,13 +591,15 @@ async function pollPredict(
   const db = getDatabase();
   let rescraped = 0;
   for (const slot of slots) {
-    const hasExh = db
+    const counts = db
       .query(
-        `SELECT COUNT(*) as cnt FROM race_entries
-         WHERE race_id = ? AND exhibition_time IS NOT NULL`,
+        `SELECT
+           SUM(CASE WHEN exhibition_time IS NOT NULL THEN 1 ELSE 0 END) as exh,
+           SUM(CASE WHEN bc_lap_time IS NOT NULL THEN 1 ELSE 0 END) as bc
+         FROM race_entries WHERE race_id = ?`,
       )
-      .get(slot.raceId) as { cnt: number };
-    if (hasExh.cnt === 0) {
+      .get(slot.raceId) as { exh: number; bc: number };
+    if (counts.exh === 0) {
       try {
         scrapeBeforeInfoForRace(slot, state.date);
         rescraped++;
@@ -605,14 +607,7 @@ async function pollPredict(
         // Prediction will proceed without exhibition data
       }
     }
-    // Ensure BOATCAST data is also present
-    const hasBc = db
-      .query(
-        `SELECT COUNT(*) as cnt FROM race_entries
-         WHERE race_id = ? AND bc_lap_time IS NOT NULL`,
-      )
-      .get(slot.raceId) as { cnt: number };
-    if (hasBc.cnt === 0) {
+    if (counts.bc === 0) {
       try {
         await fetchAndSaveBoatcast(slot.stadiumId, state.date, slot.raceNumber);
       } catch {

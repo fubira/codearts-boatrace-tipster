@@ -5,11 +5,9 @@ import {
   type BeforeInfoData,
   type RaceData,
   type RaceResultData,
-  type RacerCourseStatsData,
   isRaceScraped,
   saveBeforeInfo,
   saveRaceResults,
-  saveRacerCourseStats,
   saveRaces,
 } from "./storage";
 
@@ -252,56 +250,6 @@ describe("saveBeforeInfo", () => {
       .query("SELECT * FROM race_entries WHERE boat_number = 2")
       .get() as Record<string, unknown>;
     expect(entry2.stabilizer).toBe(1);
-  });
-});
-
-describe("saveRacerCourseStats", () => {
-  test("inserts and updates course stats", () => {
-    // Racer must exist first
-    db.query("INSERT INTO racers (id, name) VALUES (3456, '田中太郎')").run();
-
-    const stats: RacerCourseStatsData[] = [
-      {
-        racerId: 3456,
-        courseNumber: 1,
-        winRate: 55.0,
-        top2Rate: 70.0,
-        top3Rate: 80.0,
-      },
-      { racerId: 3456, courseNumber: 2, winRate: 20.0 },
-    ];
-
-    saveRacerCourseStats(stats, db);
-
-    const rows = db
-      .query(
-        "SELECT * FROM racer_course_stats WHERE racer_id = 3456 ORDER BY course_number",
-      )
-      .all() as Record<string, unknown>[];
-    expect(rows).toHaveLength(2);
-    expect(rows[0].win_rate).toBe(55.0);
-    expect(rows[1].win_rate).toBe(20.0);
-
-    // Update
-    saveRacerCourseStats(
-      [
-        {
-          racerId: 3456,
-          courseNumber: 1,
-          winRate: 60.0,
-          top2Rate: 75.0,
-          top3Rate: 85.0,
-        },
-      ],
-      db,
-    );
-
-    const updated = db
-      .query(
-        "SELECT * FROM racer_course_stats WHERE racer_id = 3456 AND course_number = 1",
-      )
-      .get() as Record<string, unknown>;
-    expect(updated.win_rate).toBe(60.0);
   });
 });
 

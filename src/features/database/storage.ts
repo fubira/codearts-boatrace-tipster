@@ -91,14 +91,6 @@ export interface BeforeInfoData {
   entries: BeforeInfoEntry[];
 }
 
-export interface RacerCourseStatsData {
-  racerId: number;
-  courseNumber: number;
-  winRate?: number;
-  top2Rate?: number;
-  top3Rate?: number;
-}
-
 // --- Save result ---
 
 export interface SaveResult {
@@ -442,38 +434,6 @@ export function saveBeforeInfo(
 }
 
 /** Upsert racer course statistics */
-export function saveRacerCourseStats(
-  stats: RacerCourseStatsData[],
-  db?: Database,
-): void {
-  const database = db ?? getDatabase();
-
-  const transaction = database.transaction(() => {
-    for (const stat of stats) {
-      database
-        .query(
-          `INSERT INTO racer_course_stats (racer_id, course_number, win_rate, top2_rate, top3_rate, updated_at)
-           VALUES ($racerId, $courseNumber, $winRate, $top2Rate, $top3Rate, datetime('now'))
-           ON CONFLICT (racer_id, course_number) DO UPDATE SET
-             win_rate = COALESCE(excluded.win_rate, racer_course_stats.win_rate),
-             top2_rate = COALESCE(excluded.top2_rate, racer_course_stats.top2_rate),
-             top3_rate = COALESCE(excluded.top3_rate, racer_course_stats.top3_rate),
-             updated_at = datetime('now')`,
-        )
-        .run({
-          $racerId: stat.racerId,
-          $courseNumber: stat.courseNumber,
-          $winRate: stat.winRate ?? null,
-          $top2Rate: stat.top2Rate ?? null,
-          $top3Rate: stat.top3Rate ?? null,
-        });
-    }
-  });
-
-  transaction();
-  logger.info(`Saved ${stats.length} racer course stats`);
-}
-
 export interface OddsData {
   stadiumId: number;
   raceDate: string;
