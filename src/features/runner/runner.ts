@@ -988,15 +988,22 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Main daemon
+// Day setup (shared by initial startup and daily restart)
 // ---------------------------------------------------------------------------
 
-export async function runDaemon(opts: RunnerOptions): Promise<void> {
-  setSlackWebhook(opts.slackWebhookUrl);
-  enableFileLog(resolve(config.projectRoot, "logs"));
-  enableCache();
-  initializeDatabase();
+const DISCOVER_RETRY_INTERVAL_MS = 5 * 60_000;
+const DISCOVER_MAX_RETRIES = 6;
 
+const stadiumNames = new Map(
+  Object.entries(STADIUMS).map(([code, name]) => [
+    Number.parseInt(code, 10),
+    name,
+  ]),
+);
+
+/** Discover venues, scrape race lists, build schedule and snapshot.
+ *  Returns null if no venues found. */
+async function setupDay(opts: RunnerOptions): Promise<RunnerState | null> {
   const date = todayJST();
   const yyyymmdd = todayYYYYMMDD();
 
@@ -1005,21 +1012,12 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   );
 
   // 1. Discover venues (retry up to 30 min if schedule not yet published)
-  const DISCOVER_RETRY_INTERVAL_MS = 5 * 60_000;
-  const DISCOVER_MAX_RETRIES = 6;
   let venueCodes: { stadiumCode: string; date: string }[] = [];
-
   for (let attempt = 0; attempt <= DISCOVER_MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      // Bypass cache on retry — previous empty response may be cached
-      disableCacheRead();
-    }
+    if (attempt > 0) disableCacheRead();
     venueCodes = discoverDateSchedule(yyyymmdd);
-    if (attempt > 0) {
-      enableCacheRead();
-    }
+    if (attempt > 0) enableCacheRead();
     if (venueCodes.length > 0) break;
-
     if (attempt < DISCOVER_MAX_RETRIES) {
       logger.warn(
         `No venues found yet (attempt ${attempt + 1}/${DISCOVER_MAX_RETRIES + 1}), retrying in 5 min...`,
@@ -1029,24 +1027,22 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   }
 
   if (venueCodes.length === 0) {
-    logger.error("No venues found after retries — no races today?");
-    closeDatabase();
-    return;
+    logger.warn("No venues found after retries — no races today?");
+    return null;
   }
 
+  // 2. Scrape race lists
   logger.info(`Found ${venueCodes.length} venues, scraping race lists...`);
-
   const scraper = getScraper("boatrace");
   if (!scraper) {
     logger.error("Scraper 'boatrace' not found");
-    closeDatabase();
-    return;
+    return null;
   }
 
   let totalScraped = 0;
   scraper.scrape({
     date: yyyymmdd,
-    skipResults: true, // Don't cache empty result pages for today's races
+    skipResults: true,
     onBatchComplete: (batch) => {
       if (batch.races.length > 0) saveRaces(batch.races);
       if (batch.results.length > 0) saveRaceResults(batch.results);
@@ -1054,10 +1050,9 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
       totalScraped += batch.races.length;
     },
   });
-
   logger.info(`Scraped ${totalScraped} races`);
 
-  // 2. Build schedule from DB
+  // 3. Build schedule from DB
   const db = getDatabase();
   const races = db
     .query(
@@ -1071,13 +1066,6 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     deadline: string | null;
   }[];
 
-  const stadiumNames = new Map(
-    Object.entries(STADIUMS).map(([code, name]) => [
-      Number.parseInt(code, 10),
-      name,
-    ]),
-  );
-
   const schedule = buildSchedule(races, stadiumNames, date);
   if (schedule.length > 0) {
     const venues = new Set(schedule.map((s) => s.stadiumName));
@@ -1090,18 +1078,14 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     logger.info("Schedule: 0 races");
   }
 
-  // Build stats snapshot for fast inference
+  // 4. Build stats snapshot for fast inference
   const snapshotPath = await buildStatsSnapshot(date);
-
-  // Prediction cache is built on-demand when races reach "predict" state
-  // (after exhibition data has been scraped)
-  const predictionCache: PredictionCache | null = null;
 
   const state: RunnerState = {
     schedule,
     bets: new Map(),
     results: new Map(),
-    predictionCache,
+    predictionCache: null,
     oddsTimings: new Map(),
     bankroll: opts.bankroll,
     date,
@@ -1117,6 +1101,25 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     dryRun: opts.dryRun,
     evThreshold: opts.evThreshold,
   });
+
+  return state;
+}
+
+// ---------------------------------------------------------------------------
+// Main daemon
+// ---------------------------------------------------------------------------
+
+export async function runDaemon(opts: RunnerOptions): Promise<void> {
+  setSlackWebhook(opts.slackWebhookUrl);
+  enableFileLog(resolve(config.projectRoot, "logs"));
+  enableCache();
+  initializeDatabase();
+
+  const state = await setupDay(opts);
+  if (!state) {
+    closeDatabase();
+    return;
+  }
 
   // 3. Polling loop
   function shutdown(): void {
@@ -1197,90 +1200,9 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     closeDatabase();
     initializeDatabase();
 
-    const newDate = todayJST();
-    const newYYYYMMDD = todayYYYYMMDD();
+    const newState = await setupDay(opts);
+    if (!newState) continue;
 
-    logger.info(
-      `Starting runner v${config.version} for ${newDate} (${opts.dryRun ? "DRY RUN" : "LIVE"})`,
-    );
-
-    // Re-discover venues
-    let newVenueCodes: { stadiumCode: string; date: string }[] = [];
-    for (let attempt = 0; attempt <= 6; attempt++) {
-      if (attempt > 0) disableCacheRead();
-      newVenueCodes = discoverDateSchedule(newYYYYMMDD);
-      if (attempt > 0) enableCacheRead();
-      if (newVenueCodes.length > 0) break;
-      if (attempt < 6) {
-        logger.warn(
-          `No venues found (attempt ${attempt + 1}/7), retrying in 5 min...`,
-        );
-        await Bun.sleep(5 * 60_000);
-      }
-    }
-
-    if (newVenueCodes.length === 0) {
-      logger.warn("No venues found — no races today? Sleeping until tomorrow.");
-      continue;
-    }
-
-    logger.info(`Found ${newVenueCodes.length} venues, scraping race lists...`);
-    const newScraper = getScraper("boatrace");
-    if (newScraper) {
-      newScraper.scrape({
-        date: newYYYYMMDD,
-        skipResults: true,
-        onBatchComplete: (batch) => {
-          if (batch.races.length > 0) saveRaces(batch.races);
-          if (batch.results.length > 0) saveRaceResults(batch.results);
-          if (batch.beforeInfo.length > 0) saveBeforeInfo(batch.beforeInfo);
-        },
-      });
-    }
-
-    const newDb = getDatabase();
-    const newRaces = newDb
-      .query(
-        `SELECT id, stadium_id, race_number, deadline FROM races
-         WHERE race_date = ? ORDER BY deadline, stadium_id, race_number`,
-      )
-      .all(newDate) as {
-      id: number;
-      stadium_id: number;
-      race_number: number;
-      deadline: string | null;
-    }[];
-
-    const newSchedule = buildSchedule(newRaces, stadiumNames, newDate);
-    if (newSchedule.length > 0) {
-      const newVenues = new Set(newSchedule.map((s) => s.stadiumName));
-      const newFirst = newSchedule[0];
-      const newLast = newSchedule[newSchedule.length - 1];
-      logger.info(
-        `Schedule: ${newSchedule.length}R / ${newVenues.size} venues | ${newFirst.deadline} ~ ${newLast.deadline}`,
-      );
-    }
-
-    // Build stats snapshot for new day
-    const newSnapshotPath = await buildStatsSnapshot(newDate);
-
-    // Reset state for new day
-    state.schedule = newSchedule;
-    state.bets = new Map();
-    state.results = new Map();
-    state.predictionCache = null;
-    state.oddsTimings = new Map();
-    state.date = newDate;
-    state.lastStatusLine = "";
-    state.snapshotPath = newSnapshotPath;
-
-    await notifyStartup({
-      version: config.version,
-      date: newDate,
-      venues: newVenueCodes.length,
-      races: newSchedule.length,
-      dryRun: opts.dryRun,
-      evThreshold: opts.evThreshold,
-    });
+    Object.assign(state, newState);
   }
 }
