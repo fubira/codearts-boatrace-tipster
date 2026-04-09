@@ -121,12 +121,12 @@ function reEvaluateWithExtrapolation(
     const mpT1 = loadSnapshotWinProbs(slot.raceId, "T-1");
 
     if (mpT3.size === 0 || mpT1.size === 0) {
-      // T-3/T-1 not yet written by scrape-daemon — revert to predicted for retry
+      // T-3/T-1 not yet written by scrape-daemon — mark for retry
       const label = `${slot.stadiumName} R${slot.raceNumber}`;
       logger.warn(
         `[DRIFT] ${label} | T-3/T-1 snapshot missing, retrying next poll`,
       );
-      slot.status = "predicted";
+      slot.status = "before_info";
       continue;
     }
 
@@ -670,14 +670,12 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   // 3. Re-evaluate EV with drift extrapolation and make bet decisions
   if (actionable.odds.length > 0) {
     reEvaluateWithExtrapolation(actionable.odds, state);
-    // Only process slots that weren't reverted to predicted by drift
-    const driftReady = actionable.odds.filter((s) => s.status !== "predicted");
+    // Only process slots that weren't reverted by drift (missing T-3/T-1)
+    const driftReady = actionable.odds.filter((s) => s.status === "predicted");
     if (driftReady.length > 0) {
       await makeBetDecisions(driftReady, state, opts, bets);
     }
-  }
-  for (const slot of actionable.odds) {
-    if (slot.status !== "predicted") {
+    for (const slot of driftReady) {
       slot.status = "decided";
     }
   }
