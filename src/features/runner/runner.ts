@@ -9,8 +9,6 @@ import {
   initializeDatabase,
   loadSnapshotWinProbs,
   saveBeforeInfo,
-  saveOdds,
-  saveOddsSnapshot,
   saveRaceResults,
   saveRaces,
 } from "@/features/database";
@@ -19,22 +17,10 @@ import {
   enableCache,
   enableCacheRead,
 } from "@/features/scraper/cache-manager";
-import { fetchPage } from "@/features/scraper/http-client";
 import { getScraper } from "@/features/scraper/registry";
 import { fetchAndSaveBoatcast } from "@/features/scraper/sources/boatcast/fetcher";
-import {
-  type RaceParams,
-  STADIUMS,
-  beforeInfoUrl,
-  odds3TUrl,
-  raceResultUrl,
-} from "@/features/scraper/sources/boatrace/constants";
+import { STADIUMS } from "@/features/scraper/sources/boatrace/constants";
 import { discoverDateSchedule } from "@/features/scraper/sources/boatrace/discovery";
-import { parseOdds3T } from "@/features/scraper/sources/boatrace/odds-parsers";
-import {
-  parseBeforeInfo,
-  parseRaceResult,
-} from "@/features/scraper/sources/boatrace/parsers";
 import type { PurchaseExecutor } from "@/features/teleboat";
 import { config } from "@/shared/config";
 import { enableFileLog, logger } from "@/shared/logger";
@@ -46,6 +32,11 @@ import {
   buildSchedule,
   getActionableRaces,
 } from "./race-scheduler";
+import {
+  fetchTrifectaOdds,
+  scrapeBeforeInfoForRace,
+  scrapeResultForRace,
+} from "./scrape-helpers";
 import {
   notifyDailySummary,
   notifyError,
@@ -118,10 +109,6 @@ function todayYYYYMMDD(): string {
   return todayJST().replace(/-/g, "");
 }
 
-function padStadiumCode(id: number): string {
-  return String(id).padStart(2, "0");
-}
-
 // ---------------------------------------------------------------------------
 // Odds drift extrapolation coefficients (fitted on T-3 + T-1 → final data)
 // final_mp = DRIFT_COEF_T3 * mp_t3 + DRIFT_COEF_T1 * mp_t1 + DRIFT_INTERCEPT
@@ -187,55 +174,6 @@ function reEvaluateWithExtrapolation(
   if (updated > 0) {
     logger.info(`Drift extrapolation: ${updated}/${slots.length} updated`);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Data fetching helpers
-// ---------------------------------------------------------------------------
-
-function scrapeBeforeInfoForRace(slot: RaceSlot, date: string): boolean {
-  const params: RaceParams = {
-    raceNumber: slot.raceNumber,
-    stadiumCode: padStadiumCode(slot.stadiumId),
-    date: date.replace(/-/g, ""),
-  };
-
-  // Always skip cache — exhibition data changes up to race time
-  const page = fetchPage(beforeInfoUrl(params), { skipCache: true });
-  if (!page) return false;
-
-  const context = { params, raceDate: date };
-  const data = parseBeforeInfo(page.html, context);
-  if (!data) return false;
-
-  saveBeforeInfo([data]);
-  return true;
-}
-
-function scrapeResultForRace(
-  slot: RaceSlot,
-  date: string,
-): {
-  entries: { boatNumber: number; finishPosition?: number }[];
-  payouts?: { betType: string; combination: string; payout: number }[];
-} | null {
-  const params: RaceParams = {
-    raceNumber: slot.raceNumber,
-    stadiumCode: padStadiumCode(slot.stadiumId),
-    date: date.replace(/-/g, ""),
-  };
-
-  // Always skip cache — result page only available after race
-  const page = fetchPage(raceResultUrl(params), { skipCache: true });
-  if (!page) return null;
-
-  const context = { params, raceDate: date };
-  const data = parseRaceResult(page.html, context);
-  if (!data) return null;
-
-  saveRaceResults([data]);
-
-  return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,70 +393,6 @@ export function calcTrifectaUnit(bankroll: number, betCap: number): number {
 // ---------------------------------------------------------------------------
 // Poll helpers (extracted from poll() for readability)
 // ---------------------------------------------------------------------------
-
-/**
- * Fetch trifecta odds and save as snapshot.
- * Pre-race timings (T-5/T-3/T-1) save to race_odds_snapshots ONLY.
- * "final" saves to both race_odds (confirmed) and race_odds_snapshots.
- */
-function fetchTrifectaOdds(
-  slots: RaceSlot[],
-  date: string,
-  timing: OddsTiming,
-  oddsTimings: Map<number, Set<OddsTiming>>,
-): number {
-  let fetched = 0;
-  const isConfirmed = timing === "final";
-
-  for (const slot of slots) {
-    // Skip if this timing already collected for this race
-    if (oddsTimings.get(slot.raceId)?.has(timing)) continue;
-
-    const stadiumCode = padStadiumCode(slot.stadiumId);
-    const params: RaceParams = {
-      raceNumber: slot.raceNumber,
-      stadiumCode,
-      date: date.replace(/-/g, ""),
-    };
-    try {
-      const page = fetchPage(odds3TUrl(params), { skipCache: true });
-      if (page) {
-        const entries = parseOdds3T(page.html);
-        if (entries.length > 0) {
-          const oddsEntries = entries.map((e) => ({
-            betType: e.betType,
-            combination: e.combination,
-            odds: e.odds,
-          }));
-
-          // Confirmed odds → race_odds table (the source of truth)
-          if (isConfirmed) {
-            saveOdds([
-              {
-                stadiumId: slot.stadiumId,
-                raceDate: date,
-                raceNumber: slot.raceNumber,
-                entries: oddsEntries,
-              },
-            ]);
-          }
-
-          // All timings → snapshots (for drift analysis)
-          saveOddsSnapshot(slot.raceId, timing, oddsEntries);
-          if (!oddsTimings.has(slot.raceId)) {
-            oddsTimings.set(slot.raceId, new Set());
-          }
-          oddsTimings.get(slot.raceId)?.add(timing);
-
-          fetched++;
-        }
-      }
-    } catch {
-      // Odds may not be available yet for early races
-    }
-  }
-  return fetched;
-}
 
 /** Determine which races need prediction based on cache state. */
 function getRacesToPredict(
