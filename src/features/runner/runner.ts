@@ -77,8 +77,23 @@ interface TrifectaPrediction {
   hasExhibition: boolean;
 }
 
-// string value = skip reason (e.g. "no_odds", "ev_low:-0.123")
-type PredictionCache = Map<number, TrifectaPrediction | string>;
+/** Prediction evaluated but skipped (b1_win, ev_low, no_odds, etc.) */
+interface SkippedPrediction {
+  skipReason: string;
+  b1Prob: number;
+  winnerPick?: number;
+  ev?: number;
+}
+
+type CachedPrediction = TrifectaPrediction | SkippedPrediction;
+type PredictionCache = Map<number, CachedPrediction>;
+
+function formatSkipLabel(skip: SkippedPrediction): string {
+  const b1Pct = (skip.b1Prob * 100).toFixed(0);
+  const pickTag = skip.winnerPick != null ? ` ${skip.winnerPick}号艇1着` : "";
+  const evTag = skip.ev != null ? ` EV=${(skip.ev * 100).toFixed(1)}%` : "";
+  return `${skip.skipReason}${pickTag} b1=${b1Pct}%${evTag}`;
+}
 
 interface RunnerState {
   schedule: RaceSlot[];
@@ -127,7 +142,7 @@ function reEvaluateWithExtrapolation(
   let updated = 0;
   for (const slot of slots) {
     const cached = state.predictionCache.get(slot.raceId);
-    if (!cached || typeof cached === "string") continue;
+    if (!cached || "skipReason" in cached) continue;
 
     const mpT3 = loadSnapshotWinProbs(slot.raceId, "T-3");
     const mpT1 = loadSnapshotWinProbs(slot.raceId, "T-1");
@@ -513,8 +528,9 @@ function getRacesToPredict(
   const exhibitionUpdated = slots.filter((s) => {
     if (!cache?.has(s.raceId)) return false;
     const cached = cache.get(s.raceId);
-    if (typeof cached === "string") return true;
-    return cached !== undefined && !cached.hasExhibition;
+    if (!cached) return false;
+    if ("skipReason" in cached) return true;
+    return !cached.hasExhibition;
   });
   const oddsUpdated =
     oddsFetched > 0 ? slots.filter((s) => cache?.has(s.raceId)) : [];
@@ -538,13 +554,13 @@ function updatePredictionCache(
   }
   for (const [ridStr, info] of Object.entries(result.skipped)) {
     const rid = Number(ridStr);
-    const b1Pct = (info.b1_prob * 100).toFixed(0);
-    const pickTag = info.pick ? ` ${info.pick}号艇1着` : "";
-    const skipStr =
-      info.ev !== undefined
-        ? `${info.reason}${pickTag} b1=${b1Pct}% EV=${(info.ev * 100).toFixed(1)}%`
-        : `${info.reason} b1=${b1Pct}%`;
-    state.predictionCache.set(rid, skipStr);
+    const skipped: SkippedPrediction = {
+      skipReason: info.reason,
+      b1Prob: info.b1_prob,
+      winnerPick: info.pick,
+      ev: info.ev,
+    };
+    state.predictionCache.set(rid, skipped);
   }
   for (const p of result.predictions) {
     state.predictionCache.set(p.raceId, {
@@ -640,12 +656,18 @@ async function pollPredict(
     // Log T-5 EV summary (bet decision deferred to T-1 re-evaluation)
     for (const slot of slots) {
       const cached = state.predictionCache?.get(slot.raceId);
-      if (cached && typeof cached !== "string") {
-        const label = `${slot.stadiumName} R${slot.raceNumber}`;
+      if (!cached) {
+        slot.status = "predicted";
+        continue;
+      }
+      const label = `${slot.stadiumName} R${slot.raceNumber}`;
+      if ("skipReason" in cached) {
+        logger.info(`[T-5] ${label} | ${formatSkipLabel(cached)}`);
+      } else {
         const evPct = (cached.ev * 100).toFixed(1);
         const rankTag = cached.rankUsed === 2 ? "(r2)" : "";
         logger.info(
-          `[T-5] ${label} | ${cached.winnerPick}号艇1着${rankTag} | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=+${evPct}% (awaiting T-1)`,
+          `[T-5] ${label} | ${cached.winnerPick}号艇1着${rankTag} | b1=${(cached.b1Prob * 100).toFixed(0)}% EV=${evPct}%`,
         );
       }
       slot.status = "predicted";
@@ -670,9 +692,10 @@ async function makeBetDecisions(
   const evThresholdPct = opts.evThreshold * 100;
   for (const slot of slots) {
     const cached = state.predictionCache?.get(slot.raceId);
-    if (!cached || typeof cached === "string") {
+    if (!cached || "skipReason" in cached) {
+      const reason = cached ? formatSkipLabel(cached) : "unknown";
       logger.info(
-        `[TRI] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${cached ?? "unknown"}`,
+        `[TRI] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${reason}`,
       );
       slot.status = "predicted";
       continue;
@@ -907,8 +930,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
       // Check if any of our trifecta tickets hit
       const cached = state.predictionCache?.get(slot.raceId);
-      const tickets =
-        cached && typeof cached !== "string" ? cached.tickets : [];
+      const tickets = cached && !("skipReason" in cached) ? cached.tickets : [];
       const hitCombo =
         actual1st && actual2nd && actual3rd
           ? `${actual1st}-${actual2nd}-${actual3rd}`
