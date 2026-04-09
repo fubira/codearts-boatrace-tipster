@@ -3,6 +3,7 @@ import {
   pushDb,
   syncCache,
   syncDb,
+  syncSnapshots,
   verify,
 } from "@/features/data-sync";
 import { closeDatabase, initializeDatabase } from "@/features/database";
@@ -70,6 +71,14 @@ dataCommand
           logger.info(`Backup: ${result.backupPath}`);
         }
       }
+    }
+
+    // Snapshot sync: only in full sync mode (skip when --db-only or --cache-only)
+    if (doCache && doDb) {
+      const snapResult = syncSnapshots(conf, { dryRun: opts.dryRun });
+      logger.info(
+        `Snapshot sync: pulled ${snapResult.pulled}, pushed ${snapResult.pushed} file(s)`,
+      );
     }
 
     logger.info(

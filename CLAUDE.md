@@ -41,7 +41,7 @@ run [--dry-run(default)] [--live] [--ev-threshold N] [--bet-cap 2000] [--bankrol
 
 data test                        # ローカル整合性チェック
 data verify                      # サーバとの整合性比較
-data sync [--db-only] [--cache-only] [--dry-run] [--push]  # サーバ同期
+data sync [--db-only] [--cache-only] [--dry-run] [--push]  # サーバ同期（フラグなしで snapshot も同期）
 data fingerprint                 # DB統計表示
 
 backup [-n 7]                    # ローカルバックアップ（N世代ローテーション）
