@@ -354,8 +354,6 @@ async function runPrediction(
     modelDir,
     "--db-path",
     config.dbPath,
-    "--ev-threshold",
-    "0", // Python returns all b1-pass races; runner filters by opts.evThreshold after drift
   ];
   if (snapshotPath) {
     args.push("--snapshot", snapshotPath);
