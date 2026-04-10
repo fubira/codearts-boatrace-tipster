@@ -66,10 +66,10 @@ tune_trifecta.py --trials N [--seed 42] [--n-folds 4] [--fold-months 2] [--warm-
                  [--relevance SCHEME] [--objective growth|kelly|sharpe|profit] [--with-r2]
                  [--fix-thresholds "b1=0.35,ev=0.29"] [--validate-top 10]
 
-train_ranking.py --save [--model-dir models/trifecta_v1/ranking] [--model-meta DIR]
+train_ranking.py --save [--model-dir models/draft/ranking] [--model-meta DIR]
                  [--n-estimators N] [--learning-rate N] [--relevance SCHEME] ...LGBMオーバーライド
 
-train_boat1_binary.py --mode single|wfcv|optuna [--save] [--model-dir models/boat1]
+train_boat1_binary.py --mode single|wfcv|optuna [--save] [--model-dir models/draft/boat1]
                       [--n-estimators 500] [--learning-rate 0.05] [--seed 42]
 
 build_snapshot.py --through-date DATE [--db-path PATH] [--output PATH]
