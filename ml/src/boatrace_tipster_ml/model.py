@@ -279,6 +279,9 @@ def fill_nan_with_means(X, model_meta: dict | None) -> None:
         nan_cols = [c for c in X.columns if X[c].isna().any()]
         for c in nan_cols:
             if c in means:
+                # Cast to float64 first to avoid Int64/Float type mismatch
+                if pd.api.types.is_integer_dtype(X[c]):
+                    X[c] = X[c].astype("Float64")
                 X[c] = X[c].fillna(means[c])
 
 
