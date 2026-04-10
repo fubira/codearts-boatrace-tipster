@@ -170,19 +170,9 @@ def predict_trifecta(
             print(f"b1: pipeline has {len(X_b1.columns)} features, model expects {len(model_cols)}, dropping {dropped}", file=sys.stderr)
         X_b1 = X_b1[model_cols]
 
-    # Fill NaN with training means
-    X_b1 = X_b1.astype("float64")
-    nan_cols = [c for c in X_b1.columns if X_b1[c].isna().any()]
-    if nan_cols and b1_meta and b1_meta.get("feature_means"):
-        for c in nan_cols:
-            if c in b1_meta["feature_means"]:
-                X_b1[c] = X_b1[c].fillna(b1_meta["feature_means"][c])
-        n_filled = (~meta_b1["has_exhibition"]).sum()
-        if n_filled > 0:
-            print(
-                f"Filled NaN for {n_filled} race(s) without exhibition: {nan_cols}",
-                file=sys.stderr,
-            )
+    # Fill NaN with training means (must match runner behavior)
+    from boatrace_tipster_ml.model import fill_nan_with_means
+    fill_nan_with_means(X_b1, b1_meta)
 
     b1_probs = b1_model.predict_proba(X_b1)[:, 1]
     b1_map = {int(meta_b1["race_id"].values[i]): i for i in range(len(b1_probs))}
@@ -215,14 +205,7 @@ def predict_trifecta(
             print(f"ranking: pipeline has {len(X_rank.columns)} features, model expects {len(model_cols)}, dropping {dropped}", file=sys.stderr)
         X_rank = X_rank[model_cols]
 
-    # Fill NaN for ranking features
-    X_rank = X_rank.astype("float64")
-    rank_nan_cols = [c for c in X_rank.columns if X_rank[c].isna().any()]
-    if rank_nan_cols and rank_meta and rank_meta.get("feature_means"):
-        for c in rank_nan_cols:
-            if c in rank_meta["feature_means"]:
-                X_rank[c] = X_rank[c].fillna(rank_meta["feature_means"][c])
-
+    fill_nan_with_means(X_rank, rank_meta)
     rank_scores = rank_model.predict(X_rank)
 
     n_races = len(X_rank) // FIELD_SIZE

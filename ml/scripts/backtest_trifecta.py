@@ -190,7 +190,7 @@ def print_daily(results: list[dict], label: str = "", *, weekly: bool = False):
 def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds=None, *, ranking_params=None, boat1_params=None):
     """Period backtest using saved production models (no retraining)."""
     from boatrace_tipster_ml.boat1_model import load_boat1_model
-    from boatrace_tipster_ml.model import load_model
+    from boatrace_tipster_ml.model import load_model, load_model_meta, fill_nan_with_means
 
     test_df = df[
         (df["race_date"] >= args.from_date) & (df["race_date"] < args.to_date)
@@ -198,14 +198,18 @@ def run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map,
 
     print(f"Loading saved models from {args.model_dir}...", file=sys.stderr)
     b1_model = load_boat1_model(f"{args.model_dir}/boat1")
+    b1_meta = load_model_meta(f"{args.model_dir}/boat1")
     rank_model = load_model(f"{args.model_dir}/ranking")
+    rank_meta = load_model_meta(f"{args.model_dir}/ranking")
 
     # Inference with saved models
     with contextlib.redirect_stdout(io.StringIO()):
         X_b1, _, meta_b1 = reshape_to_boat1(test_df)
+    fill_nan_with_means(X_b1, b1_meta)
     b1_probs = b1_model.predict_proba(X_b1)[:, 1]
 
     X_rank, _, meta_rank = prepare_feature_matrix(test_df)
+    fill_nan_with_means(X_rank, rank_meta)
     rank_scores = rank_model.predict(X_rank)
 
     results = evaluate_trifecta_strategy(
@@ -441,7 +445,7 @@ def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_ma
 def run_threshold_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, **_kwargs):
     """2D grid search over b1/ev thresholds using saved production models (no retraining)."""
     from boatrace_tipster_ml.boat1_model import load_boat1_model
-    from boatrace_tipster_ml.model import load_model
+    from boatrace_tipster_ml.model import load_model, load_model_meta, fill_nan_with_means
 
     test_df = df[
         (df["race_date"] >= args.from_date) & (df["race_date"] < args.to_date)
@@ -449,13 +453,17 @@ def run_threshold_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_
 
     print(f"Loading saved models from {args.model_dir}...", file=sys.stderr)
     b1_model = load_boat1_model(f"{args.model_dir}/boat1")
+    b1_meta = load_model_meta(f"{args.model_dir}/boat1")
     rank_model = load_model(f"{args.model_dir}/ranking")
+    rank_meta = load_model_meta(f"{args.model_dir}/ranking")
 
     with contextlib.redirect_stdout(io.StringIO()):
         X_b1, _, meta_b1 = reshape_to_boat1(test_df)
+    fill_nan_with_means(X_b1, b1_meta)
     b1_probs = b1_model.predict_proba(X_b1)[:, 1]
 
     X_rank, _, meta_rank = prepare_feature_matrix(test_df)
+    fill_nan_with_means(X_rank, rank_meta)
     rank_scores = rank_model.predict(X_rank)
 
     # Grid ranges

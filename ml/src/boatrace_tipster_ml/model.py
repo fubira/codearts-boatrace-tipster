@@ -261,6 +261,27 @@ def load_model_meta(model_dir: str) -> dict | None:
         return json.load(f)
 
 
+def fill_nan_with_means(X, model_meta: dict | None) -> None:
+    """Fill NaN in feature matrix with training means from model_meta (in-place).
+
+    LightGBM handles NaN via learned default directions, but these can be
+    poorly calibrated when training data mostly had non-NaN values (e.g.,
+    exhibition data). Filling with training means produces more consistent
+    predictions across predict (runner) and backtest paths.
+    """
+    if model_meta is None:
+        return
+    means = model_meta.get("feature_means")
+    if not means:
+        return
+    import pandas as pd
+    if isinstance(X, pd.DataFrame):
+        nan_cols = [c for c in X.columns if X[c].isna().any()]
+        for c in nan_cols:
+            if c in means:
+                X[c] = X[c].fillna(means[c])
+
+
 _LGB_PARAM_KEYS = {
     "num_leaves", "max_depth", "min_child_samples",
     "subsample", "colsample_bytree", "reg_alpha", "reg_lambda",
