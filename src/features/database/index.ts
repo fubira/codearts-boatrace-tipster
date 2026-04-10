@@ -9,6 +9,7 @@ export {
   loadSnapshotWinProbs,
   savePurchaseRecord,
   isRaceScraped,
+  updateDeadline,
 } from "./storage";
 export type {
   RaceData,

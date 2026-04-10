@@ -241,6 +241,30 @@ function upsertRaceEntry(
 
 // --- Public API ---
 
+/** Update deadline for a specific race. Returns true if the value actually changed. */
+export function updateDeadline(
+  stadiumId: number,
+  raceDate: string,
+  raceNumber: number,
+  deadline: string,
+  db?: Database,
+): boolean {
+  const conn = db ?? getDatabase();
+  const result = conn
+    .query(
+      `UPDATE races SET deadline = $deadline
+       WHERE stadium_id = $stadiumId AND race_date = $raceDate AND race_number = $raceNumber
+         AND (deadline IS NULL OR deadline != $deadline)`,
+    )
+    .run({
+      $stadiumId: stadiumId,
+      $raceDate: raceDate,
+      $raceNumber: raceNumber,
+      $deadline: deadline,
+    });
+  return result.changes > 0;
+}
+
 /** Save race program data (stadiums, racers, races, entries) */
 export function saveRaces(races: RaceData[], db?: Database): SaveResult {
   const database = db ?? getDatabase();

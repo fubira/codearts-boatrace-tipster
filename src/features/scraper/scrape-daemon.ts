@@ -9,6 +9,7 @@ import {
   saveBeforeInfo,
   saveRaceResults,
   saveRaces,
+  updateDeadline,
 } from "@/features/database";
 import { type RaceSlot, buildSchedule } from "@/features/runner/race-scheduler";
 import {
@@ -21,12 +22,17 @@ import {
   enableCache,
   enableCacheRead,
 } from "@/features/scraper/cache-manager";
+import { fetchPage } from "@/features/scraper/http-client";
 import { getScraper } from "@/features/scraper/registry";
 import { fetchAndSaveBoatcast } from "@/features/scraper/sources/boatcast/fetcher";
-import { STADIUMS } from "@/features/scraper/sources/boatrace/constants";
+import {
+  STADIUMS,
+  raceListUrl,
+} from "@/features/scraper/sources/boatrace/constants";
 import { discoverDateSchedule } from "@/features/scraper/sources/boatrace/discovery";
 import { config } from "@/shared/config";
 import { enableFileLog, logger } from "@/shared/logger";
+import { load as cheerioLoad } from "cheerio";
 
 const POLL_INTERVAL_MS = 30_000;
 const DISCOVER_RETRY_INTERVAL_MS = 5 * 60_000;
@@ -58,6 +64,55 @@ function todayJST(): string {
   return new Date()
     .toLocaleDateString("sv-SE", { timeZone: "Asia/Tokyo" })
     .replace(/\//g, "-");
+}
+
+/**
+ * Re-fetch deadlines from the race list page for a venue.
+ * Updates DB and in-memory schedule if deadlines changed (race delay detection).
+ */
+function refreshDeadlines(
+  stadiumId: number,
+  date: string,
+  schedule: RaceSlot[],
+): void {
+  const stadiumCode = String(stadiumId).padStart(2, "0");
+  const yyyymmdd = date.replace(/-/g, "");
+
+  // Fetch race list page (uses rno=1 but the deadline row has all 12 races)
+  const result = fetchPage(
+    raceListUrl({ raceNumber: 1, stadiumCode, date: yyyymmdd }),
+    { skipCache: true },
+  );
+  if (!result) return;
+
+  const $ = cheerioLoad(result.html);
+  const deadlineRow = $("td.is-thColor8")
+    .filter((_i, el) => $(el).text().includes("締切予定時刻"))
+    .parent();
+  if (deadlineRow.length === 0) return;
+
+  const cells = deadlineRow.find("td:not(.is-thColor8)");
+  const venueSlots = schedule.filter((s) => s.stadiumId === stadiumId);
+
+  for (const slot of venueSlots) {
+    const idx = slot.raceNumber - 1;
+    if (idx >= cells.length) continue;
+
+    const text = $(cells[idx]).text().trim();
+    if (!/^\d{1,2}:\d{2}$/.test(text)) continue;
+    if (text === slot.deadline) continue;
+
+    // Deadline changed — update DB and in-memory
+    const updated = updateDeadline(stadiumId, date, slot.raceNumber, text);
+    if (updated) {
+      const oldDeadline = slot.deadline;
+      slot.deadline = text;
+      slot.deadlineMs = new Date(`${date}T${text}:00+09:00`).getTime();
+      logger.warn(
+        `[SCRAPER] Deadline changed: ${slot.stadiumName} R${slot.raceNumber} | ${oldDeadline} → ${text}`,
+      );
+    }
+  }
 }
 
 /** Determine which races need scraping based on current time. */
@@ -227,8 +282,23 @@ async function poll(state: ScrapeState): Promise<void> {
     state.lastStatusLine = statusLine;
   }
 
-  // 1. Before-info + BOATCAST
+  // 1. Before-info + BOATCAST + deadline refresh
   if (actionable.beforeInfo.length > 0) {
+    // Refresh deadlines once per venue (detect race delays)
+    const refreshedVenues = new Set<number>();
+    for (const slot of actionable.beforeInfo) {
+      if (!refreshedVenues.has(slot.stadiumId)) {
+        try {
+          refreshDeadlines(slot.stadiumId, state.date, state.schedule);
+        } catch (err) {
+          logger.debug(
+            `[SCRAPER] Deadline refresh failed: ${slot.stadiumName} | ${err}`,
+          );
+        }
+        refreshedVenues.add(slot.stadiumId);
+      }
+    }
+
     let scraped = 0;
     let bcFetched = 0;
     for (const slot of actionable.beforeInfo) {

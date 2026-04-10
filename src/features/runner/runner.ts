@@ -452,6 +452,36 @@ function getPollInterval(schedule: RaceSlot[]): number {
   return POLL_INTERVAL_MS;
 }
 
+/** Re-read deadlines from DB for not-yet-decided races (scrape-daemon may have updated them). */
+function refreshDeadlinesFromDb(schedule: RaceSlot[], date: string): void {
+  const pending = schedule.filter(
+    (s) =>
+      s.status !== "decided" &&
+      s.status !== "done" &&
+      s.status !== "result_pending",
+  );
+  if (pending.length === 0) return;
+
+  const rows = getDatabase()
+    .query(
+      "SELECT id, deadline FROM races WHERE race_date = ? AND deadline IS NOT NULL",
+    )
+    .all(date) as { id: number; deadline: string }[];
+  const dbMap = new Map(rows.map((r) => [r.id, r.deadline]));
+
+  for (const slot of pending) {
+    const freshDeadline = dbMap.get(slot.raceId);
+    if (freshDeadline && freshDeadline !== slot.deadline) {
+      const oldDeadline = slot.deadline;
+      slot.deadline = freshDeadline;
+      slot.deadlineMs = new Date(`${date}T${freshDeadline}:00+09:00`).getTime();
+      logger.warn(
+        `Deadline updated: ${slot.stadiumName} R${slot.raceNumber} | ${oldDeadline} → ${freshDeadline}`,
+      );
+    }
+  }
+}
+
 /** Check if DB has odds snapshot for given race and timing. */
 function hasSnapshot(raceId: number, timing: string): boolean {
   const row = getDatabase()
@@ -487,6 +517,9 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     );
     state.lastStatusLine = statusLine;
   }
+
+  // 0. Refresh deadlines from DB (picks up scrape-daemon's delay detection)
+  refreshDeadlinesFromDb(schedule, state.date);
 
   // 1. Activate races approaching deadline
   for (const slot of activate) {
