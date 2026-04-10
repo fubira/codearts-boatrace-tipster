@@ -26,7 +26,7 @@ from boatrace_tipster_ml.model import (
 def main():
     parser = argparse.ArgumentParser(description="Train LambdaRank ranking model")
     parser.add_argument("--save", action="store_true", required=True)
-    parser.add_argument("--model-dir", default="models/trifecta_v1/ranking")
+    parser.add_argument("--model-dir", default="models/draft/ranking")
     parser.add_argument("--model-meta", default=None,
                         help="Load hyperparams from this model directory's model_meta.json")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)

@@ -490,7 +490,7 @@ def main():
     )
     parser.add_argument("--beta", type=float, default=1.5, help="F-beta for upset_fbeta (default: 1.5)")
     parser.add_argument("--save", action="store_true", help="Save model to --model-dir")
-    parser.add_argument("--model-dir", default="models/boat1", help="Model output dir")
+    parser.add_argument("--model-dir", default="models/draft/boat1", help="Model output dir")
     args = parser.parse_args()
 
     print("Boat 1 Binary Classifier")
