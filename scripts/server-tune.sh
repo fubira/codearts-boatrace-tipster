@@ -46,6 +46,8 @@ WARM_START=false
 OBJECTIVE=""
 BETA=""
 WITH_R2=false
+FIX_THRESHOLDS=""
+VALIDATE_TOP=0
 
 SETUP_ONLY=false
 FOREGROUND=false
@@ -80,6 +82,8 @@ while [[ $# -gt 0 ]]; do
     --objective) OBJECTIVE="$2"; shift 2 ;;
     --beta) BETA="$2"; shift 2 ;;
     --with-r2) WITH_R2=true; shift ;;
+    --fix-thresholds) FIX_THRESHOLDS="$2"; shift 2 ;;
+    --validate-top) VALIDATE_TOP="$2"; shift 2 ;;
     --help)
       cat <<'HELP'
 Usage: ./scripts/server-tune.sh [options]
@@ -102,6 +106,8 @@ Optuna options:
   --train-start D   学習開始日 (default: all)
   --warm-start      現行model_metaのパラメータで初期化
   --with-r2         rank-2フォールバック有効化（trifecta, default: 無効）
+  --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "b1=0.35,ev=0.29")
+  --validate-top N  探索後にTop N trialをOOS検証 (Phase 1.5, default: 0)
   --objective O     boat1 objective: ev_roi | upset_fbeta (default: ev_roi)
   --beta F          F-beta for upset_fbeta (default: 1.5)
 
@@ -276,6 +282,12 @@ _build_cmd() {
       fi
       if [ "$WITH_R2" = true ]; then
         cmd+=" --with-r2"
+      fi
+      if [ -n "$FIX_THRESHOLDS" ]; then
+        cmd+=" --fix-thresholds '${FIX_THRESHOLDS}'"
+      fi
+      if [ "$VALIDATE_TOP" -gt 0 ] 2>/dev/null; then
+        cmd+=" --validate-top ${VALIDATE_TOP}"
       fi
       echo "$cmd"
       return

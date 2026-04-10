@@ -61,6 +61,157 @@ def _load_odds(db_path: str) -> tuple[dict, dict]:
     return trifecta_odds, dict(tri_win_prob)
 
 
+def _validate_top_trials(
+    study: optuna.Study,
+    df: pd.DataFrame,
+    trifecta_odds: dict,
+    tri_win_prob: dict,
+    finish_map: dict,
+    folds: list,
+    n_top: int,
+    fixed_thresholds: dict[str, float],
+):
+    """Phase 1.5: Train fixed models for top N trials and evaluate on OOS."""
+    # OOS = last fold's test period to end of data
+    last_test = folds[-1]["period"]["test"]
+    oos_start = last_test.split("~")[0].strip()
+    max_date = df["race_date"].max()
+
+    print(f"\n{'='*70}")
+    print(f"Phase 1.5: OOS Validation of Top {n_top} Trials")
+    print(f"{'='*70}")
+    print(f"Train: < {oos_start}, OOS: {oos_start} ~ {max_date}")
+
+    train_df = df[df["race_date"] < oos_start]
+    oos_df = df[df["race_date"] >= oos_start]
+    n_oos_races = len(oos_df) // 6
+    print(f"OOS: {n_oos_races} races")
+
+    if n_oos_races == 0:
+        print("WARNING: No OOS data")
+        return
+
+    # Train boat1 once (not tuned)
+    print("Training boat1 for validation...", end="", flush=True)
+    dates_all = sorted(train_df["race_date"].unique())
+    val_start = dates_all[max(0, len(dates_all) - 60)]
+    with contextlib.redirect_stdout(io.StringIO()):
+        X_b1_tr, y_b1_tr, _ = reshape_to_boat1(train_df[train_df["race_date"] < val_start])
+        X_b1_v, y_b1_v, _ = reshape_to_boat1(train_df[train_df["race_date"] >= val_start])
+        X_b1_oos, _, meta_b1_oos = reshape_to_boat1(oos_df)
+        b1_model, _ = train_boat1_model(X_b1_tr, y_b1_tr, X_b1_v, y_b1_v)
+    b1_probs_oos = b1_model.predict_proba(X_b1_oos)[:, 1]
+    print(" done")
+
+    # Prepare ranking features (train split + OOS)
+    X_train_full, y_train_full, meta_train_full = prepare_feature_matrix(train_df)
+    X_oos, _, meta_oos = prepare_feature_matrix(oos_df)
+    train_mask = meta_train_full["race_date"].values < val_start
+    val_mask = ~train_mask
+
+    # Threshold grid (include fixed thresholds if specified)
+    b1_vals = sorted(set(np.arange(0.28, 0.51, 0.02).tolist() + [fixed_thresholds.get("b1", 0.35)]))
+    ev_vals = sorted(set(np.arange(0.0, 0.51, 0.05).tolist() + [fixed_thresholds.get("ev", 0.29)]))
+
+    # Get top N trials
+    trials_sorted = sorted(
+        [t for t in study.trials if t.value is not None and t.value > -999],
+        key=lambda t: t.value,
+        reverse=True,
+    )[:n_top]
+
+    results = []
+    for rank, trial in enumerate(trials_sorted, 1):
+        t0 = time.time()
+        p = trial.params
+        ua = trial.user_attrs
+        relevance = p.get("relevance") or ua.get("relevance", "podium")
+
+        rank_params = {k: p[k] for k in
+                       ["num_leaves", "max_depth", "min_child_samples",
+                        "subsample", "colsample_bytree", "reg_alpha", "reg_lambda"]}
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            rank_model, _ = train_model(
+                X_train_full[train_mask], y_train_full[train_mask], meta_train_full[train_mask],
+                X_train_full[val_mask], y_train_full[val_mask], meta_train_full[val_mask],
+                n_estimators=p["n_estimators"],
+                learning_rate=p["learning_rate"],
+                relevance_scheme=relevance,
+                extra_params=rank_params,
+                early_stopping_rounds=50,
+            )
+
+        rank_scores_oos = rank_model.predict(X_oos)
+
+        # Sweep thresholds
+        best_pl = -99999.0
+        best_b1 = best_ev = 0.0
+        best_races = best_wins = 0
+        best_roi = 0.0
+        fixed_result = None
+
+        for b1 in b1_vals:
+            for ev in ev_vals:
+                r = evaluate_trifecta_strategy(
+                    b1_probs=b1_probs_oos, meta_b1=meta_b1_oos,
+                    rank_scores=rank_scores_oos, meta_rank=meta_oos,
+                    finish_map=finish_map, trifecta_odds=trifecta_odds,
+                    tri_win_prob=tri_win_prob,
+                    b1_threshold=b1, ev_threshold=ev,
+                )
+                pl = r["payout"] - r["cost"]
+                if pl > best_pl and r["races"] >= 10:
+                    best_pl, best_b1, best_ev = pl, float(b1), float(ev)
+                    best_races, best_wins, best_roi = r["races"], r["wins"], r["roi"]
+
+                # Capture result at fixed thresholds
+                if (fixed_thresholds
+                        and abs(b1 - fixed_thresholds["b1"]) < 0.005
+                        and abs(ev - fixed_thresholds["ev"]) < 0.005):
+                    fixed_result = {"pl": pl, "races": r["races"], "wins": r["wins"], "roi": r["roi"]}
+
+        elapsed = time.time() - t0
+
+        entry = {
+            "trial": trial.number,
+            "wfcv_pl": ua.get("profit", 0),
+            "wfcv_roi": ua.get("mean_roi", 0),
+            "wfcv_n": ua.get("total_races", 0),
+            "wfcv_sharpe": ua.get("sharpe", 0),
+            "oos_pl": best_pl, "oos_roi": best_roi,
+            "oos_n": best_races, "oos_w": best_wins,
+            "oos_b1": best_b1, "oos_ev": best_ev,
+            "fixed": fixed_result,
+        }
+        results.append(entry)
+
+        fx = ""
+        if fixed_result:
+            fx = f" fixed={fixed_result['pl']:+.0f}({fixed_result['races']}R)"
+        print(
+            f"  #{trial.number:>3}: best={best_pl:+.0f} "
+            f"({best_races}R {best_wins}W {best_roi:.0%} "
+            f"b1<{best_b1:.0%} ev>{best_ev:+.0%}){fx} [{elapsed:.0f}s]"
+        )
+
+    # Summary table sorted by OOS best P/L
+    results.sort(key=lambda r: r["oos_pl"], reverse=True)
+    print(f"\n{'--- OOS Ranking (by best P/L) ---':^70}")
+    print(f"{'OOS':>4} {'#':>4} {'WF-CV':>8} {'WF-CV':>6} {'WF-CV':>5} "
+          f"{'OOS':>8} {'OOS':>5} {'OOS':>5} {'opt':>5} {'opt':>5}")
+    print(f"{'Rank':>4} {'':>4} {'P/L':>8} {'ROI':>6} {'n':>5} "
+          f"{'P/L':>8} {'ROI':>5} {'n':>5} {'b1':>5} {'ev':>5}")
+    print("-" * 70)
+    for i, r in enumerate(results, 1):
+        print(
+            f"{i:>4} #{r['trial']:>3} "
+            f"{r['wfcv_pl']:>+8.0f} {r['wfcv_roi']:>5.0%} {r['wfcv_n']:>5} "
+            f"{r['oos_pl']:>+8.0f} {r['oos_roi']:>4.0%} {r['oos_n']:>5} "
+            f"<{r['oos_b1']:.0%} >{r['oos_ev']:+.0%}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Tune trifecta strategy with Optuna")
     parser.add_argument("--trials", type=int, default=100)
@@ -76,7 +227,21 @@ def main():
                         help="Fix relevance scheme (linear/top_heavy/win_only/podium). If omitted, included in search space.")
     parser.add_argument("--with-r2", action="store_true",
                         help="Enable rank-2 fallback (search r2_ev_threshold). Disabled by default.")
+    parser.add_argument("--fix-thresholds", default=None,
+                        help="Fix strategy thresholds (skip threshold search). Format: b1=0.35,ev=0.29")
+    parser.add_argument("--validate-top", type=int, default=0,
+                        help="After search, train fixed models for top N trials and evaluate on OOS (Phase 1.5)")
     args = parser.parse_args()
+
+    # Parse fixed thresholds
+    fixed_thresholds: dict[str, float] = {}
+    if args.fix_thresholds:
+        for pair in args.fix_thresholds.split(","):
+            k, v = pair.strip().split("=")
+            fixed_thresholds[k.strip()] = float(v.strip())
+        if "b1" not in fixed_thresholds or "ev" not in fixed_thresholds:
+            parser.error("--fix-thresholds requires both b1 and ev (e.g., b1=0.35,ev=0.29)")
+        print(f"Fixed thresholds: b1<{fixed_thresholds['b1']:.0%}, ev>{fixed_thresholds['ev']:+.0%}")
 
     print(f"Trials: {args.trials}, Folds: {args.n_folds}, Seed: {args.seed}, Objective: {args.objective}")
     t0 = time.time()
@@ -178,8 +343,12 @@ def main():
             )
 
         # Strategy parameters
-        b1_threshold = trial.suggest_float("b1_threshold", 0.30, 0.55)
-        ev_threshold = trial.suggest_float("ev_threshold", -0.1, 0.5)
+        if fixed_thresholds:
+            b1_threshold = fixed_thresholds["b1"]
+            ev_threshold = fixed_thresholds["ev"]
+        else:
+            b1_threshold = trial.suggest_float("b1_threshold", 0.30, 0.55)
+            ev_threshold = trial.suggest_float("ev_threshold", -0.1, 0.5)
         r2_ev_threshold = None if not args.with_r2 else trial.suggest_float("r2_ev_threshold", 0.5, 2.0)
 
         rois = []
@@ -338,8 +507,8 @@ def main():
             continue
         ua = t.user_attrs
         rel = t.params.get("relevance") or t.user_attrs.get("relevance", "?")
-        b1t = t.params.get("b1_threshold", 0)
-        evt = t.params.get("ev_threshold", 0)
+        b1t = t.params.get("b1_threshold") or fixed_thresholds.get("b1", 0)
+        evt = t.params.get("ev_threshold") or fixed_thresholds.get("ev", 0)
         r2t = t.params.get("r2_ev_threshold")
         races = ua.get("total_races", "?")
         pft = ua.get("profit", 0)
@@ -348,6 +517,13 @@ def main():
             f"  #{t.number:>3}: Sharpe={ua['sharpe']:.2f} P/L={pft:+.0f} "
             f"ROI={ua['mean_roi']:.0%}±{ua['roi_std']:.0%} "
             f"n={races} rel={rel} b1<{b1t:.0%} ev>{evt:+.0%}{r2_str}"
+        )
+
+    # Phase 1.5: OOS validation of top trials
+    if args.validate_top > 0:
+        _validate_top_trials(
+            study, df, trifecta_odds, tri_win_prob, finish_map, folds,
+            n_top=args.validate_top, fixed_thresholds=fixed_thresholds,
         )
 
     # Auto-save best params to model_meta.json
@@ -364,14 +540,16 @@ def main():
         "relevance_scheme": bp.get("relevance") or study.best_trial.user_attrs.get("relevance", "top_heavy"),
     }
     best_strategy = {
-        "b1_threshold": bp["b1_threshold"],
-        "ev_threshold": bp["ev_threshold"],
+        "b1_threshold": bp.get("b1_threshold") or fixed_thresholds.get("b1", 0.35),
+        "ev_threshold": bp.get("ev_threshold") or fixed_thresholds.get("ev", 0.29),
         "bet_pattern": "X-allflow (20pt)" + (" with rank-2 fallback" if args.with_r2 else ""),
         "ev_basis": "trifecta inverse (sum 0.75/odds)",
     }
     if args.with_r2:
         best_strategy["r2_ev_threshold"] = bp["r2_ev_threshold"]
-    meta_dir = "models/trifecta_v1/ranking"
+    meta_dir = "models/tune_result"
+    from pathlib import Path
+    Path(meta_dir).mkdir(parents=True, exist_ok=True)
     from boatrace_tipster_ml.model import save_model_meta
     save_model_meta(
         meta_dir,
@@ -384,14 +562,13 @@ def main():
     )
     # Append strategy to saved meta
     import json
-    from pathlib import Path
     meta_path = Path(meta_dir) / "model_meta.json"
     with open(meta_path) as f:
         meta = json.load(f)
     meta["strategy"] = best_strategy
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
-    print(f"\nSaved best params to {meta_dir}/model_meta.json")
+    print(f"\nSaved best params to {meta_path} (NOTE: not production model)")
 
     print(f"\nTotal time: {time.time() - t0:.1f}s")
 

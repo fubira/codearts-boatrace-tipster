@@ -4,14 +4,16 @@ Evaluates 3連単 strategy: fix 1st place (anti-favorite pick),
 buy all 2nd-3rd combinations (20pt allflow).
 
 Modes:
-    --from/--to:  Period backtest with daily breakdown
-    --wfcv:       Walk-forward cross-validation (4 folds)
-    --ev-sweep:   EV threshold sweep across WF-CV
+    --from/--to:        Period backtest with daily breakdown
+    --wfcv:             Walk-forward cross-validation (4 folds)
+    --ev-sweep:         EV threshold sweep across WF-CV
+    --threshold-sweep:  2D b1×ev grid search on saved model (Phase 2)
 
 Usage:
     uv run --directory ml python -m scripts.backtest_trifecta --from 2026-03-21 --to 2026-04-04
     uv run --directory ml python -m scripts.backtest_trifecta --wfcv
     uv run --directory ml python -m scripts.backtest_trifecta --ev-sweep
+    uv run --directory ml python -m scripts.backtest_trifecta --threshold-sweep --from 2026-01-01 --to 2026-04-10
 """
 
 import argparse
@@ -436,12 +438,115 @@ def run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_ma
         print(f"{ev_thr:>+5.0%} | {rstr} | {m:>4.0%} {s:>3.0%} {mn:>4.0%} {sh:>5.1f} {avg_rpd:>5.1f}{marker}")
 
 
+def run_threshold_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, **_kwargs):
+    """2D grid search over b1/ev thresholds using saved production models (no retraining)."""
+    from boatrace_tipster_ml.boat1_model import load_boat1_model
+    from boatrace_tipster_ml.model import load_model
+
+    test_df = df[
+        (df["race_date"] >= args.from_date) & (df["race_date"] < args.to_date)
+    ]
+
+    print(f"Loading saved models from {args.model_dir}...", file=sys.stderr)
+    b1_model = load_boat1_model(f"{args.model_dir}/boat1")
+    rank_model = load_model(f"{args.model_dir}/ranking")
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        X_b1, _, meta_b1 = reshape_to_boat1(test_df)
+    b1_probs = b1_model.predict_proba(X_b1)[:, 1]
+
+    X_rank, _, meta_rank = prepare_feature_matrix(test_df)
+    rank_scores = rank_model.predict(X_rank)
+
+    # Grid ranges
+    b1_vals = np.arange(0.30, 0.51, 0.025)
+    ev_vals = np.arange(-0.05, 0.51, 0.05)
+
+    TICKETS = 20
+    print(f"\nThreshold sweep: {args.from_date} ~ {args.to_date}")
+    print(f"{'':>6} " + " ".join(f"{'b1<' + f'{b:.0%}':>9}" for b in b1_vals))
+    print("-" * (7 + 10 * len(b1_vals)))
+
+    best_growth = -999.0
+    best_combo = (0.0, 0.0)
+    best_stats: dict = {}
+    results_grid: list[dict] = []
+
+    for ev in ev_vals:
+        row_parts = []
+        for b1 in b1_vals:
+            result = evaluate_trifecta_strategy(
+                b1_probs=b1_probs,
+                meta_b1=meta_b1,
+                rank_scores=rank_scores,
+                meta_rank=meta_rank,
+                finish_map=finish_map,
+                trifecta_odds=trifecta_odds,
+                tri_win_prob=tri_win_prob,
+                b1_threshold=b1,
+                ev_threshold=ev,
+                r2_ev_threshold=args.r2_threshold,
+                race_date_map=race_date_map,
+                per_race=True,
+            )
+
+            n_races = len(result)
+            n_wins = sum(1 for r in result if r["pick_1st"] and r.get("allflow_odds", 0) > 0)
+            total_payout = sum(r["allflow_odds"] for r in result if r["pick_1st"] and r.get("allflow_odds", 0) > 0)
+            cost = n_races * TICKETS
+            pl = total_payout - cost
+            roi = total_payout / cost if cost > 0 else 0
+
+            # Daily growth for ranking
+            daily_pl: dict[str, float] = defaultdict(float)
+            for r in result:
+                payout = r["allflow_odds"] if r["pick_1st"] and r.get("allflow_odds", 0) > 0 else 0
+                daily_pl[r["date"]] += payout - TICKETS
+            bankroll = 70000.0
+            if daily_pl:
+                growth = float(np.mean([
+                    np.log(max(1 + v / bankroll, 1e-6)) for v in daily_pl.values()
+                ]))
+            else:
+                growth = -999.0
+
+            entry = {
+                "b1": round(float(b1), 3), "ev": round(float(ev), 3),
+                "races": n_races, "wins": n_wins, "roi": round(roi, 4),
+                "pl": round(pl, 1), "growth": round(growth, 6),
+            }
+            results_grid.append(entry)
+
+            if growth > best_growth and n_races >= 20:
+                best_growth = growth
+                best_combo = (float(b1), float(ev))
+                best_stats = entry
+
+            if n_races == 0:
+                row_parts.append(f"{'---':>9}")
+            else:
+                row_parts.append(f"{pl:>+8.0f}{'*' if n_races >= 20 and roi >= 1.5 else ' '}")
+
+        print(f"ev>{ev:+.0%} " + " ".join(row_parts))
+
+    print("-" * (7 + 10 * len(b1_vals)))
+    if best_stats:
+        b, e = best_combo
+        s = best_stats
+        print(f"\nBest: b1<{b:.1%} ev>{e:+.1%} → {s['races']}R {s['wins']}W ROI {s['roi']:.0%} P/L {s['pl']:+.0f} growth={s['growth']:.6f}")
+
+    if args.json:
+        json.dump({"grid": results_grid, "best": best_stats}, sys.stdout, ensure_ascii=False)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Backtest trifecta X-allflow")
     parser.add_argument("--from", dest="from_date")
     parser.add_argument("--to", dest="to_date")
     parser.add_argument("--wfcv", action="store_true")
     parser.add_argument("--ev-sweep", action="store_true")
+    parser.add_argument("--threshold-sweep", action="store_true",
+                        help="2D grid search over b1/ev thresholds on saved model (Phase 2)")
     parser.add_argument("--n-folds", type=int, default=4)
     parser.add_argument("--fold-months", type=int, default=2)
     parser.add_argument("--model-dir", default="models/trifecta_v1",
@@ -495,14 +600,18 @@ def main():
     print(f"Loaded in {time.time() - t0:.1f}s", file=sys.stderr)
 
     common = dict(ranking_params=ranking_params, boat1_params=boat1_params)
-    if args.ev_sweep:
+    if args.threshold_sweep:
+        if not args.from_date or not args.to_date:
+            parser.error("--threshold-sweep requires --from and --to")
+        run_threshold_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, **common)
+    elif args.ev_sweep:
         run_ev_sweep(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds, **common)
     elif args.wfcv:
         run_wfcv(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds, **common)
     elif args.from_date and args.to_date:
         run_period(args, df, trifecta_odds, tri_win_prob, finish_map, race_date_map, exacta_odds, **common)
     else:
-        parser.error("--from/--to, --wfcv, or --ev-sweep required")
+        parser.error("--from/--to, --wfcv, --ev-sweep, or --threshold-sweep required")
 
     print(f"\nTotal: {time.time() - t0:.1f}s", file=sys.stderr)
 
