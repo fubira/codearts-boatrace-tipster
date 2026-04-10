@@ -246,6 +246,7 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 - Python ファイル編集後は `uv run pytest` で確認
 - テストは Co-location（ソースと同じディレクトリ）
 - パーサー・データ変換は構造的性質をテストする（parseOdds3T 全データ汚染の教訓）
+- **ML リリース前**: `cd ml && PYTHONPATH=scripts:$PYTHONPATH uv run python scripts/test_predict_backtest_consistency.py` で 3 パス（backtest / predict_full / predict_snapshot）の一貫性を検証する。snapshot パスの型エラーや NaN fill 不整合を事前に検出する
 - **サーバ変更コマンド**（data sync, data push）は実行前にソース確認。--dry-run が全パスで参照されているか確認する
 
 ## スクレイパー
