@@ -88,12 +88,12 @@ promote_model.py [--draft models/draft] [--prod models/trifecta_v1]
 
 ```
 --setup                          # 初回セットアップ
---model trifecta|ranking|boat1 --trials N  # Optuna 実行（default: trifecta）
+--model p2|trifecta|ranking|boat1 --trials N  # Optuna 実行（default: trifecta）
 --watch                          # ログ監視
 --fetch                          # 結果取得
---with-r2                        # rank-2フォールバック有効化（default: 無効）
---fix-thresholds "b1=0.35,ev=0.29"  # 閾値固定でハイパラのみ探索（Phase 1）
---validate-top 10                   # 探索後にTop NをOOS検証（Phase 1.5）
+--fix-thresholds "gap23=0.15,ev=0.1"  # 閾値固定でハイパラのみ探索（P2 用）
+--with-r2                        # rank-2フォールバック有効化（trifecta、default: 無効）
+--validate-top 10                   # 探索後にTop NをOOS検証（trifecta、Phase 1.5）
 ```
 
 ### npm scripts
@@ -130,27 +130,32 @@ models/
 ```
 
 - 学習: `train_ranking.py` / `train_boat1_binary.py` → `models/draft/` に保存
-- 探索: `tune_trifecta.py` → `models/tune_result/` に保存
+- 探索: `tune_p2.py`（新戦略）/ `tune_trifecta.py`（旧） → `models/tune_result/` に保存
 - 昇格: `promote_model.py` で draft → trifecta_v1 にコピー（確認プロンプト付き）
 - 推論/評価: `predict_trifecta.py` / `backtest_trifecta.py` → `models/trifecta_v1/` を読む
 
 ### モデル構成
 
-二値分類とランキングの2モデル構成。戦略は再設計中。
+Non-odds 特徴量のランキングモデル単体で完結。b1 二値分類モデルは不要。
 
 | モデル | 目的 | 手法 | 用途 |
 |--------|------|------|------|
-| 1号艇二値分類 | 1号艇が勝つか予測 | LGBMClassifier (33特徴量) | 1号艇飛び判定 |
-| 6艇ランキング | 着順予測 | LGBMRanker LambdaRank (32特徴量) | 着順予測 |
+| 6艇ランキング | 着順予測 | LGBMRanker LambdaRank (Non-odds 21特徴量) | 1着・2着予測 |
+| ~~1号艇二値分類~~ | ~~1号艇飛び判定~~ | ~~廃止~~ | ランキングモデルの Top-1 予測で代替 |
 
-### EV 戦略（3連単 X-allflow）— 再設計中
+### EV 戦略（3連単 P2 adaptive）
 
-旧戦略は course_number リーケージに依存していたため無効。clean 特徴量での Optuna 再探索で growth ≈ 0 を確認済み。戦略・券種・買い方を含めてゼロから再設計する。
+**概要**: B1 が1着になるレースで、2-3着を P2 パターン（2点）で購入。3連単オッズから券ごとに EV 判定し、EV+ の券だけ adaptive に購入。
 
-参考（旧コード上の仕組み）:
-- `EV = model_prob / market_prob × 0.75 - 1 > threshold` で購入判断。オッズは特徴量に含めない
-- **3連単オッズから逆算した市場確率**と比較して EV 判定（単勝オッズは使わない。プールが薄すぎて非本命を過大評価する）
-- 評価ロジックは `evaluate_trifecta_strategy()` に一本化（tune, backtest, MC が共用）
+**フィルタ**:
+1. Top-1 予測が1号艇であること
+2. gap23（2位-3位のスコア差）≥ 閾値 → 2着予測に自信があるレースを選ぶ
+3. 各券の 3連単オッズから `EV = model_prob / market_prob × 0.75 - 1 ≥ 閾値`
+
+**買い方**: P2 = 1-(rank2,rank3)-(rank2,rank3)。最大2点、EV- の券はスキップ。
+**ベットサイジング**: 1/4 Kelly → 実績を見て 1/2 Kelly に引き上げ。`f = (odds × model_prob - 1) / (odds - 1) × fraction`
+**EV 判定**: 単勝オッズは使わない（プール薄い）。**各券の3連単オッズ**から直接市場確率を計算
+**探索**: `tune_p2.py` で gap23 閾値・EV 閾値・ハイパラを同時最適化（growth 目的関数）
 
 ### 特徴量パイプライン
 
