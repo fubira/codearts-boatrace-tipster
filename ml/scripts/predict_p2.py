@@ -291,7 +291,7 @@ def predict_p2(
 def main():
     parser = argparse.ArgumentParser(description="P2 trifecta prediction")
     parser.add_argument("--date", required=True)
-    parser.add_argument("--model-dir", default="models/trifecta_v1")
+    parser.add_argument("--model-dir", default="models/p2_v1")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--snapshot", default=None)
     parser.add_argument("--race-ids", default=None,

@@ -5,7 +5,7 @@ Requires explicit confirmation to prevent accidental overwrites.
 
 Usage:
     uv run --directory ml python -m scripts.promote_model
-    uv run --directory ml python -m scripts.promote_model --draft models/draft --prod models/trifecta_v1
+    uv run --directory ml python -m scripts.promote_model --draft models/draft --prod models/p2_v1
     uv run --directory ml python -m scripts.promote_model --component ranking
     uv run --directory ml python -m scripts.promote_model --yes  # skip confirmation
 """
@@ -65,7 +65,7 @@ def promote(draft_dir: Path, prod_dir: Path, component: str) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Promote draft model to production")
     parser.add_argument("--draft", default="models/draft", help="Draft model directory")
-    parser.add_argument("--prod", default="models/trifecta_v1", help="Production model directory")
+    parser.add_argument("--prod", default="models/p2_v1", help="Production model directory")
     parser.add_argument("--component", choices=COMPONENTS, default=None,
                         help="Promote only this component (default: all)")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")

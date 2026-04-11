@@ -180,7 +180,7 @@ async function runPrediction(
   snapshotPath?: string,
   raceIds?: number[],
 ): Promise<PredictionResult> {
-  const modelDir = resolve(config.projectRoot, "ml/models/trifecta_v1");
+  const modelDir = resolve(config.projectRoot, "ml/models/p2_v1");
   const args = [
     "--date",
     date,

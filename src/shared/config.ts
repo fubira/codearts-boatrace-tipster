@@ -27,7 +27,7 @@ export interface ModelStrategy {
 export function loadModelStrategy(): ModelStrategy {
   const metaPath = resolve(
     PROJECT_ROOT,
-    "ml/models/trifecta_v1/ranking/model_meta.json",
+    "ml/models/p2_v1/ranking/model_meta.json",
   );
   const defaults: ModelStrategy = {
     evThreshold: 0.0,
