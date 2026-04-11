@@ -1,6 +1,6 @@
 {
   "name": "boatrace-tipster",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "type": "module",
   "description": "Boat race prediction AI powered by machine learning",
   "bin": {
