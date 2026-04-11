@@ -56,15 +56,17 @@ def evaluate_p2_strategy(
     gap23_threshold: float,
     ev_threshold: float,
     *,
+    top3_conc_threshold: float = 0.0,
     per_race: bool = False,
 ) -> dict | list[dict]:
     """Evaluate P2 adaptive strategy.
 
     For each race:
     1. Check if top-1 prediction is boat 1
-    2. Check if gap23 >= threshold
-    3. For P2 tickets (1-2-3 and 1-3-2), compute 3連単 EV
-    4. Buy only tickets with EV >= threshold
+    2. Check if top3_concentration >= threshold (rank2+3 separated from rest)
+    3. Check if gap23 >= threshold
+    4. For P2 tickets (1-2-3 and 1-3-2), compute 3連単 EV
+    5. Buy only tickets with EV >= threshold
 
     Returns summary dict or per-race list.
     """
@@ -95,9 +97,16 @@ def evaluate_p2_strategy(
         if top_boats[i, 0] != 1:
             continue
 
-        # Filter 2: gap23 threshold
+        p1_prob = model_probs[i, pred_order[i, 0]]
         p2_prob = model_probs[i, pred_order[i, 1]]
         p3_prob = model_probs[i, pred_order[i, 2]]
+
+        # Filter 2: top3_concentration threshold
+        top3_conc = (p2_prob + p3_prob) / (1 - p1_prob + 1e-10)
+        if top3_conc < top3_conc_threshold:
+            continue
+
+        # Filter 3: gap23 threshold
         gap23 = p2_prob - p3_prob
         if gap23 < gap23_threshold:
             continue
@@ -189,7 +198,7 @@ def main():
     parser.add_argument("--relevance", default=None,
                         help="Fix relevance scheme (linear/top_heavy/podium). If omitted, included in search space.")
     parser.add_argument("--fix-thresholds", default=None,
-                        help="Fix strategy thresholds. Format: gap23=0.15,ev=0.1")
+                        help="Fix strategy thresholds. Format: gap23=0.15,ev=0.1,top3_conc=0.7")
     args = parser.parse_args()
 
     # Parse fixed thresholds
@@ -260,11 +269,15 @@ def main():
         if "gap23" in fixed_thresholds:
             gap23_threshold = fixed_thresholds["gap23"]
         else:
-            gap23_threshold = trial.suggest_float("gap23_threshold", 0.02, 0.25)
+            gap23_threshold = trial.suggest_float("gap23_threshold", 0.0, 0.25)
         if "ev" in fixed_thresholds:
             ev_threshold = fixed_thresholds["ev"]
         else:
             ev_threshold = trial.suggest_float("ev_threshold", -0.3, 0.5)
+        if "top3_conc" in fixed_thresholds:
+            top3_conc_threshold = fixed_thresholds["top3_conc"]
+        else:
+            top3_conc_threshold = trial.suggest_float("top3_conc_threshold", 0.0, 0.85)
 
         fold_profits = []
         total_races = 0
@@ -300,6 +313,7 @@ def main():
                 trifecta_odds=trifecta_odds,
                 gap23_threshold=gap23_threshold,
                 ev_threshold=ev_threshold,
+                top3_conc_threshold=top3_conc_threshold,
             )
 
             fold_profit = result["payout"] - result["cost"]
@@ -381,11 +395,12 @@ def main():
         rel = ua.get("relevance", "?")
         g23 = t.params.get("gap23_threshold", fixed_thresholds.get("gap23", "?"))
         evt = t.params.get("ev_threshold", fixed_thresholds.get("ev", "?"))
+        t3c = t.params.get("top3_conc_threshold", fixed_thresholds.get("top3_conc", "?"))
         kelly_v = ua.get("kelly", "?")
         print(
             f"  #{t.number:>3}: growth={ua['growth']:.6f} kelly={kelly_v} ROI={ua['mean_roi']:.0%} "
             f"P/L={ua['profit']:+,.0f} n={ua['total_races']} "
-            f"rel={rel} gap23={g23} ev={evt}"
+            f"rel={rel} gap23={g23} ev={evt} conc={t3c}"
         )
 
     # Save best params
@@ -402,6 +417,7 @@ def main():
         "bet_pattern": "1-(2,3)-(2,3) adaptive",
         "gap23_threshold": bp.get("gap23_threshold", fixed_thresholds.get("gap23")),
         "ev_threshold": bp.get("ev_threshold", fixed_thresholds.get("ev")),
+        "top3_conc_threshold": bp.get("top3_conc_threshold", fixed_thresholds.get("top3_conc")),
         "ev_basis": "3連単 odds per ticket",
         "features": "non_odds_21",
     }

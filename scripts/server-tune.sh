@@ -106,7 +106,7 @@ Optuna options:
   --train-start D   学習開始日 (default: all)
   --warm-start      現行model_metaのパラメータで初期化
   --with-r2         rank-2フォールバック有効化（trifecta, default: 無効）
-  --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "b1=0.35,ev=0.29")
+  --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "gap23=0.13,ev=0.0,top3_conc=0.7")
   --validate-top N  探索後にTop N trialをOOS検証 (Phase 1.5, default: 0)
   --objective O     boat1 objective: ev_roi | upset_fbeta (default: ev_roi)
   --beta F          F-beta for upset_fbeta (default: 1.5)
