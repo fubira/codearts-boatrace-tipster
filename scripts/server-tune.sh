@@ -97,7 +97,7 @@ Modes:
   --setup           初回セットアップ（uv + workspace + deps）
 
 Optuna options:
-  --model M         モデル: trifecta | ranking | boat1 (default: trifecta)
+  --model M         モデル: trifecta | p2 | ranking | boat1 (default: trifecta)
   --trials N        trial数 (default: 100)
   --folds N         WF-CV fold数 (default: 4)
   --fold-months N   fold幅（月数、default: 2）
@@ -264,6 +264,18 @@ _build_cmd() {
       if [ -n "$BETA" ]; then
         cmd+=" --beta ${BETA}"
       fi
+      ;;
+    p2)
+      cmd="uv run --directory ml python -m scripts.tune_p2"
+      cmd+=" --trials ${TRIALS}"
+      cmd+=" --n-folds ${FOLDS}"
+      cmd+=" --fold-months ${FOLD_MONTHS}"
+      cmd+=" --seed ${SEED}"
+      if [ -n "$FIX_THRESHOLDS" ]; then
+        cmd+=" --fix-thresholds '${FIX_THRESHOLDS}'"
+      fi
+      echo "$cmd"
+      return
       ;;
     trifecta)
       cmd="uv run --directory ml python -m scripts.tune_trifecta"
