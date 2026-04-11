@@ -268,21 +268,18 @@ def main():
         rois = []
 
         for fold in folds:
-            # Train with non-odds features
             train_X = fold["train"]["X"][FEATURES] if set(FEATURES).issubset(fold["train"]["X"].columns) else fold["train"]["X"]
-            # Include val in training (no early stopping)
             val_X = fold["val"]["X"][FEATURES] if set(FEATURES).issubset(fold["val"]["X"].columns) else fold["val"]["X"]
-            all_X = pd.concat([train_X, val_X], ignore_index=True)
-            all_y = pd.concat([fold["train"]["y"], fold["val"]["y"]], ignore_index=True)
-            all_meta = pd.concat([fold["train"]["meta"], fold["val"]["meta"]], ignore_index=True)
 
             with contextlib.redirect_stdout(io.StringIO()):
                 rank_model, _ = train_model(
-                    all_X, all_y, all_meta,
+                    train_X, fold["train"]["y"], fold["train"]["meta"],
+                    val_X, fold["val"]["y"], fold["val"]["meta"],
                     n_estimators=n_estimators,
                     learning_rate=learning_rate,
                     relevance_scheme=relevance,
                     extra_params=rank_params,
+                    early_stopping_rounds=200,
                 )
 
             test_X = fold["test"]["X"][FEATURES] if set(FEATURES).issubset(fold["test"]["X"].columns) else fold["test"]["X"]
