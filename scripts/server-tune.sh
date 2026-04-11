@@ -271,6 +271,9 @@ _build_cmd() {
       cmd+=" --n-folds ${FOLDS}"
       cmd+=" --fold-months ${FOLD_MONTHS}"
       cmd+=" --seed ${SEED}"
+      if [ -n "$OBJECTIVE" ]; then
+        cmd+=" --objective ${OBJECTIVE}"
+      fi
       if [ -n "$FIX_THRESHOLDS" ]; then
         cmd+=" --fix-thresholds '${FIX_THRESHOLDS}'"
       fi

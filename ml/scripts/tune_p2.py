@@ -184,6 +184,8 @@ def main():
     parser.add_argument("--fold-months", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
+    parser.add_argument("--objective", choices=["growth", "kelly"], default="growth",
+                        help="Optimization objective: growth (daily compound, default) or kelly (log-ROI, favors high ROI)")
     parser.add_argument("--fix-thresholds", default=None,
                         help="Fix strategy thresholds. Format: gap23=0.15,ev=0.1")
     args = parser.parse_args()
@@ -311,7 +313,7 @@ def main():
         mean_roi = float(np.mean(rois)) if rois else 0
         profit = total_payout - total_cost
 
-        # Growth objective
+        # Growth: daily compound growth rate
         bankroll = 70000.0
         days_per_fold = args.fold_months * 30
         growth_rates = []
@@ -320,13 +322,20 @@ def main():
             growth_rates.append(np.log(max(1 + daily_profit / bankroll, 1e-6)))
         growth = float(np.mean(growth_rates))
 
+        # Kelly: mean of log(ROI) — rewards high ROI regardless of volume
+        log_rois = [np.log(max(r, 1e-6)) for r in rois]
+        kelly = float(np.mean(log_rois))
+
         trial.set_user_attr("mean_roi", round(mean_roi, 4))
         trial.set_user_attr("rois", [round(r, 4) for r in rois])
         trial.set_user_attr("total_races", total_races)
         trial.set_user_attr("profit", round(profit, 1))
         trial.set_user_attr("growth", round(growth, 6))
+        trial.set_user_attr("kelly", round(kelly, 4))
         trial.set_user_attr("relevance", relevance)
 
+        if args.objective == "kelly":
+            return kelly
         return growth
 
     study = optuna.create_study(
@@ -338,10 +347,11 @@ def main():
     study.optimize(objective, n_trials=args.trials, show_progress_bar=True)
 
     # Results
+    obj_label = {"growth": "Growth", "kelly": "Kelly"}[args.objective]
     print("\n" + "=" * 70)
-    print("Optuna Search Complete — P2 Trifecta Strategy")
+    print(f"Optuna Search Complete — P2 Trifecta Strategy (objective: {args.objective})")
     print("=" * 70)
-    print(f"Best Growth: {study.best_value:.6f}")
+    print(f"Best {obj_label}: {study.best_value:.6f}")
     bp = study.best_params
     print(f"Best params:")
     for k, v in sorted(bp.items()):
@@ -353,10 +363,11 @@ def main():
     print(f"  Profit:   {ba['profit']:+,.0f}円")
     print(f"  Races:    {ba['total_races']}")
     print(f"  Growth:   {ba['growth']:.6f}")
+    print(f"  Kelly:    {ba.get('kelly', 'N/A')}")
     print(f"  Folds:    {ba['rois']}")
 
     # Top 10 trials
-    print(f"\nTop 10 trials (by Growth):")
+    print(f"\nTop 10 trials (by {obj_label}):")
     trials = sorted(
         [t for t in study.trials if t.value is not None and t.value > -999],
         key=lambda t: t.value,
@@ -367,8 +378,9 @@ def main():
         rel = ua.get("relevance", "?")
         g23 = t.params.get("gap23_threshold", fixed_thresholds.get("gap23", "?"))
         evt = t.params.get("ev_threshold", fixed_thresholds.get("ev", "?"))
+        kelly_v = ua.get("kelly", "?")
         print(
-            f"  #{t.number:>3}: growth={t.value:.6f} ROI={ua['mean_roi']:.0%} "
+            f"  #{t.number:>3}: growth={ua['growth']:.6f} kelly={kelly_v} ROI={ua['mean_roi']:.0%} "
             f"P/L={ua['profit']:+,.0f} n={ua['total_races']} "
             f"rel={rel} gap23={g23} ev={evt}"
         )
