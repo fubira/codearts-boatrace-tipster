@@ -259,7 +259,7 @@ class TestLeakagePrevention:
         df = pd.DataFrame({
             "racer_id": [1, 1, 1, 1],
             "boat_number": [3, 3, 3, 3],
-            "course_number": [1, 3, 2, 3],  # inner, same, inner, same
+            "actual_course_number": [1, 3, 2, 3],  # inner, same, inner, same
             "race_date": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
             "race_id": [10, 20, 30, 40],
             "entry_id": [1, 2, 3, 4],
@@ -276,6 +276,48 @@ class TestLeakagePrevention:
         assert df.iloc[2]["course_taking_rate"] == pytest.approx(0.5)
         # Day4: prior = day1+2+3 (took inner=2, total=3) = 0.667
         assert df.iloc[3]["course_taking_rate"] == pytest.approx(2 / 3)
+
+        # avg_course_diff: mean of (actual_course - boat_number)
+        # diffs = [-2, 0, -1, 0]
+        assert np.isnan(df.iloc[0]["avg_course_diff"])
+        assert df.iloc[1]["avg_course_diff"] == pytest.approx(-2.0)  # prior: [-2]
+        assert df.iloc[2]["avg_course_diff"] == pytest.approx(-1.0)  # prior: [-2, 0]
+        assert df.iloc[3]["avg_course_diff"] == pytest.approx(-1.0)  # prior: [-2, 0, -1]
+
+        # course_taking_rate_at_boat: same as course_taking_rate here (all boat 3)
+        assert np.isnan(df.iloc[0]["course_taking_rate_at_boat"])
+        assert df.iloc[1]["course_taking_rate_at_boat"] == pytest.approx(1.0)
+        assert df.iloc[2]["course_taking_rate_at_boat"] == pytest.approx(0.5)
+        assert df.iloc[3]["course_taking_rate_at_boat"] == pytest.approx(2 / 3)
+
+    def test_course_taking_rate_at_boat_varies_by_boat(self):
+        """course_taking_rate_at_boat tracks per (racer, boat_number) independently."""
+        from .features import _add_course_taking_rate
+
+        # Same racer, different boat_numbers across days
+        df = pd.DataFrame({
+            "racer_id": [1, 1, 1, 1],
+            "boat_number": [5, 5, 3, 5],
+            "actual_course_number": [2, 5, 1, 3],  # inner, same, inner, inner
+            "race_date": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
+            "race_id": [10, 20, 30, 40],
+            "entry_id": [1, 2, 3, 4],
+            "finish_position": [1, 2, 3, 4],
+        }).sort_values(["race_date", "race_id", "entry_id"]).reset_index(drop=True)
+
+        _add_course_taking_rate(df)
+
+        # course_taking_rate (per racer, all boats): day4 prior = [inner, same, inner] = 2/3
+        assert df.iloc[3]["course_taking_rate"] == pytest.approx(2 / 3)
+
+        # course_taking_rate_at_boat for boat 5 on day4:
+        # prior at boat 5 = [inner(day1), same(day2)] = 1/2
+        # (day3 was boat 3, not counted here)
+        assert df.iloc[3]["course_taking_rate_at_boat"] == pytest.approx(0.5)
+
+        # course_taking_rate_at_boat for boat 3 on day3:
+        # no prior at boat 3 → NaN
+        assert np.isnan(df.iloc[2]["course_taking_rate_at_boat"])
 
     def test_recent_form_uses_cum_all_minus_daily(self):
         """Verify recent_form excludes same-day races (cum_all - cum_daily)."""

@@ -92,6 +92,8 @@ def build_features_from_snapshot(
     _apply_cumulative_rate(df, snapshot, "racer_course_top3", ["racer_id", "course_number"], "racer_course_top3_rate")
     _apply_cumulative_rate(df, snapshot, "stadium_course_win", ["stadium_id", "course_number"], "stadium_course_win_rate")
     _apply_cumulative_rate(df, snapshot, "racer_course_taking", ["racer_id"], "course_taking_rate")
+    _apply_cumulative_mean(df, snapshot, "racer_avg_course_diff", ["racer_id"], "avg_course_diff")
+    _apply_cumulative_rate(df, snapshot, "racer_boat_course_taking", ["racer_id", "boat_number"], "course_taking_rate_at_boat")
     _apply_cumulative_rate(df, snapshot, "racer_recent_win", ["racer_id"], "recent_win_rate")
     _apply_cumulative_rate(df, snapshot, "racer_recent_top2", ["racer_id"], "recent_top2_rate")
 

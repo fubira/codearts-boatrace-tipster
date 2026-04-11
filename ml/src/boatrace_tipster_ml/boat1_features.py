@@ -51,6 +51,8 @@ BOAT1_FEATURE_COLS: list[str] = [
     "b1_bc_turn_zscore",
     "b1_bc_straight_zscore",
     "b1_bc_slit_zscore",
+    # --- H: Course prediction (1) ---
+    "opp_min_avg_course_diff",
 ]
 
 
@@ -77,6 +79,7 @@ _B1_EXTRACT_COLS: list[str] = [
     "rel_exhibition_time",
     # Raw values needed for derived features
     "flying_count",
+    "avg_course_diff",
     # BOATCAST exhibition z-scores
     "bc_lap_zscore",
     "bc_turn_zscore",
@@ -128,6 +131,10 @@ def reshape_to_boat1(
     # --- C2: Opponent course-taking rate (イン屋の脅威) ---
     opp_ct = opps.groupby("race_id", sort=False)["course_taking_rate"].max()
     result["opp_max_course_taking_rate"] = b1["race_id"].map(opp_ct.to_dict()).values
+
+    # --- C3: Opponent avg course diff (most aggressive front-taker, min = most negative) ---
+    opp_cd = opps.groupby("race_id", sort=False)["avg_course_diff"].min()
+    result["opp_min_avg_course_diff"] = b1["race_id"].map(opp_cd.to_dict()).values
 
     # --- D: Race-level context ---
     for col in ["wind_speed", "race_max_course_taking_rate"]:

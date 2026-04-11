@@ -57,6 +57,10 @@ FEATURE_COLS: list[str] = [
     # --- Position alpha (2) ---
     "position_alpha",
     "rolling_position_alpha",
+    # --- Course prediction (3) ---
+    "avg_course_diff",
+    "course_taking_rate_at_boat",
+    "race_min_avg_course_diff",
 ]
 
 # Features with intentional intraday leakage.
@@ -203,6 +207,8 @@ def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     # an "in-ya" (habitual front-taker) in this race. Replaces the old
     # has_front_taking which used actual course_number (leaky).
     df["race_max_course_taking_rate"] = df.groupby("race_id")["course_taking_rate"].transform("max")
+    # Most aggressive front-taker's avg course diff (min because negative = more aggressive)
+    df["race_min_avg_course_diff"] = df.groupby("race_id")["avg_course_diff"].transform("min")
     return df
 
 

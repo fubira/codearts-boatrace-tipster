@@ -95,6 +95,8 @@ def _make_race_df(n_races: int = 2, *, seed: int = 42) -> pd.DataFrame:
                 "bc_slit_diff": rng.rand() * 3,
                 "position_alpha": rng.randn() * 0.5,
                 "rolling_position_alpha": rng.randn() * 0.5,
+                "avg_course_diff": rng.randn() * 0.3,
+                "course_taking_rate_at_boat": rng.rand() * 0.3,
             })
     return pd.DataFrame(rows)
 
@@ -130,9 +132,10 @@ class TestFeatureColumnDefinitions:
         assert FEATURE_COLS[0] == "boat_number"
         assert FEATURE_COLS[1] == "racer_weight"
         assert FEATURE_COLS[2] == "national_win_rate"
-        # course_number near the end of the original block
-        assert "course_number" in FEATURE_COLS
-        assert FEATURE_COLS.index("course_number") == 15
+        # Course prediction features near the end
+        assert "avg_course_diff" in FEATURE_COLS
+        assert "course_taking_rate_at_boat" in FEATURE_COLS
+        assert "race_min_avg_course_diff" in FEATURE_COLS
 
     def test_boat1_feature_cols_known_positions(self):
         """Boat1 feature order is frozen for model compatibility."""
@@ -142,10 +145,10 @@ class TestFeatureColumnDefinitions:
 
     def test_feature_cols_expected_count(self):
         """Guard against accidental additions/removals."""
-        assert len(FEATURE_COLS) == 30
+        assert len(FEATURE_COLS) == 32
 
     def test_boat1_feature_cols_expected_count(self):
-        assert len(BOAT1_FEATURE_COLS) == 32
+        assert len(BOAT1_FEATURE_COLS) == 33
 
     def test_leaked_cols_subset_of_feature_cols(self):
         """LEAKED_COLS must be a subset of FEATURE_COLS (or empty)."""
@@ -317,7 +320,7 @@ class TestComputeInteractionFeatures:
         expected = [
             "class_x_boat", "motor_x_boat", "wind_x_wave",
             "weight_x_boat", "wind_speed_x_boat", "kado_x_exhibition",
-            "has_front_taking",
+            "race_max_course_taking_rate", "race_min_avg_course_diff",
         ]
         for col in expected:
             assert col in result.columns, f"Missing column: {col}"
@@ -329,11 +332,11 @@ class TestComputeInteractionFeatures:
         compute_interaction_features(df)
         assert list(df.columns) == original_cols
 
-    def test_has_front_taking_binary(self):
+    def test_race_min_avg_course_diff_filled(self):
         df = _make_race_df(n_races=2)
         df = compute_relative_features(df)
         result = compute_interaction_features(df)
-        assert result["has_front_taking"].isin([0, 1]).all()
+        assert "race_min_avg_course_diff" in result.columns
 
     def test_kado_exactly_one_per_race(self):
         """Each race should have exactly one kado boat."""

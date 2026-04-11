@@ -371,15 +371,30 @@ def _add_stadium_course_stats(df: pd.DataFrame) -> None:
 
 
 def _add_course_taking_rate(df: pd.DataFrame) -> None:
-    """B2: Rate of racer taking an inner course than their boat number.
+    """B2: Course-taking tendency features.
 
     Uses actual_course_number (post-race ground truth) for historical
     accumulation. course_number column is always boat_number (prediction-safe),
     so we need the original course data to compute front-taking tendency.
+
+    Features:
+      - course_taking_rate: binary rate of taking inner course (per racer)
+      - avg_course_diff: mean of (actual_course - boat_number) per racer
+        Negative = front-taking tendency, 0 = wakari. Captures magnitude
+        (1-inner vs 3-inner) that binary rate misses.
+      - course_taking_rate_at_boat: binary inner-taking rate per (racer, boat_number)
+        Addresses low correlation between overall rate and boat-specific behavior
+        (r=0.571 for boat 2 vs r=0.942 for boat 5).
     """
     actual = df["actual_course_number"].fillna(df["boat_number"])
     df["_took_inner"] = (actual < df["boat_number"]).astype(int)
+    df["_course_diff"] = (actual - df["boat_number"]).astype(float)
+
     df["course_taking_rate"] = _cumulative_rate(df, ["racer_id"], "_took_inner")
+    df["avg_course_diff"] = _cumulative_mean(df, ["racer_id"], "_course_diff")
+    df["course_taking_rate_at_boat"] = _cumulative_rate(
+        df, ["racer_id", "boat_number"], "_took_inner"
+    )
 
 
 def _add_recent_form(df: pd.DataFrame) -> None:
@@ -554,7 +569,7 @@ def _encode_categoricals(df: pd.DataFrame) -> None:
 # Cleanup
 # ---------------------------------------------------------------------------
 
-_TEMP_COLS = ["_is_win", "_is_top2", "_is_top3", "_took_inner", "_pos", "_pos_alpha", "tournament_id"]
+_TEMP_COLS = ["_is_win", "_is_top2", "_is_top3", "_took_inner", "_course_diff", "_pos", "_pos_alpha", "tournament_id"]
 
 
 def _cleanup_temp_cols(df: pd.DataFrame) -> None:

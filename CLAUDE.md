@@ -136,22 +136,20 @@ models/
 
 ### モデル構成
 
-二値分類とランキングの2モデル構成。3連単 X-allflow 戦略で使用。
+二値分類とランキングの2モデル構成。戦略は再設計中。
 
 | モデル | 目的 | 手法 | 用途 |
 |--------|------|------|------|
-| 1号艇二値分類 | 1号艇が勝つか予測 | LGBMClassifier (32特徴量) | 1号艇飛び判定 |
-| 6艇ランキング | 着順予測 | LGBMRanker LambdaRank (30特徴量) | 1着予測（非1号艇） |
+| 1号艇二値分類 | 1号艇が勝つか予測 | LGBMClassifier (33特徴量) | 1号艇飛び判定 |
+| 6艇ランキング | 着順予測 | LGBMRanker LambdaRank (32特徴量) | 着順予測 |
 
-### EV 戦略（3連単 X-allflow）
+### EV 戦略（3連単 X-allflow）— 再設計中
 
-1号艇飛び予測時、非1号艇の1着固定 × 2-3着全流し（20点）。
-`EV = model_prob / market_prob × 0.75 - 1 > threshold` で購入判断。オッズは特徴量に含めない。
+旧戦略は course_number リーケージに依存していたため無効。clean 特徴量での Optuna 再探索で growth ≈ 0 を確認済み。戦略・券種・買い方を含めてゼロから再設計する。
 
-- b1_prob < threshold → 1号艇が負けると判断
-- ランキングモデルの softmax 確率で1着を予測
+参考（旧コード上の仕組み）:
+- `EV = model_prob / market_prob × 0.75 - 1 > threshold` で購入判断。オッズは特徴量に含めない
 - **3連単オッズから逆算した市場確率**と比較して EV 判定（単勝オッズは使わない。プールが薄すぎて非本命を過大評価する）
-- **Rank-2 フォールバック（デフォルト無効）**: rank-1 の EV が閾値未満のとき、rank-2（2番目の非1号艇）の EV が `r2_ev_threshold` 以上なら購入。短期は互角だが長期 MC で MaxDD 悪化・破産率上昇のため無効化。`--with-r2` で有効化
 - 評価ロジックは `evaluate_trifecta_strategy()` に一本化（tune, backtest, MC が共用）
 
 ### 特徴量パイプライン
@@ -160,6 +158,7 @@ models/
 
 **フルパイプライン**（`build_features_df()`）:
 - DB 全件読み込み → 累積統計計算 → 日付フィルタ → 相対・交互作用特徴量
+- `course_number` は常に `boat_number`（枠なり前提）。実コースは `actual_course_number` に保持し `course_taking_rate` の計算にのみ使用
 - Leak-safe: `cum_all - cum_daily` パターンで同一日レースを除外
 - ローリング: cumsum+shift で O(n) ベクトル化（窓: 全体5日/コース別20日）
 - 学習・バックテスト用。初回は全データ計算で ~20 秒、2回目以降は pickle キャッシュで ~1 秒（DB または feature コード変更で自動無効化）
@@ -176,9 +175,9 @@ models/
 
 ### 特徴量定義
 
-- `FEATURE_COLS` (feature_config.py): ランキングモデル用特徴量
-- `BOAT1_FEATURE_COLS` (boat1_features.py): 二値分類用特徴量
-- 特徴量の順序は model 互換性のため変更禁止（末尾に追加のみ）
+- `FEATURE_COLS` (feature_config.py): ランキングモデル用特徴量（32個）
+- `BOAT1_FEATURE_COLS` (boat1_features.py): 二値分類用特徴量（33個）
+- 特徴量の順序は model 互換性のため変更禁止（末尾に追加のみ）。戦略再設計時はリセット可
 
 ### モデルの保存と推論
 
@@ -188,7 +187,8 @@ models/
 
 ### 漏洩管理
 
-gate_bias / upset_rate は学習時に漏洩あり（intraday leakage）で木構造を改善し、評価/predict 時は `neutralize_leaked_features()` でレース内 mean に置換する。学習時の漏洩を除去してはならない。
+- **予測時に不明な情報は特徴量に使わない**: `course_number`（実際の進入コース）はレース後にしか確定しないため、`boat_number` で代替する。`COALESCE` 等でフォールバックすると backtest でだけ実コースが漏洩する
+- gate_bias / upset_rate は学習時に漏洩あり（intraday leakage）で木構造を改善し、評価/predict 時は `neutralize_leaked_features()` でレース内 mean に置換する。学習時の漏洩を除去してはならない
 
 ## ML 運用ルール
 

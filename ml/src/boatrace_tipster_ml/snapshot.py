@@ -79,7 +79,9 @@ def build_snapshot(
     df["_is_win"] = (df["finish_position"] == 1).astype(int)
     df["_is_top2"] = (df["finish_position"] <= 2).astype(int)
     df["_is_top3"] = (df["finish_position"] <= 3).astype(int)
-    df["_took_inner"] = (df["course_number"] < df["boat_number"]).astype(int)
+    actual = df["actual_course_number"].fillna(df["boat_number"])
+    df["_took_inner"] = (actual < df["boat_number"]).astype(int)
+    df["_course_diff"] = (actual - df["boat_number"]).astype(float)
     df["_pos_alpha"] = (df["boat_number"] - df["finish_position"]).astype(float)
 
     # Write to SQLite
@@ -178,6 +180,8 @@ _CUMULATIVE_DEFS: list[tuple[str, list[str], str, str]] = [
     ("stadium_course_win", ["stadium_id", "course_number"], "_is_win", "rate"),
     # Per-racer
     ("racer_course_taking", ["racer_id"], "_took_inner", "rate"),
+    ("racer_avg_course_diff", ["racer_id"], "_course_diff", "mean"),
+    ("racer_boat_course_taking", ["racer_id", "boat_number"], "_took_inner", "rate"),
     ("racer_recent_win", ["racer_id"], "_is_win", "rate"),
     ("racer_recent_top2", ["racer_id"], "_is_top2", "rate"),
     # Cumulative means
