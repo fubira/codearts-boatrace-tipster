@@ -1,18 +1,20 @@
-"""Train and save a LambdaRank ranking model for production use.
+"""Train and save a LambdaRank ranking model for P2 strategy.
+
+Uses Non-odds 21 features. Hyperparams can be loaded from model_meta.json
+or specified via CLI.
 
 Usage:
-    # Train with params from existing model_meta.json:
-    uv run --directory ml python -m scripts.train_ranking --save --model-meta models/trifecta_v1/ranking
+    # Train with params from tune_result:
+    uv run --directory ml python -m scripts.train_ranking --save --model-meta models/tune_result
 
     # Train with explicit params:
-    uv run --directory ml python -m scripts.train_ranking --save --relevance win_only --num-leaves 92
+    uv run --directory ml python -m scripts.train_ranking --save --relevance podium --n-estimators 1016
 """
 
 import argparse
 import time
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
-from boatrace_tipster_ml.feature_config import FEATURE_COLS, prepare_feature_matrix
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import (
     DEFAULT_PARAMS,
@@ -21,10 +23,13 @@ from boatrace_tipster_ml.model import (
     save_model_meta,
     train_model,
 )
+from scripts.tune_p2 import FEATURES
+
+FIELD_SIZE = 6
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train LambdaRank ranking model")
+    parser = argparse.ArgumentParser(description="Train LambdaRank ranking model (P2)")
     parser.add_argument("--save", action="store_true", required=True)
     parser.add_argument("--model-dir", default="models/draft/ranking")
     parser.add_argument("--model-meta", default=None,
@@ -32,7 +37,6 @@ def main():
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--end-date", default=None,
                         help="Training data end date (exclusive, YYYY-MM-DD). Prevents OOS leakage.")
-    # Individual param overrides (applied after --model-meta)
     parser.add_argument("--n-estimators", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--relevance", default=None)
@@ -64,25 +68,33 @@ def main():
         params["learning_rate"] = args.learning_rate
     if args.relevance is not None:
         params["relevance_scheme"] = args.relevance
-    for key, attr in [
-        ("num_leaves", "num_leaves"), ("max_depth", "max_depth"),
-        ("min_child_samples", "min_child_samples"), ("subsample", "subsample"),
-        ("colsample_bytree", "colsample_bytree"),
-        ("reg_alpha", "reg_alpha"), ("reg_lambda", "reg_lambda"),
+    for key in [
+        "num_leaves", "max_depth", "min_child_samples", "subsample",
+        "colsample_bytree", "reg_alpha", "reg_lambda",
     ]:
-        val = getattr(args, attr.replace("-", "_"))
+        val = getattr(args, key.replace("-", "_"))
         if val is not None:
             params["extra_params"][key] = val
 
     print(f"Training params:")
     print(f"  relevance={params['relevance_scheme']}, n_est={params['n_estimators']}, lr={params['learning_rate']:.4f}")
     print(f"  extra={params['extra_params']}")
+    print(f"  features: {len(FEATURES)} (P2 non-odds)")
 
     t0 = time.time()
     print("Building features...")
     df = build_features_df(args.db_path, end_date=args.end_date)
-    X, y, meta = prepare_feature_matrix(df)
-    print(f"  {len(X)} entries ({len(X)//6} races), {len(FEATURE_COLS)} features")
+
+    # Use P2 non-odds features
+    missing = [f for f in FEATURES if f not in df.columns]
+    if missing:
+        print(f"ERROR: Missing features: {missing}")
+        return
+
+    meta = df[["race_id", "racer_id", "race_date", "boat_number"]].copy()
+    X = df[FEATURES].copy()
+    y = df["finish_position"]
+    print(f"  {len(X)} entries ({len(X)//FIELD_SIZE} races), {len(FEATURES)} features")
 
     # Val = last ~2 months
     dates = sorted(df["race_date"].unique())
@@ -95,7 +107,7 @@ def main():
     X_train, y_train, meta_train = X[train_mask], y[train_mask], meta[train_mask]
     X_val, y_val, meta_val = X[val_mask], y[val_mask], meta[val_mask]
 
-    print(f"  Train: {len(X_train)//6}R, Val: {len(X_val)//6}R")
+    print(f"  Train: {len(X_train)//FIELD_SIZE}R, Val: {len(X_val)//FIELD_SIZE}R")
     print("Training LambdaRank...")
 
     model, metrics = train_model(
@@ -105,13 +117,13 @@ def main():
         learning_rate=params["learning_rate"],
         extra_params=params["extra_params"],
         relevance_scheme=params["relevance_scheme"],
-        early_stopping_rounds=50,
+        early_stopping_rounds=200,
     )
 
     # Feature means for NaN fallback
-    feature_means = {c: float(X[c].astype("float64").mean()) for c in FEATURE_COLS}
+    feature_means = {c: float(X[c].astype("float64").mean()) for c in FEATURES}
 
-    # Save complete hyperparameters
+    # Save
     all_hp = dict(params["extra_params"])
     all_hp["n_estimators"] = params["n_estimators"]
     all_hp["learning_rate"] = params["learning_rate"]
@@ -120,11 +132,11 @@ def main():
     save_model(model, args.model_dir)
     save_model_meta(
         args.model_dir,
-        feature_columns=FEATURE_COLS,
+        feature_columns=FEATURES,
         hyperparameters=all_hp,
         training={
-            "n_train": len(X_train) // 6,
-            "n_val": len(X_val) // 6,
+            "n_train": len(X_train) // FIELD_SIZE,
+            "n_val": len(X_val) // FIELD_SIZE,
             "date_range": f"{dates[0]} ~ {dates[-1]}",
         },
         feature_means=feature_means,
