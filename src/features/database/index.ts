@@ -7,6 +7,7 @@ export {
   saveOdds,
   saveOddsSnapshot,
   loadSnapshotWinProbs,
+  loadSnapshotTrifectaOdds,
   savePurchaseRecord,
   isRaceScraped,
   updateDeadline,

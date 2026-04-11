@@ -612,6 +612,36 @@ export function loadSnapshotWinProbs(
   return probs;
 }
 
+/**
+ * Load trifecta odds for specific combinations from odds snapshots.
+ * Returns { combo: odds } for the requested combos at the given timing.
+ */
+export function loadSnapshotTrifectaOdds(
+  raceId: number,
+  timing: OddsTiming,
+  combos: string[],
+  db?: Database,
+): Map<string, number> {
+  const database = db ?? getDatabase();
+  const result = new Map<string, number>();
+  for (const combo of combos) {
+    const row = database
+      .query(
+        `SELECT odds FROM race_odds_snapshots
+         WHERE race_id = $raceId AND timing = $timing
+           AND bet_type = '3連単' AND combination = $combo AND odds > 0
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get({ $raceId: raceId, $timing: timing, $combo: combo }) as {
+      odds: number;
+    } | null;
+    if (row) {
+      result.set(combo, row.odds);
+    }
+  }
+  return result;
+}
+
 // --- BOATCAST data types ---
 
 import type {

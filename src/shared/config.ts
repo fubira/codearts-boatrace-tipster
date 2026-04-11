@@ -15,23 +15,39 @@ export const config = {
   dbPath: resolve(PROJECT_ROOT, "data/boatrace-tipster.db"),
 } as const;
 
-/** Load strategy parameters from model_meta.json */
-export function loadModelStrategy(): {
-  b1Threshold: number;
+export interface ModelStrategy {
   evThreshold: number;
-} {
+  gap23Threshold: number;
+  top3ConcThreshold: number;
+  unitDivisor: number;
+  betCap: number;
+}
+
+/** Load P2 strategy parameters from model_meta.json */
+export function loadModelStrategy(): ModelStrategy {
   const metaPath = resolve(
     PROJECT_ROOT,
     "ml/models/trifecta_v1/ranking/model_meta.json",
   );
+  const defaults: ModelStrategy = {
+    evThreshold: 0.0,
+    gap23Threshold: 0.13,
+    top3ConcThreshold: 0.0,
+    unitDivisor: 150,
+    betCap: 30000,
+  };
   if (!existsSync(metaPath)) {
-    return { b1Threshold: 0.42, evThreshold: 0.36 };
+    return defaults;
   }
   const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
   const strategy = meta.strategy ?? {};
   return {
-    b1Threshold: strategy.b1_threshold ?? 0.42,
-    evThreshold: strategy.ev_threshold ?? 0.36,
+    evThreshold: strategy.ev_threshold ?? defaults.evThreshold,
+    gap23Threshold: strategy.gap23_threshold ?? defaults.gap23Threshold,
+    top3ConcThreshold:
+      strategy.top3_conc_threshold ?? defaults.top3ConcThreshold,
+    unitDivisor: strategy.unit_divisor ?? defaults.unitDivisor,
+    betCap: strategy.bet_cap ?? defaults.betCap,
   };
 }
 

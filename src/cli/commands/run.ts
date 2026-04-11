@@ -6,20 +6,26 @@ import { Command } from "commander";
 const strategy = loadModelStrategy();
 
 export const runCommand = new Command("run")
-  .description("Run prediction daemon (scrape → predict → notify)")
+  .description("Run P2 prediction daemon (predict → drift → notify)")
   .option("--dry-run", "DRY RUN mode (no real purchases)", true)
   .option("--live", "LIVE mode (execute real purchases)")
   .option(
     "--ev-threshold <n>",
-    `EV threshold as fraction (default: from model_meta.json = ${strategy.evThreshold})`,
+    `EV threshold as fraction (default: ${strategy.evThreshold})`,
     (v: string) => Number(v),
     strategy.evThreshold,
   )
   .option(
     "--bet-cap <n>",
-    "max unit per ticket (¥)",
+    `max unit per ticket ¥ (default: ${strategy.betCap})`,
     (v: string) => Number(v),
-    2000,
+    strategy.betCap,
+  )
+  .option(
+    "--unit-divisor <n>",
+    `unit = bankroll / divisor (default: ${strategy.unitDivisor})`,
+    (v: string) => Number(v),
+    strategy.unitDivisor,
   )
   .option("--bankroll <n>", "initial bankroll", (v: string) => Number(v), 70000)
   .action(async (opts) => {
@@ -45,6 +51,7 @@ export const runCommand = new Command("run")
       dryRun,
       evThreshold: opts.evThreshold,
       betCap: opts.betCap,
+      unitDivisor: opts.unitDivisor,
       bankroll: opts.bankroll,
       slackWebhookUrl,
       purchaseExecutor,
