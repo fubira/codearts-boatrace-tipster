@@ -44,7 +44,8 @@ SELECT
     r.water_temperature,
     re.racer_id,
     re.boat_number,
-    COALESCE(re.course_number, re.boat_number) AS course_number,
+    re.boat_number AS course_number,
+    re.course_number AS actual_course_number,
     re.motor_number,
     re.racer_class,
     re.racer_weight,
@@ -370,8 +371,14 @@ def _add_stadium_course_stats(df: pd.DataFrame) -> None:
 
 
 def _add_course_taking_rate(df: pd.DataFrame) -> None:
-    """B2: Rate of racer taking an inner course than their boat number."""
-    df["_took_inner"] = (df["course_number"] < df["boat_number"]).astype(int)
+    """B2: Rate of racer taking an inner course than their boat number.
+
+    Uses actual_course_number (post-race ground truth) for historical
+    accumulation. course_number column is always boat_number (prediction-safe),
+    so we need the original course data to compute front-taking tendency.
+    """
+    actual = df["actual_course_number"].fillna(df["boat_number"])
+    df["_took_inner"] = (actual < df["boat_number"]).astype(int)
     df["course_taking_rate"] = _cumulative_rate(df, ["racer_id"], "_took_inner")
 
 
@@ -610,6 +617,10 @@ def build_features_df(
 
     Caches the base DataFrame (pre-filter) as pickle. Cache is
     invalidated when the DB file or feature code is modified.
+
+    Note: course_number is always boat_number (枠なり assumption).
+    Actual course data is in actual_course_number and used only for
+    computing course_taking_rate (historical front-taking tendency).
 
     Args:
         db_path: Path to the SQLite database.

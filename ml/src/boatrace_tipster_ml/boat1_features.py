@@ -37,7 +37,7 @@ BOAT1_FEATURE_COLS: list[str] = [
     "opp_max_racer_course_win_rate",
     # --- D: Race context (2) ---
     "wind_speed",
-    "has_front_taking",
+    "race_max_course_taking_rate",
     # --- E: Gap features (2) ---
     "b1_vs_best_opp_win_rate",
     "b1_vs_best_opp_exhibition",
@@ -130,7 +130,7 @@ def reshape_to_boat1(
     result["opp_max_course_taking_rate"] = b1["race_id"].map(opp_ct.to_dict()).values
 
     # --- D: Race-level context ---
-    for col in ["wind_speed", "has_front_taking"]:
+    for col in ["wind_speed", "race_max_course_taking_rate"]:
         if col in b1.columns:
             result[col] = b1[col].values
 

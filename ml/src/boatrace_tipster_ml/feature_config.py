@@ -37,8 +37,6 @@ FEATURE_COLS: list[str] = [
     "rel_exhibition_time",
     # --- Stadium × course (1) ---
     "stadium_course_win_rate",
-    # --- Actual course position (1) ---
-    "course_number",
     # --- Exhibition pre-race (1) ---
     "rel_exhibition_st",
     # --- Start formation (1) ---
@@ -200,11 +198,11 @@ def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     df["crosswind_x_boat"] = wind_crosswind * df["wind_speed"] * (7 - df["boat_number"])
     # --- Wave height × inner course ---
     df["wave_height_x_boat"] = df["wave_height"] * (7 - df["boat_number"])
-    # --- Front-taking flag ---
-    # 1 if any boat in the race has course_number != boat_number
-    df["_course_changed"] = (df["course_number"] != df["boat_number"]).astype(int)
-    df["has_front_taking"] = df.groupby("race_id")["_course_changed"].transform("max")
-    df.drop(columns="_course_changed", inplace=True)
+    # --- Front-taking threat (prediction-safe) ---
+    # Max course_taking_rate among all 6 boats: captures whether there's
+    # an "in-ya" (habitual front-taker) in this race. Replaces the old
+    # has_front_taking which used actual course_number (leaky).
+    df["race_max_course_taking_rate"] = df.groupby("race_id")["course_taking_rate"].transform("max")
     return df
 
 
