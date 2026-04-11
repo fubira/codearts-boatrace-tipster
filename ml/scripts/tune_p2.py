@@ -186,6 +186,8 @@ def main():
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--objective", choices=["growth", "kelly"], default="growth",
                         help="Optimization objective: growth (daily compound, default) or kelly (log-ROI, favors high ROI)")
+    parser.add_argument("--relevance", default=None,
+                        help="Fix relevance scheme (linear/top_heavy/podium). If omitted, included in search space.")
     parser.add_argument("--fix-thresholds", default=None,
                         help="Fix strategy thresholds. Format: gap23=0.15,ev=0.1")
     args = parser.parse_args()
@@ -247,9 +249,12 @@ def main():
         }
         n_estimators = trial.suggest_int("n_estimators", 100, 1500)
         learning_rate = trial.suggest_float("learning_rate", 0.005, 0.2, log=True)
-        relevance = trial.suggest_categorical(
-            "relevance", ["linear", "top_heavy", "podium"]
-        )
+        if args.relevance:
+            relevance = args.relevance
+        else:
+            relevance = trial.suggest_categorical(
+                "relevance", ["linear", "top_heavy", "podium"]
+            )
 
         # Strategy thresholds
         if "gap23" in fixed_thresholds:

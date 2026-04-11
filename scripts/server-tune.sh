@@ -274,6 +274,9 @@ _build_cmd() {
       if [ -n "$OBJECTIVE" ]; then
         cmd+=" --objective ${OBJECTIVE}"
       fi
+      if [ -n "$RELEVANCE" ]; then
+        cmd+=" --relevance ${RELEVANCE}"
+      fi
       if [ -n "$FIX_THRESHOLDS" ]; then
         cmd+=" --fix-thresholds '${FIX_THRESHOLDS}'"
       fi
