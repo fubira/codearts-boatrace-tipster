@@ -319,10 +319,6 @@ def main():
                         help="Fix relevance scheme (linear/top_heavy/podium). If omitted, included in search space.")
     parser.add_argument("--fix-thresholds", default=None,
                         help="Fix strategy thresholds. Format: gap23=0.15,ev=0.1,top3_conc=0.7")
-    parser.add_argument("--pruner-percentile", type=int, default=10,
-                        help="PercentilePruner threshold (0=disable, default: 10)")
-    parser.add_argument("--pruner-warmup", type=int, default=20,
-                        help="Number of trials before pruning starts (default: 20)")
     parser.add_argument("--output-json", default="models/tune_result/trials.json",
                         help="Path to save all trial details as JSON")
     parser.add_argument("--from-model", default=None,
@@ -510,7 +506,7 @@ def main():
         bankroll = 70000.0
         days_per_fold = args.fold_months * 30
 
-        for fold_idx, fold in enumerate(folds):
+        for fold in folds:
             # X is pre-filtered to FEATURES before walk_forward_splits, so fold
             # X already has exactly the FEATURES columns.
             with contextlib.redirect_stdout(io.StringIO()):
@@ -549,22 +545,16 @@ def main():
             total_payout += result["payout"]
             rois.append(result["roi"] if result["cost"] > 0 else 0)
 
-            # Report running growth for pruning
-            running_growth_rates = [
-                np.log(max(1 + (fp / days_per_fold) / bankroll, 1e-6))
-                for fp in fold_profits
-            ]
-            running_growth = float(np.mean(running_growth_rates))
-            trial.report(running_growth, fold_idx)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
-
         # Compute metrics
         mean_roi = float(np.mean(rois)) if rois else 0
         profit = total_payout - total_cost
 
-        # Growth: daily compound growth rate (already computed incrementally above)
-        growth = running_growth
+        # Growth: mean log daily growth across folds
+        growth_rates = [
+            np.log(max(1 + (fp / days_per_fold) / bankroll, 1e-6))
+            for fp in fold_profits
+        ]
+        growth = float(np.mean(growth_rates)) if growth_rates else -999.0
 
         # Kelly: mean of log(ROI) — rewards high ROI regardless of volume
         log_rois = [np.log(max(r, 1e-6)) for r in rois]
@@ -598,28 +588,10 @@ def main():
             return kelly
         return growth
 
-    pruner: optuna.pruners.BasePruner
-    if args.pruner_percentile > 0:
-        # PercentilePruner(percentile=X) prunes trials below the X-th percentile
-        # n_warmup_steps=0: allow pruning from fold 1 (step 0) onward
-        pruner = optuna.pruners.PercentilePruner(
-            percentile=args.pruner_percentile,
-            n_startup_trials=args.pruner_warmup,
-            n_warmup_steps=0,
-        )
-        print(
-            f"Pruner: PercentilePruner(bottom {args.pruner_percentile}%, "
-            f"warmup={args.pruner_warmup} trials)"
-        )
-    else:
-        pruner = optuna.pruners.NopPruner()
-        print("Pruner: disabled")
-
     study = optuna.create_study(
         direction="maximize",
         study_name="p2-trifecta",
         sampler=optuna.samplers.TPESampler(seed=args.seed),
-        pruner=pruner,
     )
 
     # Seed search with existing models' HPs (enqueued as initial trials)
@@ -641,15 +613,10 @@ def main():
             except Exception as err:
                 print(f"WARN: warm-start failed for {model_dir}: {err}")
 
-    # Per-trial callback: emit one line for PRUNED / FAIL trials so the run
-    # stays visible once pruning kicks in. Optuna's built-in logger already
-    # emits a line for COMPLETE trials, so we don't duplicate that here.
+    # Per-trial callback: surface FAIL trials immediately. COMPLETE trials are
+    # already logged by Optuna's built-in logger.
     def _trial_callback(study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
-        if trial.state == optuna.trial.TrialState.PRUNED:
-            step = trial.last_step if trial.last_step is not None else "?"
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            print(f"[I {ts}] Trial {trial.number} pruned at step {step}", flush=True)
-        elif trial.state == optuna.trial.TrialState.FAIL:
+        if trial.state == optuna.trial.TrialState.FAIL:
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             print(f"[I {ts}] Trial {trial.number} FAILED", flush=True)
 
@@ -658,18 +625,6 @@ def main():
         n_trials=args.trials,
         show_progress_bar=True,
         callbacks=[_trial_callback],
-    )
-
-    # Pruning summary
-    n_pruned = sum(
-        1 for t in study.trials if t.state == optuna.trial.TrialState.PRUNED
-    )
-    n_complete = sum(
-        1 for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE
-    )
-    print(
-        f"\nTrial states: {n_complete} complete, {n_pruned} pruned "
-        f"({n_pruned / args.trials * 100:.0f}%)"
     )
 
     # Results
@@ -720,7 +675,7 @@ def main():
         json.dump(trials_data, f, indent=2, ensure_ascii=False, default=str)
     print(f"Saved {len(trials_data['trials'])} completed trials to {trials_json_path}")
 
-    # Top 10 trials (COMPLETE only — pruned trials lack full user_attrs)
+    # Top 10 trials
     print(f"\nTop 10 trials (by {obj_label}):")
     completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
     trials = sorted(completed, key=lambda t: t.value, reverse=True)
