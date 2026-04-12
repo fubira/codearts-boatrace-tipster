@@ -241,8 +241,11 @@ describe("notifyDailySummary", () => {
     expect(block).toContain("conc=30");
     expect(block).toContain("gap23=45");
     expect(block).toContain("drift=0");
-    expect(block).toContain("T-1 drop:* 3");
+    expect(block).toContain("SKIP Ticket");
+    expect(block).toContain("T-1 drop=3");
     expect(block).toContain("1.40 T/R"); // 7/5
+    expect(block).toContain("7点");
+    expect(block).toContain("合計 ¥2,500");
   });
 
   test("handles zero wagers (no bets)", async () => {

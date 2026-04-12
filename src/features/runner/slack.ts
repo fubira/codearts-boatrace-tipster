@@ -230,10 +230,12 @@ export async function notifyDailySummary(s: DailySummaryInfo): Promise<void> {
     allTimeDelta >= 0
       ? `+¥${allTimeDelta.toLocaleString()}`
       : `-¥${Math.abs(allTimeDelta).toLocaleString()}`;
+  const allTimeRoiPct =
+    s.allTimeInitial > 0 ? (s.bankroll / s.allTimeInitial) * 100 - 100 : null;
   const allTimeRoi =
-    s.allTimeInitial > 0
-      ? `${((s.bankroll / s.allTimeInitial) * 100 - 100).toFixed(1)}%`
-      : "N/A";
+    allTimeRoiPct == null
+      ? "N/A"
+      : `${allTimeRoiPct >= 0 ? "+" : ""}${allTimeRoiPct.toFixed(1)}%`;
 
   // SKIP 内訳
   const sc = s.skipCounts;
@@ -266,14 +268,13 @@ export async function notifyDailySummary(s: DailySummaryInfo): Promise<void> {
         text: {
           type: "mrkdwn",
           text:
-            `*購入:* ${s.totalBets}R / ${s.totalRaces}R (${s.totalTickets}券, ${tpr} T/R)\n` +
+            `*購入:* ${s.totalBets}R / ${s.totalRaces}R (${s.totalTickets}点, ${tpr} T/R) 合計 ¥${s.totalWagered.toLocaleString()}\n` +
             `*的中:* ${s.wins}/${s.totalBets} = *${hitRate}*\n` +
             `*本日 ROI:* ${roi} | *P/L:* ${plStr}\n` +
-            `*Bankroll:* ¥${s.bankroll.toLocaleString()}\n` +
-            `*累計:* ${allTimeDeltaStr} (${allTimeRoi} / 初期 ¥${s.allTimeInitial.toLocaleString()}, since ${s.startedAt.slice(0, 10)})\n` +
-            `*Wagered:* ¥${s.totalWagered.toLocaleString()}\n` +
-            `*SKIP:* ${totalSkip}R (${skipDetail})\n` +
-            `*T-1 drop:* ${s.t1DroppedTickets}券`,
+            `*Bankroll:* ¥${s.bankroll.toLocaleString()} (${allTimeRoi}) / 初期 ¥${s.allTimeInitial.toLocaleString()} (since ${s.startedAt.slice(0, 10)})\n` +
+            `*累計:* ${allTimeDeltaStr}\n` +
+            `*SKIP Race:* ${totalSkip}R (${skipDetail})\n` +
+            `*SKIP Ticket:* T-1 drop=${s.t1DroppedTickets}`,
         },
       },
     ],
