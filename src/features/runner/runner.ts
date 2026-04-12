@@ -14,6 +14,11 @@ import { config } from "@/shared/config";
 import { enableFileLog, logger } from "@/shared/logger";
 import { pythonCommand } from "@/shared/python";
 import {
+  type BankrollState,
+  loadBankrollState,
+  updateBankroll,
+} from "./bankroll-state";
+import {
   type BetDecision,
   ODDS_LEAD,
   type RaceSlot,
@@ -111,9 +116,19 @@ interface RunnerState {
   results: Map<number, { won: boolean; payout: number }>;
   predictionCache: PredictionCache | null;
   bankroll: number;
+  bankrollState: BankrollState; // persisted state (carries across restarts)
   date: string;
   lastStatusLine: string;
   snapshotPath?: string;
+  // Counters for daily summary
+  skipCounts: {
+    not_b1_top: number;
+    top3_conc_low: number;
+    gap23_low: number;
+    no_ev_tickets: number;
+    drift_drop: number;
+  };
+  t1DroppedTickets: number;
 }
 
 function todayJST(): string {
@@ -344,6 +359,10 @@ function updatePredictionCache(
       top3Conc: info.top3_conc,
       gap23: info.gap23,
     });
+    // Count skip reason for daily summary
+    if (info.reason in state.skipCounts) {
+      state.skipCounts[info.reason as keyof typeof state.skipCounts]++;
+    }
   }
   for (const p of result.predictions) {
     state.predictionCache.set(p.raceId, {
@@ -429,6 +448,7 @@ async function makeBetDecisions(
       });
 
       state.bankroll -= totalWager;
+      updateBankroll(state.bankrollState, state.bankroll);
     } else {
       logger.info(
         `[P2] SKIP: ${label} | bankroll insufficient (¥${state.bankroll.toLocaleString()})`,
@@ -605,6 +625,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         logger.info(
           `[DRIFT] ${label} | ${ticket.combo} | no T-1 odds, dropping`,
         );
+        state.t1DroppedTickets++;
         continue;
       }
       const oldEv = ticket.ev;
@@ -620,6 +641,8 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
           ev: newEv,
           marketOdds: newOdds,
         });
+      } else {
+        state.t1DroppedTickets++;
       }
     }
 
@@ -627,6 +650,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
     if (survivingTickets.length === 0) {
       logger.info(`[P2] SKIP: ${label} | all tickets dropped after drift`);
+      state.skipCounts.drift_drop++;
       slot.status = "decided";
       continue;
     }
@@ -690,6 +714,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
       }
 
       state.bankroll += payout;
+      updateBankroll(state.bankrollState, state.bankroll);
       results.set(slot.raceId, { won, payout });
 
       const resultStr = hitCombo ?? "N/A";
@@ -741,7 +766,10 @@ const stadiumNames = new Map(
   ]),
 );
 
-async function setupDay(opts: RunnerOptions): Promise<RunnerState | null> {
+async function setupDay(
+  opts: RunnerOptions,
+  bankrollState: BankrollState,
+): Promise<RunnerState | null> {
   const date = todayJST();
 
   logger.info(
@@ -794,15 +822,28 @@ async function setupDay(opts: RunnerOptions): Promise<RunnerState | null> {
 
   const snapshotPath = await buildStatsSnapshot(date);
 
+  logger.info(
+    `Day start bankroll: ¥${bankrollState.bankroll.toLocaleString()} (all-time initial ¥${bankrollState.allTimeInitial.toLocaleString()}, since ${bankrollState.startedAt.slice(0, 10)})`,
+  );
+
   const state: RunnerState = {
     schedule,
     bets: new Map(),
     results: new Map(),
     predictionCache: null,
-    bankroll: opts.bankroll,
+    bankroll: bankrollState.bankroll,
+    bankrollState,
     date,
     lastStatusLine: "",
     snapshotPath,
+    skipCounts: {
+      not_b1_top: 0,
+      top3_conc_low: 0,
+      gap23_low: 0,
+      no_ev_tickets: 0,
+      drift_drop: 0,
+    },
+    t1DroppedTickets: 0,
   };
 
   await notifyStartup({
@@ -826,7 +867,8 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   enableFileLog(resolve(config.projectRoot, "logs"));
   initializeDatabase();
 
-  const state = await setupDay(opts);
+  const bankrollState = loadBankrollState(opts.bankroll);
+  const state = await setupDay(opts, bankrollState);
   if (!state) {
     closeDatabase();
     return;
@@ -864,12 +906,18 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     }
 
     // Daily summary
-    if (state.bets.size > 0) {
+    {
       let totalWagered = 0;
       let totalPayout = 0;
+      let totalTickets = 0;
       let wins = 0;
       for (const [raceId, bet] of state.bets) {
         totalWagered += bet.betAmount;
+        // Recover ticket count from cache (bet doesn't store it directly)
+        const cached = state.predictionCache?.get(raceId);
+        if (cached && !("skipReason" in cached)) {
+          totalTickets += cached.tickets.length;
+        }
         const r = state.results.get(raceId);
         if (r) {
           totalPayout += r.payout;
@@ -878,11 +926,17 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
       }
       await notifyDailySummary({
         date: state.date,
+        totalRaces: state.schedule.length,
         totalBets: state.bets.size,
+        totalTickets,
         wins,
         totalWagered,
         totalPayout,
         bankroll: state.bankroll,
+        allTimeInitial: state.bankrollState.allTimeInitial,
+        startedAt: state.bankrollState.startedAt,
+        skipCounts: state.skipCounts,
+        t1DroppedTickets: state.t1DroppedTickets,
       });
     }
 
@@ -907,7 +961,8 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     closeDatabase();
     initializeDatabase();
 
-    const newState = await setupDay(opts);
+    // bankrollState persists across days and restarts
+    const newState = await setupDay(opts, state.bankrollState);
     if (!newState) continue;
 
     Object.assign(state, newState);

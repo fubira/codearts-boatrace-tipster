@@ -196,11 +196,23 @@ export async function notifyResult(r: RaceResultInfo): Promise<void> {
 
 export interface DailySummaryInfo {
   date: string;
+  totalRaces: number;
   totalBets: number;
+  totalTickets: number;
   wins: number;
   totalWagered: number;
   totalPayout: number;
-  bankroll: number;
+  bankroll: number; // current
+  allTimeInitial: number; // bankroll when runner was first started
+  startedAt: string; // ISO of first start
+  skipCounts: {
+    not_b1_top: number;
+    top3_conc_low: number;
+    gap23_low: number;
+    no_ev_tickets: number;
+    drift_drop: number;
+  };
+  t1DroppedTickets: number;
 }
 
 export async function notifyDailySummary(s: DailySummaryInfo): Promise<void> {
@@ -209,10 +221,41 @@ export async function notifyDailySummary(s: DailySummaryInfo): Promise<void> {
     pl >= 0 ? `+¥${pl.toLocaleString()}` : `-¥${Math.abs(pl).toLocaleString()}`;
   const roi =
     s.totalWagered > 0
-      ? ((s.totalPayout / s.totalWagered) * 100).toFixed(1)
+      ? `${((s.totalPayout / s.totalWagered) * 100).toFixed(1)}%`
       : "N/A";
+  const hitRate =
+    s.totalBets > 0 ? `${((s.wins / s.totalBets) * 100).toFixed(1)}%` : "N/A";
+  const allTimeDelta = s.bankroll - s.allTimeInitial;
+  const allTimeDeltaStr =
+    allTimeDelta >= 0
+      ? `+¥${allTimeDelta.toLocaleString()}`
+      : `-¥${Math.abs(allTimeDelta).toLocaleString()}`;
+  const allTimeRoi =
+    s.allTimeInitial > 0
+      ? `${((s.bankroll / s.allTimeInitial) * 100 - 100).toFixed(1)}%`
+      : "N/A";
+
+  // SKIP 内訳
+  const sc = s.skipCounts;
+  const totalSkip =
+    sc.not_b1_top +
+    sc.top3_conc_low +
+    sc.gap23_low +
+    sc.no_ev_tickets +
+    sc.drift_drop;
+  const skipDetail = [
+    `not_B1=${sc.not_b1_top}`,
+    `conc=${sc.top3_conc_low}`,
+    `gap23=${sc.gap23_low}`,
+    `no_EV=${sc.no_ev_tickets}`,
+    `drift=${sc.drift_drop}`,
+  ].join(" / ");
+
+  const tpr =
+    s.totalBets > 0 ? (s.totalTickets / s.totalBets).toFixed(2) : "N/A";
+
   await send({
-    text: `[boatrace] Daily: ${plStr} ROI ${roi}%`,
+    text: `[boatrace] Daily: ${plStr} ROI ${roi} ${s.totalBets}R/${s.totalRaces}R hit ${hitRate}`,
     blocks: [
       {
         type: "header",
@@ -220,20 +263,18 @@ export async function notifyDailySummary(s: DailySummaryInfo): Promise<void> {
       },
       {
         type: "section",
-        fields: [
-          { type: "mrkdwn", text: `*Bets:* ${s.totalBets}` },
-          { type: "mrkdwn", text: `*Wins:* ${s.wins}/${s.totalBets}` },
-          { type: "mrkdwn", text: `*P&L:* ${plStr}` },
-          { type: "mrkdwn", text: `*ROI:* ${roi}%` },
-          {
-            type: "mrkdwn",
-            text: `*Wagered:* ¥${s.totalWagered.toLocaleString()}`,
-          },
-          {
-            type: "mrkdwn",
-            text: `*Bankroll:* ¥${s.bankroll.toLocaleString()}`,
-          },
-        ],
+        text: {
+          type: "mrkdwn",
+          text:
+            `*購入:* ${s.totalBets}R / ${s.totalRaces}R (${s.totalTickets}券, ${tpr} T/R)\n` +
+            `*的中:* ${s.wins}/${s.totalBets} = *${hitRate}*\n` +
+            `*本日 ROI:* ${roi} | *P/L:* ${plStr}\n` +
+            `*Bankroll:* ¥${s.bankroll.toLocaleString()}\n` +
+            `*累計:* ${allTimeDeltaStr} (${allTimeRoi} / 初期 ¥${s.allTimeInitial.toLocaleString()}, since ${s.startedAt.slice(0, 10)})\n` +
+            `*Wagered:* ¥${s.totalWagered.toLocaleString()}\n` +
+            `*SKIP:* ${totalSkip}R (${skipDetail})\n` +
+            `*T-1 drop:* ${s.t1DroppedTickets}券`,
+        },
       },
     ],
   });

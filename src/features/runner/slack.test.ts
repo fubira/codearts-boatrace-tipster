@@ -193,27 +193,56 @@ describe("notifyResult", () => {
 });
 
 describe("notifyDailySummary", () => {
-  test("computes ROI correctly", async () => {
+  const baseSkipCounts = {
+    not_b1_top: 0,
+    top3_conc_low: 0,
+    gap23_low: 0,
+    no_ev_tickets: 0,
+    drift_drop: 0,
+  };
+
+  test("computes ROI and shows skip/drift breakdown", async () => {
     setSlackWebhook("https://hooks.slack.com/test");
     installFetchMock();
 
     const summary: DailySummaryInfo = {
       date: "2026-04-07",
+      totalRaces: 108,
       totalBets: 5,
+      totalTickets: 7,
       wins: 2,
       totalWagered: 2500,
       totalPayout: 6250,
       bankroll: 73750,
+      allTimeInitial: 70000,
+      startedAt: "2026-04-07T07:00:00+09:00",
+      skipCounts: {
+        not_b1_top: 12,
+        top3_conc_low: 30,
+        gap23_low: 45,
+        no_ev_tickets: 16,
+        drift_drop: 0,
+      },
+      t1DroppedTickets: 3,
     };
     await notifyDailySummary(summary);
 
     const body = fetchCalls[0].body as {
       text: string;
-      blocks: { fields?: { text: string }[] }[];
+      blocks: { text?: { text: string } }[];
     };
     // ROI = 6250/2500 * 100 = 250.0%
     expect(body.text).toContain("250.0%");
-    expect(body.text).toContain("+¥3,750");
+    expect(body.text).toContain("5R/108R");
+    const block = body.blocks[1].text?.text ?? "";
+    expect(block).toContain("+¥3,750");
+    expect(block).toContain("40.0%"); // hit 2/5
+    expect(block).toContain("not_B1=12");
+    expect(block).toContain("conc=30");
+    expect(block).toContain("gap23=45");
+    expect(block).toContain("drift=0");
+    expect(block).toContain("T-1 drop:* 3");
+    expect(block).toContain("1.40 T/R"); // 7/5
   });
 
   test("handles zero wagers (no bets)", async () => {
@@ -222,11 +251,17 @@ describe("notifyDailySummary", () => {
 
     const summary: DailySummaryInfo = {
       date: "2026-04-07",
+      totalRaces: 108,
       totalBets: 0,
+      totalTickets: 0,
       wins: 0,
       totalWagered: 0,
       totalPayout: 0,
       bankroll: 70000,
+      allTimeInitial: 70000,
+      startedAt: "2026-04-07T07:00:00+09:00",
+      skipCounts: baseSkipCounts,
+      t1DroppedTickets: 0,
     };
     await notifyDailySummary(summary);
 
