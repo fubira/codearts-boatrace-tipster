@@ -340,13 +340,12 @@ def main():
         days_per_fold = args.fold_months * 30
 
         for fold_idx, fold in enumerate(folds):
-            train_X = fold["train"]["X"][FEATURES] if set(FEATURES).issubset(fold["train"]["X"].columns) else fold["train"]["X"]
-            val_X = fold["val"]["X"][FEATURES] if set(FEATURES).issubset(fold["val"]["X"].columns) else fold["val"]["X"]
-
+            # X is pre-filtered to FEATURES before walk_forward_splits, so fold
+            # X already has exactly the FEATURES columns.
             with contextlib.redirect_stdout(io.StringIO()):
                 rank_model, _ = train_model(
-                    train_X, fold["train"]["y"], fold["train"]["meta"],
-                    val_X, fold["val"]["y"], fold["val"]["meta"],
+                    fold["train"]["X"], fold["train"]["y"], fold["train"]["meta"],
+                    fold["val"]["X"], fold["val"]["y"], fold["val"]["meta"],
                     n_estimators=n_estimators,
                     learning_rate=learning_rate,
                     relevance_scheme=relevance,
@@ -357,8 +356,7 @@ def main():
             best_it = getattr(rank_model, "best_iteration_", None)
             fold_best_iters.append(best_it if best_it is not None else n_estimators)
 
-            test_X = fold["test"]["X"][FEATURES] if set(FEATURES).issubset(fold["test"]["X"].columns) else fold["test"]["X"]
-            rank_scores = rank_model.predict(test_X)
+            rank_scores = rank_model.predict(fold["test"]["X"])
 
             # Build meta with finish_position for evaluation
             test_meta = fold["test"]["meta"].copy()
@@ -390,10 +388,7 @@ def main():
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
-        # Require minimum volume
-        if total_races < 20:
-            return -999.0
-
+        # Compute metrics
         mean_roi = float(np.mean(rois)) if rois else 0
         profit = total_payout - total_cost
 
@@ -402,9 +397,17 @@ def main():
 
         # Kelly: mean of log(ROI) — rewards high ROI regardless of volume
         log_rois = [np.log(max(r, 1e-6)) for r in rois]
-        kelly = float(np.mean(log_rois))
+        kelly = float(np.mean(log_rois)) if log_rois else -999.0
 
-        avg_best_iter = int(round(sum(fold_best_iters) / len(fold_best_iters)))
+        avg_best_iter = (
+            int(round(sum(fold_best_iters) / len(fold_best_iters)))
+            if fold_best_iters
+            else 0
+        )
+
+        # Set user_attrs BEFORE any early return so downstream tools (Top 10
+        # print, trials.json, train_dev_model.py) can safely read them for all
+        # COMPLETE trials.
         trial.set_user_attr("mean_roi", round(mean_roi, 4))
         trial.set_user_attr("rois", [round(r, 4) for r in rois])
         trial.set_user_attr("total_races", total_races)
@@ -414,6 +417,11 @@ def main():
         trial.set_user_attr("relevance", relevance)
         trial.set_user_attr("avg_best_iter", avg_best_iter)
         trial.set_user_attr("fold_best_iters", fold_best_iters)
+
+        # Require minimum volume — return sentinel AFTER user_attrs so the
+        # trial is still inspectable in logs/trials.json.
+        if total_races < 20:
+            return -999.0
 
         if args.objective == "kelly":
             return kelly
@@ -489,9 +497,9 @@ def main():
 
     ba = study.best_trial.user_attrs
     print(f"\nBest trial metrics:")
-    print(f"  Mean ROI: {ba['mean_roi']:.1%}")
-    print(f"  Profit:   {ba['profit']:+,.0f}円")
-    print(f"  Races:    {ba['total_races']}")
+    print(f"  Mean ROI: {ba.get('mean_roi', 0):.1%}")
+    print(f"  Profit:   {ba.get('profit', 0):+,.0f}円")
+    print(f"  Races:    {ba.get('total_races', 0)}")
     print(f"  Growth:   {ba.get('growth', 'N/A')}")
     print(f"  Kelly:    {ba.get('kelly', 'N/A')}")
     print(f"  Folds:    {ba.get('rois', 'N/A')}")
@@ -534,10 +542,14 @@ def main():
         g23 = t.params.get("gap23_threshold", fixed_thresholds.get("gap23", "?"))
         evt = t.params.get("ev_threshold", fixed_thresholds.get("ev", "?"))
         t3c = t.params.get("top3_conc_threshold", fixed_thresholds.get("top3_conc", "?"))
+        growth = ua.get("growth", 0.0)
         kelly_v = ua.get("kelly", "?")
+        roi = ua.get("mean_roi", 0.0)
+        pl = ua.get("profit", 0.0)
+        n = ua.get("total_races", 0)
         print(
-            f"  #{t.number:>3}: growth={ua['growth']:.6f} kelly={kelly_v} ROI={ua['mean_roi']:.0%} "
-            f"P/L={ua['profit']:+,.0f} n={ua['total_races']} "
+            f"  #{t.number:>3}: growth={growth:.6f} kelly={kelly_v} ROI={roi:.0%} "
+            f"P/L={pl:+,.0f} n={n} "
             f"rel={rel} gap23={g23} ev={evt} conc={t3c}"
         )
 
