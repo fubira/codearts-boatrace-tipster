@@ -19,6 +19,7 @@ import pandas as pd
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import fill_nan_with_means, load_model, load_model_meta
+from boatrace_tipster_ml.registry import get_active_model_dir
 
 FIELD_SIZE = 6
 
@@ -116,7 +117,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--from", dest="from_date", required=True)
     parser.add_argument("--to", dest="to_date", required=True)
-    parser.add_argument("--model-dir", default="models/p2_v1")
+    parser.add_argument("--model-dir", default=get_active_model_dir())
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     args = parser.parse_args()
 

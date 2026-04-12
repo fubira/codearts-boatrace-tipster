@@ -24,6 +24,7 @@ import numpy as np
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import fill_nan_with_means, load_model, load_model_meta
+from boatrace_tipster_ml.registry import get_active_model_dir
 from boatrace_tipster_ml.snapshot_features import build_features_from_snapshot
 from scripts.tune_p2 import _trifecta_prob
 
@@ -326,7 +327,7 @@ def predict_p2(
 def main():
     parser = argparse.ArgumentParser(description="P2 trifecta prediction")
     parser.add_argument("--date", required=True)
-    parser.add_argument("--model-dir", default="models/p2_v1")
+    parser.add_argument("--model-dir", default=get_active_model_dir())
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--snapshot", default=None)
     parser.add_argument("--race-ids", default=None,

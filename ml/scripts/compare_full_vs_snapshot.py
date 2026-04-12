@@ -20,10 +20,11 @@ import numpy as np
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import fill_nan_with_means, load_model, load_model_meta
+from boatrace_tipster_ml.registry import get_active_model_dir
 from boatrace_tipster_ml.snapshot_features import build_features_from_snapshot
 
 FIELD_SIZE = 6
-MODEL_DIR = "models/p2_v1/ranking"
+MODEL_DIR = f"{get_active_model_dir()}/ranking"
 
 
 def score_df(df, model, meta):

@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { config } from "@/shared/config";
+import { config, getActiveModelDir } from "@/shared/config";
 import { pythonCommand } from "@/shared/python";
 import { Command } from "commander";
 
@@ -50,7 +50,10 @@ export const predictCommand = new Command("predict")
   .description("Predict P2 trifecta strategy (1-(2,3)-(2,3) adaptive)")
   .option("-d, --date <date>", "target date (YYYY-MM-DD)")
   .option("--json", "output raw JSON")
-  .option("--model-dir <dir>", "model directory", "ml/models/p2_v1")
+  .option(
+    "--model-dir <dir>",
+    "model directory (default: from ml/models/active.json)",
+  )
   .option("--use-snapshots", "read odds from race_odds_snapshots")
   .action(async (opts) => {
     const date = opts.date ?? new Date().toISOString().slice(0, 10);
@@ -60,7 +63,9 @@ export const predictCommand = new Command("predict")
       process.exit(1);
     }
 
-    const modelDir = resolve(config.projectRoot, opts.modelDir);
+    const modelDir = opts.modelDir
+      ? resolve(config.projectRoot, opts.modelDir)
+      : getActiveModelDir();
     const modelFile = Bun.file(resolve(modelDir, "ranking/model.pkl"));
     if (!(await modelFile.exists())) {
       console.error(`Error: No ranking model at ${modelDir}/ranking/model.pkl`);

@@ -34,39 +34,17 @@ import pandas as pd
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import save_model, save_model_meta, train_model
+from boatrace_tipster_ml.registry import next_prefix as registry_next_prefix
+from boatrace_tipster_ml.registry import peek_prefix
 from scripts.tune_p2 import FEATURES
 
 FIELD_SIZE = 6
 MODELS_DIR = Path("models")
-REGISTRY_PATH = MODELS_DIR / "registry.json"
 
 
 def is_candidate_dir(name: str) -> bool:
     """True if name matches dev candidate pattern (e.g., 'aa_294')."""
     return bool(re.fullmatch(r"[a-z]{2}_\d+", name))
-
-
-def next_prefix(current: str) -> str:
-    """aa → ab → ... → az → ba → ... → zz."""
-    a, b = current[0], current[1]
-    if b < "z":
-        return a + chr(ord(b) + 1)
-    if a < "z":
-        return chr(ord(a) + 1) + "a"
-    raise ValueError("Ran out of prefixes (zz reached)")
-
-
-def load_registry() -> dict:
-    if REGISTRY_PATH.exists():
-        with open(REGISTRY_PATH) as f:
-            return json.load(f)
-    return {"next_prefix": "aa", "runs": {}}
-
-
-def save_registry(reg: dict) -> None:
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    with open(REGISTRY_PATH, "w") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=False)
 
 
 def parse_tune_log(log_path: Path) -> dict:
@@ -278,8 +256,7 @@ def train_one(df, prefix, trial_num, trial_info, end_date, val_months, log_path,
 
 
 def cmd_list() -> None:
-    reg = load_registry()
-    print(f"Next prefix: {reg['next_prefix']}")
+    print(f"Next prefix: {peek_prefix()}")
     print(f"\nCandidate models (models/[a-z]{{2}}_<trial>/):")
     found = False
     for p in sorted(MODELS_DIR.glob("*/ranking/model_meta.json")):
@@ -302,8 +279,14 @@ def cmd_list() -> None:
 
 
 def cmd_train(args) -> None:
-    reg = load_registry()
-    prefix = args.prefix or reg["next_prefix"]
+    # If --prefix is given we trust it (re-train within an existing run);
+    # otherwise we consume a fresh prefix from the counter.
+    if args.prefix:
+        prefix = args.prefix
+        consumed_new = False
+    else:
+        prefix = registry_next_prefix()
+        consumed_new = True
     log_path = Path(args.tune_log)
 
     # Parse log (prefers trials.json for user_attrs access)
@@ -344,13 +327,11 @@ def cmd_train(args) -> None:
                          log_path, gap23_th, ev_th)
         saved.append(tn)
 
-    # Advance next_prefix only when a NEW prefix was consumed
-    if prefix == reg["next_prefix"]:
-        reg["next_prefix"] = next_prefix(prefix)
-        save_registry(reg)
-
+    # The counter is already advanced if registry_next_prefix() was called above.
     print(f"\nSaved [{prefix.upper()}]: trials {saved}")
-    print(f"Next prefix: {reg['next_prefix']}")
+    print(f"Next prefix: {peek_prefix()}")
+    if not consumed_new:
+        print("  (counter not advanced — --prefix was supplied)")
 
 
 def main():

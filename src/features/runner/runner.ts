@@ -10,7 +10,7 @@ import {
 } from "@/features/database";
 import { STADIUMS } from "@/features/scraper/sources/boatrace/constants";
 import type { PurchaseExecutor } from "@/features/teleboat";
-import { config } from "@/shared/config";
+import { config, getActiveModelDir } from "@/shared/config";
 import { enableFileLog, logger } from "@/shared/logger";
 import { pythonCommand } from "@/shared/python";
 import {
@@ -263,7 +263,7 @@ async function runPrediction(
   snapshotPath?: string,
   raceIds?: number[],
 ): Promise<PredictionResult> {
-  const modelDir = resolve(config.projectRoot, "ml/models/p2_v1");
+  const modelDir = getActiveModelDir();
   const args = [
     "--date",
     date,

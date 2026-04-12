@@ -15,6 +15,19 @@ export const config = {
   dbPath: resolve(PROJECT_ROOT, "data/boatrace-tipster.db"),
 } as const;
 
+/**
+ * Resolve the active production model directory from ml/models/active.json.
+ * Single source of truth — runner / predict / config all read this.
+ */
+export function getActiveModelDir(): string {
+  const path = resolve(PROJECT_ROOT, "ml/models/active.json");
+  const data = JSON.parse(readFileSync(path, "utf-8"));
+  if (!data.model) {
+    throw new Error(`active.json missing 'model' field: ${path}`);
+  }
+  return resolve(PROJECT_ROOT, "ml/models", data.model);
+}
+
 export interface ModelStrategy {
   evThreshold: number;
   gap23Threshold: number;
@@ -23,12 +36,9 @@ export interface ModelStrategy {
   betCap: number;
 }
 
-/** Load P2 strategy parameters from model_meta.json */
+/** Load P2 strategy parameters from the active model's model_meta.json */
 export function loadModelStrategy(): ModelStrategy {
-  const metaPath = resolve(
-    PROJECT_ROOT,
-    "ml/models/p2_v1/ranking/model_meta.json",
-  );
+  const metaPath = resolve(getActiveModelDir(), "ranking/model_meta.json");
   const defaults: ModelStrategy = {
     evThreshold: 0.0,
     gap23Threshold: 0.13,
