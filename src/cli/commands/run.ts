@@ -50,6 +50,8 @@ export const runCommand = new Command("run")
     await runDaemon({
       dryRun,
       evThreshold: opts.evThreshold,
+      gap23Threshold: strategy.gap23Threshold,
+      top3ConcThreshold: strategy.top3ConcThreshold,
       betCap: opts.betCap,
       unitDivisor: opts.unitDivisor,
       bankroll: opts.bankroll,

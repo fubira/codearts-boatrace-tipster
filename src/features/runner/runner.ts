@@ -38,6 +38,8 @@ const FAST_POLL_WINDOW_MIN = 2;
 export interface RunnerOptions {
   dryRun: boolean;
   evThreshold: number;
+  gap23Threshold: number;
+  top3ConcThreshold: number;
   betCap: number;
   unitDivisor: number;
   bankroll: number;
@@ -65,6 +67,33 @@ interface P2Prediction {
 
 interface SkippedPrediction {
   skipReason: string;
+  top1Boat?: number; // for not_b1_top
+  top3Conc?: number; // for top3_conc_low / no_ev_tickets
+  gap23?: number; // for gap23_low / no_ev_tickets
+}
+
+function formatSkipReason(s: SkippedPrediction, opts: RunnerOptions): string {
+  const r = s.skipReason;
+  const concTh = (opts.top3ConcThreshold * 100).toFixed(0);
+  const gapTh = (opts.gap23Threshold * 100).toFixed(1);
+  const evTh = (opts.evThreshold * 100).toFixed(0);
+  if (r === "not_b1_top" && s.top1Boat != null) {
+    return `not_b1_top (top1=${s.top1Boat}号艇)`;
+  }
+  if (r === "top3_conc_low" && s.top3Conc != null) {
+    return `top3_conc_low (${(s.top3Conc * 100).toFixed(0)}% < th=${concTh}%)`;
+  }
+  if (r === "gap23_low" && s.gap23 != null) {
+    return `gap23_low (${(s.gap23 * 100).toFixed(1)}% < th=${gapTh}%)`;
+  }
+  if (r === "no_ev_tickets") {
+    const parts: string[] = [];
+    if (s.top3Conc != null)
+      parts.push(`conc=${(s.top3Conc * 100).toFixed(0)}%`);
+    if (s.gap23 != null) parts.push(`gap23=${(s.gap23 * 100).toFixed(1)}%`);
+    return `no_ev_tickets (${parts.join(", ")}, all EV<${evTh}%)`;
+  }
+  return r;
 }
 
 type CachedPrediction = P2Prediction | SkippedPrediction;
@@ -171,7 +200,15 @@ interface PredictionResult {
     hasExhibition: boolean;
   }[];
   evaluatedRaceIds: number[];
-  skipped: Record<number, { reason: string }>;
+  skipped: Record<
+    number,
+    {
+      reason: string;
+      top1_boat?: number;
+      top3_conc?: number;
+      gap23?: number;
+    }
+  >;
 }
 
 async function runPrediction(
@@ -261,7 +298,7 @@ async function runPrediction(
   );
 
   const evaluatedRaceIds: number[] = result.evaluated_race_ids ?? [];
-  const skipped: Record<number, { reason: string }> = result.skipped ?? {};
+  const skipped: PredictionResult["skipped"] = result.skipped ?? {};
 
   return { predictions, evaluatedRaceIds, skipped };
 }
@@ -295,7 +332,12 @@ function updatePredictionCache(
   }
   for (const [ridStr, info] of Object.entries(result.skipped)) {
     const rid = Number(ridStr);
-    state.predictionCache.set(rid, { skipReason: info.reason });
+    state.predictionCache.set(rid, {
+      skipReason: info.reason,
+      top1Boat: info.top1_boat,
+      top3Conc: info.top3_conc,
+      gap23: info.gap23,
+    });
   }
   for (const p of result.predictions) {
     state.predictionCache.set(p.raceId, {
@@ -502,7 +544,9 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         if (!cached) continue;
         const label = `${slot.stadiumName} R${slot.raceNumber}`;
         if ("skipReason" in cached) {
-          logger.info(`[T-5] ${label} | ${cached.skipReason}`);
+          logger.info(
+            `[T-5] ${label} | SKIP: ${formatSkipReason(cached, opts)}`,
+          );
         } else {
           const ticketStr = cached.tickets
             .map((t) => `${t.combo}(EV ${(t.ev * 100).toFixed(0)}%)`)
@@ -528,7 +572,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     if (!cached) continue;
     if ("skipReason" in cached) {
       logger.info(
-        `[P2] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${cached.skipReason}`,
+        `[P2] SKIP: ${slot.stadiumName} R${slot.raceNumber} | ${formatSkipReason(cached, opts)}`,
       );
       slot.status = "decided";
       continue;
