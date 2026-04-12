@@ -39,7 +39,7 @@ TRIALS=100
 FOLDS=4
 FOLD_MONTHS=2
 RELEVANCE=""
-SEED=42
+SEED=""  # empty = auto random; explicit --seed N overrides for reproducibility
 FROM_MODEL=""
 NARROW=false
 # n_jobs=2 + num_threads=4 = 8 threads total, matching i7-6700 (4 phys / 8 LCPU)
@@ -265,6 +265,7 @@ _build_cmd() {
   cmd+=" --n-folds ${FOLDS}"
   cmd+=" --fold-months ${FOLD_MONTHS}"
   cmd+=" --seed ${SEED}"
+  cmd+=" --run-prefix ${RUN_PREFIX}"
   if [ -n "$OBJECTIVE" ]; then
     cmd+=" --objective ${OBJECTIVE}"
   fi
@@ -307,6 +308,10 @@ cat > ${REMOTE_SCRIPT_FILE} << 'INNERSCRIPT'
 set -euo pipefail
 export PATH="\$HOME/.local/bin:\$PATH"
 export BOATRACE_TUNE_PARALLEL=1
+# Force line-buffered Python output so per-trial Optuna logs appear
+# immediately in the remote log file (otherwise nohup file output is
+# block-buffered and trials only surface in batches of ~20).
+export PYTHONUNBUFFERED=1
 cd ${REMOTE_DIR_RESOLVED}
 LOG="${REMOTE_LOG_FILE}"
 trap 'rm -f ${REMOTE_PID_FILE}' EXIT
@@ -341,6 +346,7 @@ _foreground_run() {
 set -euo pipefail
 export PATH="\$HOME/.local/bin:\$PATH"
 export BOATRACE_TUNE_PARALLEL=1
+export PYTHONUNBUFFERED=1
 cd ${REMOTE_DIR_RESOLVED}
 ${tune_cmd}
 EOF
@@ -368,6 +374,27 @@ if [ "$FETCH_ONLY" = true ]; then
   _fetch
   exit 0
 fi
+
+# --- Allocate seed (random by default to avoid duplicate runs) ---
+if [ -z "$SEED" ]; then
+  SEED=$(( (RANDOM << 15) | RANDOM ))
+  log "Auto seed: ${SEED}"
+else
+  log "Using explicit seed: ${SEED}"
+fi
+
+# --- Allocate run prefix from local registry ---
+# Tateyamakun-style: each tune run consumes one prefix from the local
+# .run-counter so all dev models from this tune share the same identifier
+# (e.g., ab_294, ab_266 all came from run "ab"). The counter lives only
+# on local; rsync would otherwise overwrite a server-side increment.
+RUN_PREFIX=$(cd "${ML_DIR}" && PYTHONPATH=src uv run python -c \
+    "from boatrace_tipster_ml.registry import next_prefix; print(next_prefix())")
+if [ -z "$RUN_PREFIX" ]; then
+  echo "ERROR: failed to allocate run prefix from local registry" >&2
+  exit 1
+fi
+log "Run prefix: ${RUN_PREFIX}"
 
 # --- Sync ---
 if [ "$SKIP_SYNC" = false ]; then

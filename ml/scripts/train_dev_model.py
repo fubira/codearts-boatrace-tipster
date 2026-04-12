@@ -94,6 +94,7 @@ def parse_tune_log(log_path: Path) -> dict:
             "fix_thresholds": data.get("fix_thresholds", {}),
             "n_trials": data.get("n_trials"),
             "seed": data.get("seed"),
+            "run_prefix": data.get("run_prefix"),
             "best_growth": data.get("best_value"),
             "source": str(trials_json),
         }
@@ -136,6 +137,7 @@ def parse_tune_log(log_path: Path) -> dict:
         "fix_thresholds": fix_thresholds,
         "n_trials": int(trials_m.group(1)) if trials_m else None,
         "seed": int(seed_m.group(1)) if seed_m else None,
+        "run_prefix": None,  # log-only fallback can't recover this
         "best_growth": best_growth,
         "source": "log",
     }
@@ -279,19 +281,24 @@ def cmd_list() -> None:
 
 
 def cmd_train(args) -> None:
-    # If --prefix is given we trust it (re-train within an existing run);
-    # otherwise we consume a fresh prefix from the counter.
-    if args.prefix:
-        prefix = args.prefix
-        consumed_new = False
-    else:
-        prefix = registry_next_prefix()
-        consumed_new = True
     log_path = Path(args.tune_log)
 
     # Parse log (prefers trials.json for user_attrs access)
     print(f"Parsing {log_path}...")
     log_info = parse_tune_log(log_path)
+
+    # Resolve prefix priority: explicit --prefix > tune's run_prefix > new
+    # prefix from registry. The tune itself reserves a prefix at start time
+    # (since v0.26+) so multiple dev models from the same tune share it
+    # automatically.
+    consumed_new = False
+    if args.prefix:
+        prefix = args.prefix
+    elif log_info.get("run_prefix"):
+        prefix = log_info["run_prefix"]
+    else:
+        prefix = registry_next_prefix()
+        consumed_new = True
     print(
         f"  source={log_info['source']}, {len(log_info['trials'])} trials, "
         f"best growth={log_info['best_growth']}"

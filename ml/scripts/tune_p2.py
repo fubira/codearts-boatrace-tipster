@@ -23,6 +23,7 @@ import pandas as pd
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import train_model, walk_forward_splits
+from boatrace_tipster_ml.registry import next_prefix
 
 FIELD_SIZE = 6
 
@@ -336,6 +337,11 @@ def main():
                         help="LightGBM num_threads per trial. 0 = LightGBM default "
                              "(all cores). With --n-jobs N, set this to "
                              "ceil(physical_cores / N) to avoid oversubscription.")
+    parser.add_argument("--run-prefix", default=None,
+                        help="Tune run identifier (e.g., 'ab') saved into "
+                             "trials.json. All dev models trained from this "
+                             "tune share the prefix. Auto-allocated from the "
+                             "local registry if omitted.")
     args = parser.parse_args()
 
     if args.narrow and not args.from_model:
@@ -353,6 +359,13 @@ def main():
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Resolve the run prefix. server-tune.sh allocates locally and passes it
+    # via --run-prefix; direct local invocation falls back to consuming a
+    # fresh prefix from the registry. Either way, every tune run claims a
+    # unique identifier so dev models from this run share the same prefix.
+    run_prefix: str = args.run_prefix or next_prefix()
+    print(f"Tune run prefix: {run_prefix}")
 
     # Parse fixed thresholds
     fixed_thresholds: dict[str, float] = {}
@@ -684,6 +697,7 @@ def main():
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "n_trials": args.trials,
         "seed": args.seed,
+        "run_prefix": run_prefix,
         "fix_thresholds": fixed_thresholds,
         "best_value": study.best_value,
         "best_trial": study.best_trial.number,
