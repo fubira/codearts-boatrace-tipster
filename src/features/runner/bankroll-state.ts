@@ -9,28 +9,38 @@ import { dirname, resolve } from "node:path";
 import { config } from "@/shared/config";
 import { logger } from "@/shared/logger";
 
-const STATE_PATH = resolve(config.dataDir, "runner-state.json");
+const DEFAULT_STATE_PATH = resolve(config.dataDir, "runner-state.json");
 
 export interface BankrollState {
   bankroll: number;
   allTimeInitial: number;
   startedAt: string; // first run ISO date
   lastUpdate: string; // ISO timestamp
+  /** Path this state is persisted to. Not serialized. */
+  _path?: string;
+}
+
+function pathOf(state: BankrollState): string {
+  return state._path ?? DEFAULT_STATE_PATH;
 }
 
 /** Load persisted bankroll state, or create fresh from CLI value. */
-export function loadBankrollState(cliBankroll: number): BankrollState {
-  if (existsSync(STATE_PATH)) {
+export function loadBankrollState(
+  cliBankroll: number,
+  statePath: string = DEFAULT_STATE_PATH,
+): BankrollState {
+  if (existsSync(statePath)) {
     try {
-      const raw = readFileSync(STATE_PATH, "utf-8");
-      const s = JSON.parse(raw) as BankrollState;
+      const raw = readFileSync(statePath, "utf-8");
+      const parsed = JSON.parse(raw) as BankrollState;
+      const s: BankrollState = { ...parsed, _path: statePath };
       logger.info(
         `Loaded bankroll state: ¥${s.bankroll.toLocaleString()} (all-time initial ¥${s.allTimeInitial.toLocaleString()}, started ${s.startedAt})`,
       );
       return s;
     } catch (err) {
       logger.warn(
-        `Failed to read ${STATE_PATH}: ${err instanceof Error ? err.message : String(err)}. Using CLI value.`,
+        `Failed to read ${statePath}: ${err instanceof Error ? err.message : String(err)}. Using CLI value.`,
       );
     }
   }
@@ -40,6 +50,7 @@ export function loadBankrollState(cliBankroll: number): BankrollState {
     allTimeInitial: cliBankroll,
     startedAt: now,
     lastUpdate: now,
+    _path: statePath,
   };
   saveBankrollState(fresh);
   logger.info(`Initialized bankroll state: ¥${cliBankroll.toLocaleString()}`);
@@ -47,9 +58,11 @@ export function loadBankrollState(cliBankroll: number): BankrollState {
 }
 
 export function saveBankrollState(state: BankrollState): void {
+  const target = pathOf(state);
   try {
-    mkdirSync(dirname(STATE_PATH), { recursive: true });
-    writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+    mkdirSync(dirname(target), { recursive: true });
+    const { _path, ...serializable } = state;
+    writeFileSync(target, JSON.stringify(serializable, null, 2));
   } catch (err) {
     logger.error(
       `Failed to save bankroll state: ${err instanceof Error ? err.message : String(err)}`,
