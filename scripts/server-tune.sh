@@ -280,12 +280,10 @@ _build_cmd() {
   if [ "$NARROW" = true ]; then
     cmd+=" --narrow"
   fi
-  if [ "$N_JOBS" -gt 1 ]; then
-    cmd+=" --n-jobs ${N_JOBS}"
-  fi
-  if [ "$NUM_THREADS" -gt 0 ]; then
-    cmd+=" --num-threads ${NUM_THREADS}"
-  fi
+  # Always forward so the choice is visible in remote command logs and so the
+  # behavior is decoupled from any future change to tune_p2's defaults.
+  cmd+=" --n-jobs ${N_JOBS}"
+  cmd+=" --num-threads ${NUM_THREADS}"
   echo "$cmd"
 }
 

@@ -60,6 +60,8 @@ tune_p2.py --trials N [--seed 42] [--n-folds 4] [--fold-months 2]
            [--relevance SCHEME] [--objective growth|kelly]
            [--fix-thresholds "gap23=0.13,ev=0.0,top3_conc=0.7"]
            [--from-model models/p2_v2[,models/x]] [--narrow]
+           [--n-jobs N] [--num-threads N]
+           ※ --n-jobs > 1 は BOATRACE_TUNE_PARALLEL=1 必須（server-tune.sh が自動セット）
 
 train_ranking.py --save [--model-dir models/draft/ranking] [--model-meta DIR]
                  [--end-date DATE] [--n-estimators N] [--learning-rate N]
@@ -88,6 +90,8 @@ P2 戦略 Optuna 探索をサーバで実行。
 --fix-thresholds "gap23=0.13,ev=0.0,top3_conc=0.7"  # 閾値固定でハイパラのみ探索
 --from-model models/p2_v2  # 既存モデルHPをseedとして投入（カンマ区切り可）
 --narrow                         # --from-model の最初のモデル周辺だけ探索
+--n-jobs N                       # 並列 trial 数 (default: 2、サーバ専用)
+--num-threads N                  # trial あたり LightGBM threads (default: 4 / i7-6700)
 --relevance podium               # relevance scheme 固定
 --seed N                         # random seed (default: 42)
 ```
