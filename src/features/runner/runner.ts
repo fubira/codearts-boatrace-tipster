@@ -68,6 +68,7 @@ interface P2Prediction {
   gap23: number;
   tickets: P2Ticket[];
   hasExhibition: boolean;
+  bcStatus: string; // "full" | "missing" | "partial:n/6"
 }
 
 export interface SkippedPrediction {
@@ -75,6 +76,7 @@ export interface SkippedPrediction {
   top1Boat?: number; // for not_b1_top
   top3Conc?: number; // for top3_conc_low / no_ev_tickets
   gap23?: number; // for gap23_low / no_ev_tickets
+  bcStatus?: string;
 }
 
 export function formatSkipReason(
@@ -240,6 +242,7 @@ interface PredictionResult {
     gap23: number;
     tickets: P2Ticket[];
     hasExhibition: boolean;
+    bcStatus: string;
   }[];
   evaluatedRaceIds: number[];
   skipped: Record<
@@ -249,6 +252,7 @@ interface PredictionResult {
       top1_boat?: number;
       top3_conc?: number;
       gap23?: number;
+      bc_status?: string;
     }
   >;
 }
@@ -325,6 +329,7 @@ async function runPrediction(
         ev: number;
       }[];
       has_exhibition: boolean;
+      bc_status: string;
     }) => ({
       raceId: p.race_id,
       top3Conc: p.top3_conc,
@@ -336,6 +341,7 @@ async function runPrediction(
         ev: t.ev,
       })),
       hasExhibition: p.has_exhibition,
+      bcStatus: p.bc_status,
     }),
   );
 
@@ -379,6 +385,7 @@ function updatePredictionCache(
       top1Boat: info.top1_boat,
       top3Conc: info.top3_conc,
       gap23: info.gap23,
+      bcStatus: info.bc_status,
     });
     // Count skip reason for daily summary
     if (info.reason in state.skipCounts) {
@@ -391,6 +398,7 @@ function updatePredictionCache(
       gap23: p.gap23,
       tickets: p.tickets,
       hasExhibition: p.hasExhibition,
+      bcStatus: p.bcStatus,
     });
   }
   logger.debug(
@@ -593,16 +601,17 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         const cached = state.predictionCache?.get(slot.raceId);
         if (!cached) continue;
         const label = `${slot.stadiumName} R${slot.raceNumber}`;
+        const bcTag = cached.bcStatus ? ` | bc=${cached.bcStatus}` : "";
         if ("skipReason" in cached) {
           logger.info(
-            `[T-5] ${label} | SKIP: ${formatSkipReason(cached, opts)}`,
+            `[T-5] ${label} | SKIP: ${formatSkipReason(cached, opts)}${bcTag}`,
           );
         } else {
           const ticketStr = cached.tickets
             .map((t) => `${t.combo}(EV ${(t.ev * 100).toFixed(0)}%)`)
             .join(", ");
           logger.info(
-            `[T-5] ${label} | conc=${(cached.top3Conc * 100).toFixed(0)}% gap23=${(cached.gap23 * 100).toFixed(1)}% | ${ticketStr}`,
+            `[T-5] ${label} | conc=${(cached.top3Conc * 100).toFixed(0)}% gap23=${(cached.gap23 * 100).toFixed(1)}% | ${ticketStr}${bcTag}`,
           );
         }
       }

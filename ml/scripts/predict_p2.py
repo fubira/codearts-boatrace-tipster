@@ -151,6 +151,27 @@ def predict_p2(
     available_meta = [c for c in meta_cols if c in df.columns]
     meta_df = df[available_meta].copy()
 
+    # bc_* (oriten exhibition) data is timing-sensitive: scraper fetches at T-7
+    # but the runner predicts at T-5, so a race occasionally lands with NULL
+    # bc_*. fill_nan_with_means then collapses bc_*_zscore to 0, which silently
+    # weakens the prediction. Surface this per-race so the log can flag it.
+    bc_cols = [c for c in
+               ("bc_lap_time", "bc_turn_time", "bc_straight_time", "bc_slit_diff")
+               if c in df.columns]
+    if bc_cols:
+        bc_full_per_boat = df[bc_cols].notna().all(axis=1).astype(int)
+        bc_count_per_race = bc_full_per_boat.groupby(df["race_id"]).sum().to_dict()
+    else:
+        bc_count_per_race = {}
+
+    def _bc_status(rid: int) -> str:
+        n = int(bc_count_per_race.get(rid, 0))
+        if n == FIELD_SIZE:
+            return "full"
+        if n == 0:
+            return "missing"
+        return f"partial:{n}/{FIELD_SIZE}"
+
     X = df[feature_cols].copy()
     fill_nan_with_means(X, rank_meta)
     rank_scores = rank_model.predict(X)
@@ -191,10 +212,15 @@ def predict_p2(
         rid = int(race_ids_arr[i])
         po = pred_order[i]
         probs = model_probs[i]
+        bc_status = _bc_status(rid)
 
         # Filter 1: top-1 must be boat 1
         if top_boats[i, 0] != 1:
-            skipped[rid] = {"reason": "not_b1_top", "top1_boat": int(top_boats[i, 0])}
+            skipped[rid] = {
+                "reason": "not_b1_top",
+                "top1_boat": int(top_boats[i, 0]),
+                "bc_status": bc_status,
+            }
             continue
         n_b1_top += 1
         evaluated_race_ids.append(rid)
@@ -206,14 +232,22 @@ def predict_p2(
         # Filter 2: top3_concentration
         top3_conc = (p2 + p3) / (1 - p1 + 1e-10)
         if top3_conc < top3_conc_threshold:
-            skipped[rid] = {"reason": "top3_conc_low", "top3_conc": round(top3_conc, 4)}
+            skipped[rid] = {
+                "reason": "top3_conc_low",
+                "top3_conc": round(top3_conc, 4),
+                "bc_status": bc_status,
+            }
             continue
         n_conc_pass += 1
 
         # Filter 3: gap23
         gap23 = p2 - p3
         if gap23 < gap23_threshold:
-            skipped[rid] = {"reason": "gap23_low", "gap23": round(gap23, 4)}
+            skipped[rid] = {
+                "reason": "gap23_low",
+                "gap23": round(gap23, 4),
+                "bc_status": bc_status,
+            }
             continue
         n_gap23_pass += 1
 
@@ -240,8 +274,12 @@ def predict_p2(
                 })
 
         if not tickets:
-            skipped[rid] = {"reason": "no_ev_tickets", "gap23": round(gap23, 4),
-                            "top3_conc": round(top3_conc, 4)}
+            skipped[rid] = {
+                "reason": "no_ev_tickets",
+                "gap23": round(gap23, 4),
+                "top3_conc": round(top3_conc, 4),
+                "bc_status": bc_status,
+            }
             continue
         n_predicted += 1
 
@@ -261,6 +299,7 @@ def predict_p2(
             "gap23": round(gap23, 4),
             "tickets": tickets,
             "has_exhibition": True,  # always True for non-odds features
+            "bc_status": bc_status,
         })
 
     return {
