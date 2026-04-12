@@ -164,10 +164,9 @@ EOF
 # Sync
 # ============================================================
 _sync_code() {
-  log "Syncing ML code..."
+  log "Syncing ML code + models..."
   rsync -az --delete \
     --exclude='.venv/' \
-    --exclude='models/' \
     --exclude='cache/' \
     --exclude='__pycache__/' \
     --exclude='*.pyc' \
@@ -270,12 +269,12 @@ _detach_run() {
   local tune_cmd
   tune_cmd=$(_build_cmd)
 
-  # Archive previous log
+  # Archive previous log using its mtime as YYYY-MM-DD_HHMM
   remote bash <<EOF
 mkdir -p ${REMOTE_DIR_RESOLVED}/tune-logs
 if [ -s "${REMOTE_LOG_FILE}" ]; then
-  prev_ts=\$(head -1 "${REMOTE_LOG_FILE}" | tr ' :' '_-' || echo "unknown")
-  cp "${REMOTE_LOG_FILE}" "${REMOTE_DIR_RESOLVED}/tune-logs/\${prev_ts}.log" 2>/dev/null || true
+  prev_ts=\$(date -r "${REMOTE_LOG_FILE}" '+%Y-%m-%d_%H%M' 2>/dev/null || echo "unknown")
+  cp "${REMOTE_LOG_FILE}" "${REMOTE_DIR_RESOLVED}/tune-logs/\${prev_ts}_server-tune.log" 2>/dev/null || true
 fi
 EOF
 
@@ -288,13 +287,13 @@ export PATH="\$HOME/.local/bin:\$PATH"
 cd ${REMOTE_DIR_RESOLVED}
 LOG="${REMOTE_LOG_FILE}"
 trap 'rm -f ${REMOTE_PID_FILE}' EXIT
-echo "Started at \$(date)" > "\$LOG"
+echo "Started at \$(date '+%Y-%m-%d %H:%M:%S %Z')" > "\$LOG"
 echo "Command: ${tune_cmd}" >> "\$LOG"
 echo "" >> "\$LOG"
 ${tune_cmd} >> "\$LOG" 2>&1
 echo "" >> "\$LOG"
 echo "=== Done ===" >> "\$LOG"
-date >> "\$LOG"
+date '+%Y-%m-%d %H:%M:%S %Z' >> "\$LOG"
 INNERSCRIPT
 chmod +x ${REMOTE_SCRIPT_FILE}
 EOF
