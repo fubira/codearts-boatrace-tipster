@@ -65,14 +65,20 @@ interface P2Prediction {
   hasExhibition: boolean;
 }
 
-interface SkippedPrediction {
+export interface SkippedPrediction {
   skipReason: string;
   top1Boat?: number; // for not_b1_top
   top3Conc?: number; // for top3_conc_low / no_ev_tickets
   gap23?: number; // for gap23_low / no_ev_tickets
 }
 
-function formatSkipReason(s: SkippedPrediction, opts: RunnerOptions): string {
+export function formatSkipReason(
+  s: SkippedPrediction,
+  opts: Pick<
+    RunnerOptions,
+    "evThreshold" | "gap23Threshold" | "top3ConcThreshold"
+  >,
+): string {
   const r = s.skipReason;
   const concTh = (opts.top3ConcThreshold * 100).toFixed(0);
   const gapTh = (opts.gap23Threshold * 100).toFixed(1);
@@ -368,6 +374,9 @@ async function makeBetDecisions(
     const label = `${slot.stadiumName} R${slot.raceNumber}`;
     const tickets = cached.tickets;
 
+    // Defensive: T-1 drift in poll() already continues when survivingTickets is
+    // empty, so this branch should be unreachable. Kept as a guard in case
+    // makeBetDecisions is called from a different path in the future.
     if (tickets.length === 0) {
       logger.info(`[P2] SKIP: ${label} | no tickets after drift`);
       continue;
