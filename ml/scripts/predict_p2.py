@@ -50,20 +50,16 @@ def _load_trifecta_odds(
     """Load trifecta odds. Returns {(race_id, combo_str): odds}."""
     conn = get_connection(db_path)
     if use_snapshots:
+        # Use T-5 snapshot to mirror runner's initial prediction step.
+        # T-1 drift check is a separate runner stage, not part of predict.
         rows = conn.execute(
             """
             SELECT s.race_id, s.combination, s.odds
             FROM db.race_odds_snapshots s
             JOIN db.races r ON r.id = s.race_id
             WHERE s.bet_type = '3連単'
+              AND s.timing = 'T-5'
               AND r.race_date >= ? AND r.race_date < ?
-              AND s.id IN (
-                SELECT MAX(s2.id)
-                FROM db.race_odds_snapshots s2
-                WHERE s2.race_id = s.race_id
-                  AND s2.bet_type = s.bet_type
-                  AND s2.combination = s.combination
-              )
             """,
             [date, next_day],
         ).fetchall()
