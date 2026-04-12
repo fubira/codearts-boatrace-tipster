@@ -10,9 +10,8 @@ Usage:
 """
 
 import argparse
-import contextlib
-import io
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -330,10 +329,29 @@ def main():
                              "neighborhood of the seed model's HP. Requires "
                              "--from-model. The first listed model is used as "
                              "the center.")
+    parser.add_argument("--n-jobs", type=int, default=1,
+                        help="Number of trials to run in parallel (default: 1). "
+                             "Pair with --num-threads to avoid LightGBM oversubscription.")
+    parser.add_argument("--num-threads", type=int, default=0,
+                        help="LightGBM num_threads per trial. 0 = LightGBM default "
+                             "(all cores). With --n-jobs N, set this to "
+                             "ceil(physical_cores / N) to avoid oversubscription.")
     args = parser.parse_args()
 
     if args.narrow and not args.from_model:
         print("ERROR: --narrow requires --from-model", file=sys.stderr)
+        sys.exit(1)
+
+    # Parallel tuning competes with anything else running on the machine
+    # (runner, scraper, interactive work). Only allow it on the tune server,
+    # which is signaled via env var set by scripts/server-tune.sh.
+    if args.n_jobs > 1 and os.environ.get("BOATRACE_TUNE_PARALLEL") != "1":
+        print(
+            "ERROR: --n-jobs > 1 is only allowed on the tune server.\n"
+            "  Use scripts/server-tune.sh, which sets BOATRACE_TUNE_PARALLEL=1.\n"
+            "  (Local single-trial tuning still works with the default --n-jobs 1.)",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Parse fixed thresholds
@@ -349,8 +367,7 @@ def main():
 
     # Load data
     print("Loading features...", flush=True)
-    with contextlib.redirect_stdout(io.StringIO()):
-        df = build_features_df(args.db_path)
+    df = build_features_df(args.db_path)
 
     # Verify all features exist
     missing = [f for f in FEATURES if f not in df.columns]
@@ -449,6 +466,8 @@ def main():
             "reg_alpha": trial.suggest_float("reg_alpha", ra_lo, ra_hi, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", rl_lo, rl_hi, log=True),
         }
+        if args.num_threads > 0:
+            rank_params["num_threads"] = args.num_threads
         n_estimators = trial.suggest_int("n_estimators", ne_lo, ne_hi)
         learning_rate = trial.suggest_float("learning_rate", lr_lo, lr_hi, log=True)
         if args.relevance:
@@ -508,17 +527,18 @@ def main():
 
         for fold in folds:
             # X is pre-filtered to FEATURES before walk_forward_splits, so fold
-            # X already has exactly the FEATURES columns.
-            with contextlib.redirect_stdout(io.StringIO()):
-                rank_model, _ = train_model(
-                    fold["train"]["X"], fold["train"]["y"], fold["train"]["meta"],
-                    fold["val"]["X"], fold["val"]["y"], fold["val"]["meta"],
-                    n_estimators=n_estimators,
-                    learning_rate=learning_rate,
-                    relevance_scheme=relevance,
-                    extra_params=rank_params,
-                    early_stopping_rounds=200,
-                )
+            # X already has exactly the FEATURES columns. LightGBM is silent
+            # (verbose=-1 in DEFAULT_PARAMS), so no stdout redirect needed —
+            # the redirect was thread-unsafe under --n-jobs > 1.
+            rank_model, _ = train_model(
+                fold["train"]["X"], fold["train"]["y"], fold["train"]["meta"],
+                fold["val"]["X"], fold["val"]["y"], fold["val"]["meta"],
+                n_estimators=n_estimators,
+                learning_rate=learning_rate,
+                relevance_scheme=relevance,
+                extra_params=rank_params,
+                early_stopping_rounds=200,
+            )
             # Track effective iteration count for production training
             best_it = getattr(rank_model, "best_iteration_", None)
             fold_best_iters.append(best_it if best_it is not None else n_estimators)
@@ -620,9 +640,17 @@ def main():
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             print(f"[I {ts}] Trial {trial.number} FAILED", flush=True)
 
+    if args.n_jobs > 1:
+        print(
+            f"Parallel tuning: n_jobs={args.n_jobs}, "
+            f"num_threads={args.num_threads or 'lgb-default'}",
+            flush=True,
+        )
+
     study.optimize(
         objective,
         n_trials=args.trials,
+        n_jobs=args.n_jobs,
         show_progress_bar=True,
         callbacks=[_trial_callback],
     )

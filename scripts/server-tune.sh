@@ -42,6 +42,9 @@ RELEVANCE=""
 SEED=42
 FROM_MODEL=""
 NARROW=false
+# n_jobs=2 + num_threads=4 = 8 threads total, matching i7-6700 (4 phys / 8 LCPU)
+N_JOBS=2
+NUM_THREADS=4
 OBJECTIVE=""
 FIX_THRESHOLDS=""
 
@@ -74,6 +77,8 @@ while [[ $# -gt 0 ]]; do
     --seed) SEED="$2"; shift 2 ;;
     --from-model) FROM_MODEL="$2"; shift 2 ;;
     --narrow) NARROW=true; shift ;;
+    --n-jobs) N_JOBS="$2"; shift 2 ;;
+    --num-threads) NUM_THREADS="$2"; shift 2 ;;
     --objective) OBJECTIVE="$2"; shift 2 ;;
     --fix-thresholds) FIX_THRESHOLDS="$2"; shift 2 ;;
     --help)
@@ -100,6 +105,8 @@ Optuna options:
   --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "gap23=0.13,ev=0.0,top3_conc=0.7")
   --from-model D    既存モデルのHPを初期trialとして投入（カンマ区切り可能）
   --narrow          --from-model の最初のモデル周辺だけを探索（要 --from-model）
+  --n-jobs N        並列 trial 数 (default: 2、サーバーでのみ許可)
+  --num-threads N   trial あたりの LightGBM スレッド数 (default: 4 = 8thread/2jobs on i7-6700)
 
 General:
   --skip-sync       コード・データ同期スキップ
@@ -273,6 +280,12 @@ _build_cmd() {
   if [ "$NARROW" = true ]; then
     cmd+=" --narrow"
   fi
+  if [ "$N_JOBS" -gt 1 ]; then
+    cmd+=" --n-jobs ${N_JOBS}"
+  fi
+  if [ "$NUM_THREADS" -gt 0 ]; then
+    cmd+=" --num-threads ${NUM_THREADS}"
+  fi
   echo "$cmd"
 }
 
@@ -295,6 +308,7 @@ cat > ${REMOTE_SCRIPT_FILE} << 'INNERSCRIPT'
 #!/bin/bash
 set -euo pipefail
 export PATH="\$HOME/.local/bin:\$PATH"
+export BOATRACE_TUNE_PARALLEL=1
 cd ${REMOTE_DIR_RESOLVED}
 LOG="${REMOTE_LOG_FILE}"
 trap 'rm -f ${REMOTE_PID_FILE}' EXIT
@@ -328,6 +342,7 @@ _foreground_run() {
   remote bash <<EOF
 set -euo pipefail
 export PATH="\$HOME/.local/bin:\$PATH"
+export BOATRACE_TUNE_PARALLEL=1
 cd ${REMOTE_DIR_RESOLVED}
 ${tune_cmd}
 EOF
