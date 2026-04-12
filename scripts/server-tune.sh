@@ -42,9 +42,10 @@ RELEVANCE=""
 SEED=""  # empty = auto random; explicit --seed N overrides for reproducibility
 FROM_MODEL=""
 NARROW=false
-# n_jobs=2 + num_threads=4 = 8 threads total, matching i7-6700 (4 phys / 8 LCPU)
+# n_jobs=2 + num_threads=2 = 4 threads total (= half of i7-6700's 8 LCPU),
+# leaving room for scraper / runner / interactive work on the same machine.
 N_JOBS=2
-NUM_THREADS=4
+NUM_THREADS=2
 OBJECTIVE=""
 FIX_THRESHOLDS=""
 
@@ -106,7 +107,7 @@ Optuna options:
   --from-model D    既存モデルのHPを初期trialとして投入（カンマ区切り可能）
   --narrow          --from-model の最初のモデル周辺だけを探索（要 --from-model）
   --n-jobs N        並列 trial 数 (default: 2、サーバーでのみ許可)
-  --num-threads N   trial あたりの LightGBM スレッド数 (default: 4 = 8thread/2jobs on i7-6700)
+  --num-threads N   trial あたりの LightGBM スレッド数 (default: 2 = 4thread/2jobs、i7-6700 の半分)
 
 General:
   --skip-sync       コード・データ同期スキップ
@@ -318,7 +319,10 @@ trap 'rm -f ${REMOTE_PID_FILE}' EXIT
 echo "Started at \$(date '+%Y-%m-%d %H:%M:%S %Z')" > "\$LOG"
 echo "Command: ${tune_cmd}" >> "\$LOG"
 echo "" >> "\$LOG"
-${tune_cmd} >> "\$LOG" 2>&1
+# nice / ionice: yield CPU and IO to the docker containers (runner /
+# scraper / watchtower) running on the same machine. tune is a
+# background research workload — production tasks must always win.
+nice -n 19 ionice -c 3 ${tune_cmd} >> "\$LOG" 2>&1
 echo "" >> "\$LOG"
 echo "=== Done ===" >> "\$LOG"
 date '+%Y-%m-%d %H:%M:%S %Z' >> "\$LOG"
@@ -348,7 +352,7 @@ export PATH="\$HOME/.local/bin:\$PATH"
 export BOATRACE_TUNE_PARALLEL=1
 export PYTHONUNBUFFERED=1
 cd ${REMOTE_DIR_RESOLVED}
-${tune_cmd}
+nice -n 19 ionice -c 3 ${tune_cmd}
 EOF
 }
 

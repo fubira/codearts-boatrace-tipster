@@ -91,9 +91,9 @@ P2 戦略 Optuna 探索をサーバで実行。
 --from-model models/p2_v2  # 既存モデルHPをseedとして投入（カンマ区切り可）
 --narrow                         # --from-model の最初のモデル周辺だけ探索
 --n-jobs N                       # 並列 trial 数 (default: 2、サーバ専用)
---num-threads N                  # trial あたり LightGBM threads (default: 4 / i7-6700)
+--num-threads N                  # trial あたり LightGBM threads (default: 2、i7-6700 の半分)
 --relevance podium               # relevance scheme 固定
---seed N                         # random seed (default: 42)
+--seed N                         # random seed (default: 自動ランダム、明示で再現性確保)
 ```
 
 ### npm scripts
