@@ -137,6 +137,27 @@ function todayJST(): string {
     .replace(/\//g, "-");
 }
 
+/**
+ * Sleep until 07:00 JST. `when="today"` is a no-op if it's already past 7 AM
+ * (used at startup); `when="tomorrow"` always targets the next day (used at
+ * day rollover). Anchoring day-init to 07:00 sidesteps the midnight watchtower
+ * race condition where runner restarts before scraper finishes pulling races.
+ */
+async function waitUntilJST7am(when: "today" | "tomorrow"): Promise<void> {
+  const now = Date.now();
+  const jstNow = now + 9 * 3600_000;
+  const jstMidnight = jstNow - (jstNow % (24 * 3600_000));
+  const offsetDays = when === "tomorrow" ? 1 : 0;
+  const targetJst = jstMidnight + (offsetDays * 24 + 7) * 3600_000;
+  const sleepMs = targetJst - 9 * 3600_000 - now;
+
+  if (sleepMs <= 0) return;
+
+  const hours = sleepMs / 3600_000;
+  logger.info(`Sleeping until ${when} 07:00 JST (${hours.toFixed(1)}h)`);
+  await Bun.sleep(sleepMs);
+}
+
 // ---------------------------------------------------------------------------
 // Stats snapshot
 // ---------------------------------------------------------------------------
@@ -868,6 +889,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   initializeDatabase();
 
   const bankrollState = loadBankrollState(opts.bankroll);
+  await waitUntilJST7am("today");
   const state = await setupDay(opts, bankrollState);
   if (!state) {
     closeDatabase();
@@ -940,22 +962,7 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
       });
     }
 
-    // Sleep until next day 7:00 JST
-    const now = Date.now();
-    const jstNow = now + 9 * 3600_000;
-    const jstMidnight = jstNow - (jstNow % (24 * 3600_000));
-    const jstHourMs = jstNow - jstMidnight;
-    const jst7am = 7 * 3600_000;
-    const target =
-      jstHourMs >= jst7am
-        ? jstMidnight + 24 * 3600_000 + jst7am
-        : jstMidnight + jst7am;
-    const sleepMs = target - 9 * 3600_000 - now;
-
-    logger.info(
-      `Sleeping until tomorrow 07:00 JST (${Math.round(sleepMs / 3600_000)}h)`,
-    );
-    await Bun.sleep(sleepMs);
+    await waitUntilJST7am("tomorrow");
 
     logger.info("New day starting...");
     closeDatabase();
