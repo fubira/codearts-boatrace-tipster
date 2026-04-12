@@ -3,7 +3,10 @@ import { createPurchaseExecutor } from "@/features/teleboat";
 import { loadModelStrategy, loadTelebotCredentials } from "@/shared/config";
 import { Command } from "commander";
 
-const strategy = loadModelStrategy();
+// NOTE: loadModelStrategy() is called lazily inside .action() below.
+// Calling it at module top-level would read ml/models/active.json during
+// import, which breaks the scraper container (no ml/models mount) when
+// commander loads every command module at startup.
 
 export const runCommand = new Command("run")
   .description("Run P2 prediction daemon (predict → drift → notify)")
@@ -11,24 +14,22 @@ export const runCommand = new Command("run")
   .option("--live", "LIVE mode (execute real purchases)")
   .option(
     "--ev-threshold <n>",
-    `EV threshold as fraction (default: ${strategy.evThreshold})`,
+    "EV threshold as fraction (default: from active model)",
     (v: string) => Number(v),
-    strategy.evThreshold,
   )
   .option(
     "--bet-cap <n>",
-    `max unit per ticket ¥ (default: ${strategy.betCap})`,
+    "max unit per ticket ¥ (default: from active model)",
     (v: string) => Number(v),
-    strategy.betCap,
   )
   .option(
     "--unit-divisor <n>",
-    `unit = bankroll / divisor (default: ${strategy.unitDivisor})`,
+    "unit = bankroll / divisor (default: from active model)",
     (v: string) => Number(v),
-    strategy.unitDivisor,
   )
   .option("--bankroll <n>", "initial bankroll", (v: string) => Number(v), 70000)
   .action(async (opts) => {
+    const strategy = loadModelStrategy();
     const dryRun = !opts.live;
     const slackWebhookUrl = process.env.SLACK_WEBHOOK_URL;
 
@@ -49,11 +50,11 @@ export const runCommand = new Command("run")
 
     await runDaemon({
       dryRun,
-      evThreshold: opts.evThreshold,
+      evThreshold: opts.evThreshold ?? strategy.evThreshold,
       gap23Threshold: strategy.gap23Threshold,
       top3ConcThreshold: strategy.top3ConcThreshold,
-      betCap: opts.betCap,
-      unitDivisor: opts.unitDivisor,
+      betCap: opts.betCap ?? strategy.betCap,
+      unitDivisor: opts.unitDivisor ?? strategy.unitDivisor,
       bankroll: opts.bankroll,
       slackWebhookUrl,
       purchaseExecutor,
