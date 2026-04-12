@@ -492,17 +492,42 @@ def main():
     print(f"  Mean ROI: {ba['mean_roi']:.1%}")
     print(f"  Profit:   {ba['profit']:+,.0f}円")
     print(f"  Races:    {ba['total_races']}")
-    print(f"  Growth:   {ba['growth']:.6f}")
+    print(f"  Growth:   {ba.get('growth', 'N/A')}")
     print(f"  Kelly:    {ba.get('kelly', 'N/A')}")
-    print(f"  Folds:    {ba['rois']}")
+    print(f"  Folds:    {ba.get('rois', 'N/A')}")
 
-    # Top 10 trials
+    # Save all completed trials to JSON FIRST (before prints that could crash).
+    # Includes params + user_attrs (best_iter etc.) so train_dev_model.py can
+    # match Optuna's effective training configuration.
+    trials_json_path = Path(args.output_json)
+    trials_json_path.parent.mkdir(parents=True, exist_ok=True)
+    trials_data = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "n_trials": args.trials,
+        "seed": args.seed,
+        "fix_thresholds": fixed_thresholds,
+        "best_value": study.best_value,
+        "best_trial": study.best_trial.number,
+        "trials": [
+            {
+                "number": t.number,
+                "value": t.value,
+                "state": t.state.name,
+                "params": dict(t.params),
+                "user_attrs": dict(t.user_attrs),
+            }
+            for t in study.trials
+            if t.state == optuna.trial.TrialState.COMPLETE
+        ],
+    }
+    with open(trials_json_path, "w") as f:
+        json.dump(trials_data, f, indent=2, ensure_ascii=False, default=str)
+    print(f"Saved {len(trials_data['trials'])} completed trials to {trials_json_path}")
+
+    # Top 10 trials (COMPLETE only — pruned trials lack full user_attrs)
     print(f"\nTop 10 trials (by {obj_label}):")
-    trials = sorted(
-        [t for t in study.trials if t.value is not None and t.value > -999],
-        key=lambda t: t.value,
-        reverse=True,
-    )
+    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    trials = sorted(completed, key=lambda t: t.value, reverse=True)
     for t in trials[:10]:
         ua = t.user_attrs
         rel = ua.get("relevance", "?")
@@ -550,34 +575,6 @@ def main():
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
     print(f"\nSaved best params to {meta_path}")
-
-    # Save all completed trials to JSON (for train_dev_model.py to read)
-    # Includes params + user_attrs (best_iter etc.) so dev training can match
-    # Optuna's effective training configuration.
-    trials_json_path = Path(args.output_json)
-    trials_json_path.parent.mkdir(parents=True, exist_ok=True)
-    trials_data = {
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "n_trials": args.trials,
-        "seed": args.seed,
-        "fix_thresholds": fixed_thresholds,
-        "best_value": study.best_value,
-        "best_trial": study.best_trial.number,
-        "trials": [
-            {
-                "number": t.number,
-                "value": t.value,
-                "state": t.state.name,
-                "params": dict(t.params),
-                "user_attrs": dict(t.user_attrs),
-            }
-            for t in study.trials
-            if t.state == optuna.trial.TrialState.COMPLETE
-        ],
-    }
-    with open(trials_json_path, "w") as f:
-        json.dump(trials_data, f, indent=2, ensure_ascii=False, default=str)
-    print(f"Saved {len(trials_data['trials'])} completed trials to {trials_json_path}")
 
     print(f"\nTotal time: {time.time() - t0:.1f}s")
 
