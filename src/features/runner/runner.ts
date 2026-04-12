@@ -365,9 +365,15 @@ async function makeBetDecisions(
         stadiumName: slot.stadiumName,
         raceNumber: slot.raceNumber,
         deadline: slot.deadline,
-        prob: 0,
-        odds: 0,
-        ev: avgEv * 100,
+        top3Conc: cached.top3Conc,
+        gap23: cached.gap23,
+        tickets: tickets.map((t) => ({
+          combo: t.combo,
+          modelProb: t.modelProb,
+          marketOdds: t.marketOdds,
+          ev: t.ev,
+        })),
+        unit,
         betAmount: totalWager,
       });
 
@@ -612,18 +618,22 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
           : null;
       const won = hitCombo != null && tickets.some((t) => t.combo === hitCombo);
 
-      let payout = 0;
-      if (won && hitCombo) {
+      // Official payout (確定オッズ × 100円) from race_payouts
+      let officialPayoutPer100 = 0;
+      if (hitCombo) {
         const payoutRow = db
           .query(
             `SELECT payout FROM race_payouts
              WHERE race_id = ? AND bet_type = '3連単' AND combination = ?`,
           )
           .get(slot.raceId, hitCombo) as { payout: number } | null;
-        if (payoutRow) {
-          const unit = tickets.length > 0 ? bet.betAmount / tickets.length : 0;
-          payout = Math.round((unit / 100) * payoutRow.payout);
-        }
+        officialPayoutPer100 = payoutRow?.payout ?? 0;
+      }
+
+      let payout = 0;
+      if (won && officialPayoutPer100 > 0) {
+        const unit = tickets.length > 0 ? bet.betAmount / tickets.length : 0;
+        payout = Math.round((unit / 100) * officialPayoutPer100);
       }
 
       state.bankroll += payout;
@@ -635,8 +645,9 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         pl >= 0
           ? `+¥${pl.toLocaleString()}`
           : `-¥${Math.abs(pl).toLocaleString()}`;
+      const combosLog = tickets.map((t) => t.combo).join(",");
       logger.info(
-        `[P2] ${won ? "WIN" : "LOSE"}: ${slot.stadiumName} R${slot.raceNumber} | 結果${resultStr} | ${plStr} (残¥${state.bankroll.toLocaleString()})`,
+        `[P2] ${won ? "WIN" : "LOSE"}: ${slot.stadiumName} R${slot.raceNumber} | 買目 ${combosLog} | 結果 ${resultStr} | 確定 ¥${officialPayoutPer100 || "-"} | ${plStr} (残¥${state.bankroll.toLocaleString()})`,
       );
 
       await notifyResult({
@@ -646,6 +657,13 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         betAmount: bet.betAmount,
         payout,
         bankroll: state.bankroll,
+        tickets: tickets.map((t) => ({
+          combo: t.combo,
+          marketOdds: t.marketOdds,
+          ev: t.ev,
+        })),
+        resultCombo: hitCombo,
+        officialPayoutPer100,
       });
 
       slot.status = "done";

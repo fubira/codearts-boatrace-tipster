@@ -86,19 +86,35 @@ export async function notifyStartup(info: StartupInfo): Promise<void> {
   });
 }
 
+export interface P2TicketInfo {
+  combo: string;
+  modelProb: number;
+  marketOdds: number;
+  ev: number;
+}
+
 export interface PredictionInfo {
   stadiumName: string;
   raceNumber: number;
   deadline: string;
-  prob: number;
-  odds: number;
-  ev: number;
+  top3Conc: number;
+  gap23: number;
+  tickets: P2TicketInfo[];
+  unit: number;
   betAmount: number;
 }
 
 export async function notifyPrediction(p: PredictionInfo): Promise<void> {
+  const ticketLines = p.tickets
+    .map(
+      (t) =>
+        `• \`${t.combo}\` @ ${t.marketOdds.toFixed(1)}倍 | EV *+${(t.ev * 100).toFixed(0)}%* (prob ${(t.modelProb * 100).toFixed(2)}%)`,
+    )
+    .join("\n");
+  const avgEv = p.tickets.reduce((s, t) => s + t.ev, 0) / p.tickets.length;
+
   await send({
-    text: `[boatrace] BET: ${p.stadiumName}${p.raceNumber}R EV+${p.ev.toFixed(1)}%`,
+    text: `[boatrace] BET: ${p.stadiumName}${p.raceNumber}R ${p.tickets.length}点 ¥${p.betAmount.toLocaleString()}`,
     blocks: [
       {
         type: "section",
@@ -106,12 +122,19 @@ export async function notifyPrediction(p: PredictionInfo): Promise<void> {
           type: "mrkdwn",
           text:
             `*${p.stadiumName} ${p.raceNumber}R* (締切 ${p.deadline})\n` +
-            `EV *+${p.ev.toFixed(1)}%* | prob *${(p.prob * 100).toFixed(1)}%*\n` +
-            `→ 3連単 *¥${p.betAmount.toLocaleString()}*`,
+            `conc *${(p.top3Conc * 100).toFixed(0)}%* / gap23 *${(p.gap23 * 100).toFixed(1)}%* / avg EV *+${(avgEv * 100).toFixed(0)}%*\n` +
+            `${ticketLines}\n` +
+            `→ ¥${p.unit.toLocaleString()} × ${p.tickets.length}点 = *¥${p.betAmount.toLocaleString()}*`,
         },
       },
     ],
   });
+}
+
+export interface ResultTicketInfo {
+  combo: string;
+  marketOdds: number; // T-1 odds used for bet decision
+  ev: number;
 }
 
 export interface RaceResultInfo {
@@ -121,6 +144,9 @@ export interface RaceResultInfo {
   betAmount: number;
   payout: number;
   bankroll: number;
+  tickets: ResultTicketInfo[];
+  resultCombo: string | null; // Actual 1-2-3 combo
+  officialPayoutPer100: number; // Official 3連単 payout (per 100 yen bet)
 }
 
 export async function notifyResult(r: RaceResultInfo): Promise<void> {
@@ -128,6 +154,28 @@ export async function notifyResult(r: RaceResultInfo): Promise<void> {
   const pl = r.payout - r.betAmount;
   const plStr =
     pl >= 0 ? `+¥${pl.toLocaleString()}` : `-¥${Math.abs(pl).toLocaleString()}`;
+
+  // Unit per ticket (uniform)
+  const unit = r.tickets.length > 0 ? r.betAmount / r.tickets.length : 0;
+
+  const ticketLines = r.tickets
+    .map((t) => {
+      const isHit = t.combo === r.resultCombo && r.officialPayoutPer100 > 0;
+      if (isHit) {
+        const multiplier = r.officialPayoutPer100 / 100;
+        const ticketPayout = (unit / 100) * r.officialPayoutPer100;
+        const ticketProfit = ticketPayout - unit;
+        return (
+          `• ⭕ \`${t.combo}\` 確定 *${multiplier.toFixed(1)}倍* × ¥${unit.toLocaleString()} = ` +
+          `*¥${ticketPayout.toLocaleString()}* (+¥${ticketProfit.toLocaleString()})`
+        );
+      }
+      return `• \`${t.combo}\` @ T-1 ${t.marketOdds.toFixed(1)}倍 (EV +${(t.ev * 100).toFixed(0)}%) → -¥${unit.toLocaleString()}`;
+    })
+    .join("\n");
+
+  const resultLine = r.resultCombo ? `結果: *${r.resultCombo}*` : "結果: N/A";
+
   await send({
     text: `[boatrace] ${icon} ${r.stadiumName}${r.raceNumber}R ${plStr}`,
     blocks: [
@@ -135,7 +183,11 @@ export async function notifyResult(r: RaceResultInfo): Promise<void> {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `${icon} *${r.stadiumName} ${r.raceNumber}R* ${plStr} (残高 ¥${r.bankroll.toLocaleString()})`,
+          text:
+            `${icon} *${r.stadiumName} ${r.raceNumber}R* ${plStr}\n` +
+            `${resultLine}\n` +
+            `${ticketLines}\n` +
+            `購入 ¥${r.betAmount.toLocaleString()} / 払戻 ¥${r.payout.toLocaleString()} / 残高 ¥${r.bankroll.toLocaleString()}`,
         },
       },
     ],
