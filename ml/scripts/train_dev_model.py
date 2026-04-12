@@ -70,15 +70,60 @@ def save_registry(reg: dict) -> None:
 
 
 def parse_tune_log(log_path: Path) -> dict:
-    """Parse Optuna log. Returns {trial_num: params_dict} and run info."""
+    """Parse Optuna log. Prefers trials.json if available, else falls back
+    to log text parsing.
+
+    Returns: {
+        "trials": {num: {"growth", "params", "user_attrs"}},
+        "fix_thresholds": dict,
+        "n_trials": int, "seed": int, "best_growth": float,
+    }
+    """
     if not log_path.exists():
         print(f"ERROR: Log not found: {log_path}")
         sys.exit(1)
 
+    # Prefer trials.json (includes user_attrs like best_iter).
+    # Look for <log_basename>.trials.json adjacent to the log first, then
+    # fall back to models/tune_result/trials.json.
+    trials_json_candidates = [
+        log_path.with_suffix(".trials.json"),
+        MODELS_DIR / "tune_result" / "trials.json",
+    ]
+    for trials_json in trials_json_candidates:
+        if not trials_json.exists():
+            continue
+        try:
+            with open(trials_json) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as err:
+            print(
+                f"  WARN: failed to read {trials_json}: {err}. "
+                f"Falling back to next source.",
+                file=sys.stderr,
+            )
+            continue
+        trials = {
+            t["number"]: {
+                "growth": t["value"],
+                "params": t["params"],
+                "user_attrs": t.get("user_attrs", {}),
+            }
+            for t in data.get("trials", [])
+        }
+        return {
+            "trials": trials,
+            "fix_thresholds": data.get("fix_thresholds", {}),
+            "n_trials": data.get("n_trials"),
+            "seed": data.get("seed"),
+            "best_growth": data.get("best_value"),
+            "source": str(trials_json),
+        }
+
+    # Fallback: parse log text (no user_attrs available)
     with open(log_path) as f:
         log = f.read()
 
-    # Command line (trials, seed, relevance, fix-thresholds)
     cmd_m = re.search(r"Command:\s+(.*)", log)
     cmd = cmd_m.group(1) if cmd_m else ""
     trials_m = re.search(r"--trials\s+(\d+)", cmd)
@@ -91,7 +136,6 @@ def parse_tune_log(log_path: Path) -> dict:
             k, v = pair.strip().split("=")
             fix_thresholds[k.strip()] = float(v.strip())
 
-    # Trials
     trial_re = re.compile(
         r"Trial (\d+) finished with value: ([\-\d\.e]+) and parameters: (\{[^}]+\})"
     )
@@ -102,22 +146,20 @@ def parse_tune_log(log_path: Path) -> dict:
         params_str = m.group(3).replace("'", '"')
         try:
             params = json.loads(params_str)
-            trials[num] = {"growth": val, "params": params}
+            trials[num] = {"growth": val, "params": params, "user_attrs": {}}
         except json.JSONDecodeError:
             continue
 
-    # Best trial
     best_m = re.search(r"Best Growth:\s+([\d\.]+)", log)
     best_growth = float(best_m.group(1)) if best_m else None
-    best_trial_m = re.search(r"Best trial metrics:.*?#\s*(\d+):", log, re.DOTALL)
 
     return {
         "trials": trials,
-        "cmd": cmd,
+        "fix_thresholds": fix_thresholds,
         "n_trials": int(trials_m.group(1)) if trials_m else None,
         "seed": int(seed_m.group(1)) if seed_m else None,
-        "fix_thresholds": fix_thresholds,
         "best_growth": best_growth,
+        "source": "log",
     }
 
 
@@ -138,10 +180,26 @@ def params_to_hp(params: dict) -> tuple[dict, float, int, float]:
     return hp, lr, n_est, conc
 
 
-def train_one(df, prefix, trial_num, params, end_date, val_months, log_path,
+def train_one(df, prefix, trial_num, trial_info, end_date, val_months, log_path,
               gap23_th, ev_th):
-    """Train a single trial and save to models/dev/<prefix>_<trial>/ranking/."""
-    hp, lr, n_est, conc_th = params_to_hp(params)
+    """Train a single trial and save to models/<prefix>_<trial>/ranking/.
+
+    Uses avg_best_iter from user_attrs (if available) instead of params'
+    n_estimators upper bound. Disables early stopping because we already
+    know the effective iteration count from WF-CV.
+    """
+    params = trial_info["params"]
+    user_attrs = trial_info.get("user_attrs", {})
+    hp, lr, n_est_upper, conc_th = params_to_hp(params)
+
+    # Effective iter count: prefer avg_best_iter from WF-CV if available
+    avg_best_iter = user_attrs.get("avg_best_iter")
+    if avg_best_iter is not None and avg_best_iter > 0:
+        effective_n_est = int(avg_best_iter)
+        src = f"avg_best_iter from WF-CV (upper {n_est_upper})"
+    else:
+        effective_n_est = n_est_upper
+        src = f"n_est (no avg_best_iter in trial attrs — using upper bound)"
 
     train_df = df[df["race_date"] < end_date]
     val_start = pd.Timestamp(end_date) - pd.DateOffset(months=val_months)
@@ -156,22 +214,26 @@ def train_one(df, prefix, trial_num, params, end_date, val_months, log_path,
 
     model_name = f"{prefix}_{trial_num}"
     output_dir = MODELS_DIR / model_name / "ranking"
-    print(f"[{model_name}] Training (n_train={n_train}, n_val={n_val}, lr={lr:.4f}, n_est={n_est}, conc={conc_th:.3f})...",
-          flush=True)
+    print(
+        f"[{model_name}] Training (n_train={n_train}, n_val={n_val}, "
+        f"lr={lr:.4f}, n_est={effective_n_est}, conc={conc_th:.3f}) {src}",
+        flush=True,
+    )
     t0 = time.time()
     with contextlib.redirect_stdout(io.StringIO()):
         model, _ = train_model(
             X[~val_mask], y[~val_mask], meta[~val_mask],
             X[val_mask], y[val_mask], meta[val_mask],
-            n_estimators=n_est, learning_rate=lr,
+            n_estimators=effective_n_est, learning_rate=lr,
             relevance_scheme="podium", extra_params=hp,
-            early_stopping_rounds=None,  # Full n_est (matches Optuna trial)
+            early_stopping_rounds=None,  # Match WF-CV effective iterations
         )
     print(f"[{model_name}] Done in {time.time()-t0:.0f}s", flush=True)
 
     feature_means = {c: float(X[c].astype("float64").mean()) for c in FEATURES}
     all_hp = dict(hp)
-    all_hp["n_estimators"] = n_est
+    all_hp["n_estimators"] = effective_n_est
+    all_hp["n_estimators_upper"] = n_est_upper
     all_hp["learning_rate"] = lr
     all_hp["relevance_scheme"] = "podium"
 
@@ -188,6 +250,7 @@ def train_one(df, prefix, trial_num, params, end_date, val_months, log_path,
             "dev_prefix": prefix,
             "tune_log": str(log_path),
             "trial_number": trial_num,
+            "avg_best_iter": avg_best_iter,
         },
         feature_means=feature_means,
     )
@@ -243,10 +306,18 @@ def cmd_train(args) -> None:
     prefix = args.prefix or reg["next_prefix"]
     log_path = Path(args.tune_log)
 
-    # Parse log
+    # Parse log (prefers trials.json for user_attrs access)
     print(f"Parsing {log_path}...")
     log_info = parse_tune_log(log_path)
-    print(f"  {len(log_info['trials'])} trials, best growth={log_info['best_growth']}")
+    print(
+        f"  source={log_info['source']}, {len(log_info['trials'])} trials, "
+        f"best growth={log_info['best_growth']}"
+    )
+    if log_info["source"] == "log":
+        print(
+            "  WARN: Using log text fallback (no trials.json). best_iter tracking "
+            "unavailable — will fall back to n_estimators upper bound."
+        )
 
     # Select trials
     trial_nums = [int(x) for x in args.trials.split(",")]
@@ -268,8 +339,8 @@ def cmd_train(args) -> None:
     # Train each trial
     saved = []
     for tn in trial_nums:
-        params = log_info["trials"][tn]["params"]
-        name = train_one(df, prefix, tn, params, args.end_date, args.val_months,
+        trial_info = log_info["trials"][tn]
+        name = train_one(df, prefix, tn, trial_info, args.end_date, args.val_months,
                          log_path, gap23_th, ev_th)
         saved.append(tn)
 

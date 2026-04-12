@@ -229,14 +229,24 @@ _fetch() {
   mkdir -p "$LOG_DIR"
   local ts
   ts=$(date +%Y-%m-%d_%H%M)
+  local log_file="${LOG_DIR}/${ts}_server-tune.log"
+  local trials_json="${LOG_DIR}/${ts}_server-tune.trials.json"
 
   if ! remote "grep -q '=== Done ===' ${REMOTE_LOG_FILE} 2>/dev/null"; then
     log "WARNING: run may not be complete yet"
   fi
 
-  rsync -az "${SERVER}:${REMOTE_LOG_FILE}" "${LOG_DIR}/${ts}_server-tune.log" 2>/dev/null && \
-    log "Downloaded log → ${LOG_DIR}/${ts}_server-tune.log" || \
+  rsync -az "${SERVER}:${REMOTE_LOG_FILE}" "${log_file}" 2>/dev/null && \
+    log "Downloaded log → ${log_file}" || \
     log "WARNING: failed to download log"
+
+  # Also fetch trials.json (for p2 runs with best_iter tracking)
+  local remote_trials="${REMOTE_DIR_RESOLVED}/ml/models/tune_result/trials.json"
+  if remote "test -f ${remote_trials}"; then
+    rsync -az "${SERVER}:${remote_trials}" "${trials_json}" 2>/dev/null && \
+      log "Downloaded trials.json → ${trials_json}" || \
+      log "WARNING: failed to download trials.json"
+  fi
 
   # Show results summary from log
   echo ""

@@ -199,6 +199,12 @@ def main():
                         help="Fix relevance scheme (linear/top_heavy/podium). If omitted, included in search space.")
     parser.add_argument("--fix-thresholds", default=None,
                         help="Fix strategy thresholds. Format: gap23=0.15,ev=0.1,top3_conc=0.7")
+    parser.add_argument("--pruner-percentile", type=int, default=10,
+                        help="PercentilePruner threshold (0=disable, default: 10)")
+    parser.add_argument("--pruner-warmup", type=int, default=20,
+                        help="Number of trials before pruning starts (default: 20)")
+    parser.add_argument("--output-json", default="models/tune_result/trials.json",
+                        help="Path to save all trial details as JSON")
     args = parser.parse_args()
 
     # Parse fixed thresholds
@@ -280,12 +286,16 @@ def main():
             top3_conc_threshold = trial.suggest_float("top3_conc_threshold", 0.0, 0.85)
 
         fold_profits = []
+        fold_best_iters = []
         total_races = 0
         total_cost = 0.0
         total_payout = 0.0
         rois = []
 
-        for fold in folds:
+        bankroll = 70000.0
+        days_per_fold = args.fold_months * 30
+
+        for fold_idx, fold in enumerate(folds):
             train_X = fold["train"]["X"][FEATURES] if set(FEATURES).issubset(fold["train"]["X"].columns) else fold["train"]["X"]
             val_X = fold["val"]["X"][FEATURES] if set(FEATURES).issubset(fold["val"]["X"].columns) else fold["val"]["X"]
 
@@ -299,6 +309,9 @@ def main():
                     extra_params=rank_params,
                     early_stopping_rounds=200,
                 )
+            # Track effective iteration count for production training
+            best_it = getattr(rank_model, "best_iteration_", None)
+            fold_best_iters.append(best_it if best_it is not None else n_estimators)
 
             test_X = fold["test"]["X"][FEATURES] if set(FEATURES).issubset(fold["test"]["X"].columns) else fold["test"]["X"]
             rank_scores = rank_model.predict(test_X)
@@ -323,6 +336,16 @@ def main():
             total_payout += result["payout"]
             rois.append(result["roi"] if result["cost"] > 0 else 0)
 
+            # Report running growth for pruning
+            running_growth_rates = [
+                np.log(max(1 + (fp / days_per_fold) / bankroll, 1e-6))
+                for fp in fold_profits
+            ]
+            running_growth = float(np.mean(running_growth_rates))
+            trial.report(running_growth, fold_idx)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
         # Require minimum volume
         if total_races < 20:
             return -999.0
@@ -330,19 +353,14 @@ def main():
         mean_roi = float(np.mean(rois)) if rois else 0
         profit = total_payout - total_cost
 
-        # Growth: daily compound growth rate
-        bankroll = 70000.0
-        days_per_fold = args.fold_months * 30
-        growth_rates = []
-        for fp in fold_profits:
-            daily_profit = fp / days_per_fold
-            growth_rates.append(np.log(max(1 + daily_profit / bankroll, 1e-6)))
-        growth = float(np.mean(growth_rates))
+        # Growth: daily compound growth rate (already computed incrementally above)
+        growth = running_growth
 
         # Kelly: mean of log(ROI) — rewards high ROI regardless of volume
         log_rois = [np.log(max(r, 1e-6)) for r in rois]
         kelly = float(np.mean(log_rois))
 
+        avg_best_iter = int(round(sum(fold_best_iters) / len(fold_best_iters)))
         trial.set_user_attr("mean_roi", round(mean_roi, 4))
         trial.set_user_attr("rois", [round(r, 4) for r in rois])
         trial.set_user_attr("total_races", total_races)
@@ -350,18 +368,50 @@ def main():
         trial.set_user_attr("growth", round(growth, 6))
         trial.set_user_attr("kelly", round(kelly, 4))
         trial.set_user_attr("relevance", relevance)
+        trial.set_user_attr("avg_best_iter", avg_best_iter)
+        trial.set_user_attr("fold_best_iters", fold_best_iters)
 
         if args.objective == "kelly":
             return kelly
         return growth
 
+    pruner: optuna.pruners.BasePruner
+    if args.pruner_percentile > 0:
+        # PercentilePruner(percentile=X) prunes trials below the X-th percentile
+        # n_warmup_steps=0: allow pruning from fold 1 (step 0) onward
+        pruner = optuna.pruners.PercentilePruner(
+            percentile=args.pruner_percentile,
+            n_startup_trials=args.pruner_warmup,
+            n_warmup_steps=0,
+        )
+        print(
+            f"Pruner: PercentilePruner(bottom {args.pruner_percentile}%, "
+            f"warmup={args.pruner_warmup} trials)"
+        )
+    else:
+        pruner = optuna.pruners.NopPruner()
+        print("Pruner: disabled")
+
     study = optuna.create_study(
         direction="maximize",
         study_name="p2-trifecta",
         sampler=optuna.samplers.TPESampler(seed=args.seed),
+        pruner=pruner,
     )
 
     study.optimize(objective, n_trials=args.trials, show_progress_bar=True)
+
+    # Pruning summary
+    n_pruned = sum(
+        1 for t in study.trials if t.state == optuna.trial.TrialState.PRUNED
+    )
+    n_complete = sum(
+        1 for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE
+    )
+    print(
+        f"\nTrial states: {n_complete} complete, {n_pruned} pruned "
+        f"({n_pruned / args.trials * 100:.0f}%)"
+    )
 
     # Results
     obj_label = {"growth": "Growth", "kelly": "Kelly"}[args.objective]
@@ -437,6 +487,34 @@ def main():
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
     print(f"\nSaved best params to {meta_path}")
+
+    # Save all completed trials to JSON (for train_dev_model.py to read)
+    # Includes params + user_attrs (best_iter etc.) so dev training can match
+    # Optuna's effective training configuration.
+    trials_json_path = Path(args.output_json)
+    trials_json_path.parent.mkdir(parents=True, exist_ok=True)
+    trials_data = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "n_trials": args.trials,
+        "seed": args.seed,
+        "fix_thresholds": fixed_thresholds,
+        "best_value": study.best_value,
+        "best_trial": study.best_trial.number,
+        "trials": [
+            {
+                "number": t.number,
+                "value": t.value,
+                "state": t.state.name,
+                "params": dict(t.params),
+                "user_attrs": dict(t.user_attrs),
+            }
+            for t in study.trials
+            if t.state == optuna.trial.TrialState.COMPLETE
+        ],
+    }
+    with open(trials_json_path, "w") as f:
+        json.dump(trials_data, f, indent=2, ensure_ascii=False, default=str)
+    print(f"Saved {len(trials_data['trials'])} completed trials to {trials_json_path}")
 
     print(f"\nTotal time: {time.time() - t0:.1f}s")
 
