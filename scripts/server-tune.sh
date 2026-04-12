@@ -41,6 +41,7 @@ FOLD_MONTHS=2
 RELEVANCE=""
 SEED=42
 FROM_MODEL=""
+NARROW=false
 OBJECTIVE=""
 FIX_THRESHOLDS=""
 
@@ -72,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --relevance) RELEVANCE="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     --from-model) FROM_MODEL="$2"; shift 2 ;;
+    --narrow) NARROW=true; shift ;;
     --objective) OBJECTIVE="$2"; shift 2 ;;
     --fix-thresholds) FIX_THRESHOLDS="$2"; shift 2 ;;
     --help)
@@ -97,6 +99,7 @@ Optuna options:
   --objective O     tune_p2 objective: growth | kelly (default: growth)
   --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "gap23=0.13,ev=0.0,top3_conc=0.7")
   --from-model D    既存モデルのHPを初期trialとして投入（カンマ区切り可能）
+  --narrow          --from-model の最初のモデル周辺だけを探索（要 --from-model）
 
 General:
   --skip-sync       コード・データ同期スキップ
@@ -110,6 +113,11 @@ done
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 remote() { ssh -o ConnectTimeout=10 "$SERVER" "$@"; }
+
+if [ "$NARROW" = true ] && [ -z "$FROM_MODEL" ]; then
+  echo "ERROR: --narrow requires --from-model" >&2
+  exit 1
+fi
 
 # --- Validate SSH ---
 log "Connecting to ${SERVER}..."
@@ -261,6 +269,9 @@ _build_cmd() {
   fi
   if [ -n "$FROM_MODEL" ]; then
     cmd+=" --from-model '${FROM_MODEL}'"
+  fi
+  if [ "$NARROW" = true ]; then
+    cmd+=" --narrow"
   fi
   echo "$cmd"
 }

@@ -80,6 +80,86 @@ def _load_enqueue_params(model_dir: str) -> dict:
     return params
 
 
+# ---------------------------------------------------------------------------
+# --narrow: search space restriction around a seed model
+# ---------------------------------------------------------------------------
+#
+# When --narrow is given together with --from-model, every Optuna suggestion is
+# constrained to a small neighborhood of the seed model's hyperparameters.
+# Linear-space parameters use a ratio (±ratio relative to center). Log-space
+# parameters use a multiplicative factor (center / factor .. center * factor).
+# Threshold parameters use an absolute delta because they can be 0 or near-0.
+#
+# Constants are tuned to match the existing global ranges roughly while keeping
+# exploration tight enough to be meaningfully different from a fresh search.
+
+NARROW_RATIO = {
+    # int linear (±ratio of center, clamped to global bounds)
+    "num_leaves": 0.30,
+    "max_depth": 0.25,
+    "min_child_samples": 0.50,
+    "n_estimators": 0.30,
+    # float linear
+    "subsample": 0.20,
+    "colsample_bytree": 0.20,
+}
+NARROW_LOG_FACTOR = {
+    # log scale: [center / factor, center * factor]
+    "learning_rate": 2.0,
+    "reg_alpha": 10.0,
+    "reg_lambda": 10.0,
+}
+NARROW_ABS_DELTA = {
+    # additive delta — used for thresholds that can be 0 or near-zero
+    "top3_conc_threshold": 0.15,
+    "gap23_threshold": 0.05,
+    "ev_threshold": 0.15,
+}
+
+
+def _narrow_int(center: float, ratio: float, lo: int, hi: int) -> tuple[int, int]:
+    """Narrow int range to ``center * (1 ± ratio)``, clamped to ``[lo, hi]``.
+    Falls back to a single point at the clamped center if the range collapses.
+    """
+    new_lo = max(lo, int(center * (1 - ratio)))
+    new_hi = min(hi, int(center * (1 + ratio)))
+    if new_lo >= new_hi:
+        c = max(lo, min(hi, int(round(center))))
+        return c, c
+    return new_lo, new_hi
+
+
+def _narrow_float(center: float, ratio: float, lo: float, hi: float) -> tuple[float, float]:
+    """Narrow float range to ``center * (1 ± ratio)``, clamped to ``[lo, hi]``."""
+    new_lo = max(lo, center * (1 - ratio))
+    new_hi = min(hi, center * (1 + ratio))
+    if new_lo >= new_hi:
+        c = max(lo, min(hi, center))
+        return c, c
+    return new_lo, new_hi
+
+
+def _narrow_log(center: float, factor: float, lo: float, hi: float) -> tuple[float, float]:
+    """Narrow log-scale range to ``[center/factor, center*factor]``, clamped."""
+    new_lo = max(lo, center / factor)
+    new_hi = min(hi, center * factor)
+    if new_lo >= new_hi:
+        c = max(lo, min(hi, center))
+        return c, c
+    return new_lo, new_hi
+
+
+def _narrow_abs(center: float, delta: float, lo: float, hi: float) -> tuple[float, float]:
+    """Narrow range to ``center ± delta``, clamped. Used for thresholds whose
+    center can be 0 or near-zero (where multiplicative ratios collapse)."""
+    new_lo = max(lo, center - delta)
+    new_hi = min(hi, center + delta)
+    if new_lo >= new_hi:
+        c = max(lo, min(hi, center))
+        return c, c
+    return new_lo, new_hi
+
+
 def _load_trifecta_odds(db_path: str) -> dict:
     conn = get_connection(db_path)
     rows = conn.execute(
@@ -249,7 +329,16 @@ def main():
                         help="Comma-separated model directories to seed the search "
                              "with. HP is read from model_meta.json and enqueued as "
                              "initial trials. Example: models/p2_v1,models/aa_294")
+    parser.add_argument("--narrow", action="store_true",
+                        help="Constrain every Optuna suggestion to a small "
+                             "neighborhood of the seed model's HP. Requires "
+                             "--from-model. The first listed model is used as "
+                             "the center.")
     args = parser.parse_args()
+
+    if args.narrow and not args.from_model:
+        print("ERROR: --narrow requires --from-model", file=sys.stderr)
+        sys.exit(1)
 
     # Parse fixed thresholds
     fixed_thresholds: dict[str, float] = {}
@@ -293,23 +382,84 @@ def main():
         n_test = len(fold["test"]["X"]) // FIELD_SIZE
         print(f"  Fold {i+1}: test={fold['period']['test']} ({n_test}R)")
 
+    # Load narrow seed (HP center for --narrow mode). The first --from-model
+    # entry wins; additional entries are still enqueued as warm-start trials
+    # but the search neighborhood is anchored to the first one. Optuna will
+    # warn and ignore enqueued values that fall outside the narrowed ranges,
+    # which is the correct behavior — the second seed is treated as a "tried
+    # but out of scope" data point.
+    narrow_seed: dict[str, float | str] | None = None
+    if args.narrow:
+        first_model = args.from_model.split(",")[0].strip()
+        narrow_seed = _load_enqueue_params(first_model)
+        print(f"Narrow mode: anchoring search to {first_model}")
+        for k, v in narrow_seed.items():
+            print(f"    {k}: {v}")
+
     print(f"Setup done in {time.time() - t0:.1f}s\n", flush=True)
 
     def objective(trial: optuna.Trial) -> float:
         # LambdaRank hyperparameters
+        if narrow_seed:
+            nl_lo, nl_hi = _narrow_int(
+                narrow_seed["num_leaves"], NARROW_RATIO["num_leaves"], 15, 127,
+            )
+            md_lo, md_hi = _narrow_int(
+                narrow_seed["max_depth"], NARROW_RATIO["max_depth"], 3, 12,
+            )
+            mc_lo, mc_hi = _narrow_int(
+                narrow_seed["min_child_samples"], NARROW_RATIO["min_child_samples"],
+                5, 100,
+            )
+            ss_lo, ss_hi = _narrow_float(
+                narrow_seed["subsample"], NARROW_RATIO["subsample"], 0.4, 1.0,
+            )
+            cs_lo, cs_hi = _narrow_float(
+                narrow_seed["colsample_bytree"], NARROW_RATIO["colsample_bytree"],
+                0.4, 1.0,
+            )
+            ra_lo, ra_hi = _narrow_log(
+                narrow_seed["reg_alpha"], NARROW_LOG_FACTOR["reg_alpha"],
+                1e-8, 10.0,
+            )
+            rl_lo, rl_hi = _narrow_log(
+                narrow_seed["reg_lambda"], NARROW_LOG_FACTOR["reg_lambda"],
+                1e-8, 10.0,
+            )
+            ne_lo, ne_hi = _narrow_int(
+                narrow_seed["n_estimators"], NARROW_RATIO["n_estimators"], 100, 1500,
+            )
+            lr_lo, lr_hi = _narrow_log(
+                narrow_seed["learning_rate"], NARROW_LOG_FACTOR["learning_rate"],
+                0.005, 0.2,
+            )
+        else:
+            nl_lo, nl_hi = 15, 127
+            md_lo, md_hi = 3, 12
+            mc_lo, mc_hi = 5, 100
+            ss_lo, ss_hi = 0.4, 1.0
+            cs_lo, cs_hi = 0.4, 1.0
+            ra_lo, ra_hi = 1e-8, 10.0
+            rl_lo, rl_hi = 1e-8, 10.0
+            ne_lo, ne_hi = 100, 1500
+            lr_lo, lr_hi = 0.005, 0.2
+
         rank_params = {
-            "num_leaves": trial.suggest_int("num_leaves", 15, 127),
-            "max_depth": trial.suggest_int("max_depth", 3, 12),
-            "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-            "subsample": trial.suggest_float("subsample", 0.4, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0),
-            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+            "num_leaves": trial.suggest_int("num_leaves", nl_lo, nl_hi),
+            "max_depth": trial.suggest_int("max_depth", md_lo, md_hi),
+            "min_child_samples": trial.suggest_int("min_child_samples", mc_lo, mc_hi),
+            "subsample": trial.suggest_float("subsample", ss_lo, ss_hi),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", cs_lo, cs_hi),
+            "reg_alpha": trial.suggest_float("reg_alpha", ra_lo, ra_hi, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", rl_lo, rl_hi, log=True),
         }
-        n_estimators = trial.suggest_int("n_estimators", 100, 1500)
-        learning_rate = trial.suggest_float("learning_rate", 0.005, 0.2, log=True)
+        n_estimators = trial.suggest_int("n_estimators", ne_lo, ne_hi)
+        learning_rate = trial.suggest_float("learning_rate", lr_lo, lr_hi, log=True)
         if args.relevance:
             relevance = args.relevance
+        elif narrow_seed and "relevance" in narrow_seed:
+            # Lock relevance in narrow mode (categorical can't be narrowed)
+            relevance = narrow_seed["relevance"]
         else:
             relevance = trial.suggest_categorical(
                 "relevance", ["linear", "top_heavy", "podium"]
@@ -318,14 +468,35 @@ def main():
         # Strategy thresholds
         if "gap23" in fixed_thresholds:
             gap23_threshold = fixed_thresholds["gap23"]
+        elif narrow_seed and "gap23_threshold" in narrow_seed:
+            g_lo, g_hi = _narrow_abs(
+                narrow_seed["gap23_threshold"], NARROW_ABS_DELTA["gap23_threshold"],
+                0.0, 0.25,
+            )
+            gap23_threshold = trial.suggest_float("gap23_threshold", g_lo, g_hi)
         else:
             gap23_threshold = trial.suggest_float("gap23_threshold", 0.0, 0.25)
+
         if "ev" in fixed_thresholds:
             ev_threshold = fixed_thresholds["ev"]
+        elif narrow_seed and "ev_threshold" in narrow_seed:
+            e_lo, e_hi = _narrow_abs(
+                narrow_seed["ev_threshold"], NARROW_ABS_DELTA["ev_threshold"],
+                -0.3, 0.5,
+            )
+            ev_threshold = trial.suggest_float("ev_threshold", e_lo, e_hi)
         else:
             ev_threshold = trial.suggest_float("ev_threshold", -0.3, 0.5)
+
         if "top3_conc" in fixed_thresholds:
             top3_conc_threshold = fixed_thresholds["top3_conc"]
+        elif narrow_seed and "top3_conc_threshold" in narrow_seed:
+            c_lo, c_hi = _narrow_abs(
+                narrow_seed["top3_conc_threshold"],
+                NARROW_ABS_DELTA["top3_conc_threshold"],
+                0.0, 0.85,
+            )
+            top3_conc_threshold = trial.suggest_float("top3_conc_threshold", c_lo, c_hi)
         else:
             top3_conc_threshold = trial.suggest_float("top3_conc_threshold", 0.0, 0.85)
 
@@ -470,7 +641,24 @@ def main():
             except Exception as err:
                 print(f"WARN: warm-start failed for {model_dir}: {err}")
 
-    study.optimize(objective, n_trials=args.trials, show_progress_bar=True)
+    # Per-trial callback: emit one line for PRUNED / FAIL trials so the run
+    # stays visible once pruning kicks in. Optuna's built-in logger already
+    # emits a line for COMPLETE trials, so we don't duplicate that here.
+    def _trial_callback(study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
+        if trial.state == optuna.trial.TrialState.PRUNED:
+            step = trial.last_step if trial.last_step is not None else "?"
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[I {ts}] Trial {trial.number} pruned at step {step}", flush=True)
+        elif trial.state == optuna.trial.TrialState.FAIL:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[I {ts}] Trial {trial.number} FAILED", flush=True)
+
+    study.optimize(
+        objective,
+        n_trials=args.trials,
+        show_progress_bar=True,
+        callbacks=[_trial_callback],
+    )
 
     # Pruning summary
     n_pruned = sum(
