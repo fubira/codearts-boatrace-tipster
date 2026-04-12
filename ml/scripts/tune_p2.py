@@ -40,6 +40,46 @@ FEATURES = [
 ]
 
 
+def _load_enqueue_params(model_dir: str) -> dict:
+    """Load HP + strategy thresholds from model_meta.json for warm-start.
+
+    Returns a dict compatible with Optuna's enqueue_trial(). Only includes
+    parameters that are part of the search space.
+    """
+    meta_path = Path(model_dir) / "ranking" / "model_meta.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(f"No model_meta.json at {meta_path}")
+    with open(meta_path) as f:
+        meta = json.load(f)
+
+    hp = meta.get("hyperparameters", {})
+    strategy = meta.get("strategy", {})
+
+    # Core HP from the suggest_* calls in objective()
+    params = {
+        "num_leaves": hp["num_leaves"],
+        "max_depth": hp["max_depth"],
+        "min_child_samples": hp["min_child_samples"],
+        "subsample": hp["subsample"],
+        "colsample_bytree": hp["colsample_bytree"],
+        "reg_alpha": hp["reg_alpha"],
+        "reg_lambda": hp["reg_lambda"],
+        "n_estimators": hp["n_estimators"],
+        "learning_rate": hp["learning_rate"],
+    }
+    # Strategy thresholds (included only if they're in the Optuna search space)
+    if "top3_conc_threshold" in strategy and strategy["top3_conc_threshold"] is not None:
+        params["top3_conc_threshold"] = strategy["top3_conc_threshold"]
+    if "gap23_threshold" in strategy and strategy["gap23_threshold"] is not None:
+        params["gap23_threshold"] = strategy["gap23_threshold"]
+    if "ev_threshold" in strategy and strategy["ev_threshold"] is not None:
+        params["ev_threshold"] = strategy["ev_threshold"]
+    # Relevance scheme if it's in the search space
+    if "relevance_scheme" in hp:
+        params["relevance"] = hp["relevance_scheme"]
+    return params
+
+
 def _load_trifecta_odds(db_path: str) -> dict:
     conn = get_connection(db_path)
     rows = conn.execute(
@@ -205,6 +245,10 @@ def main():
                         help="Number of trials before pruning starts (default: 20)")
     parser.add_argument("--output-json", default="models/tune_result/trials.json",
                         help="Path to save all trial details as JSON")
+    parser.add_argument("--from-model", default=None,
+                        help="Comma-separated model directories to seed the search "
+                             "with. HP is read from model_meta.json and enqueued as "
+                             "initial trials. Example: models/p2_v1,models/aa_294")
     args = parser.parse_args()
 
     # Parse fixed thresholds
@@ -398,6 +442,25 @@ def main():
         sampler=optuna.samplers.TPESampler(seed=args.seed),
         pruner=pruner,
     )
+
+    # Seed search with existing models' HPs (enqueued as initial trials)
+    if args.from_model:
+        for model_dir in args.from_model.split(","):
+            model_dir = model_dir.strip()
+            try:
+                params = _load_enqueue_params(model_dir)
+                # Drop params that are fixed by --fix-thresholds
+                for k in list(params.keys()):
+                    short = k.replace("_threshold", "")
+                    if short in fixed_thresholds:
+                        del params[k]
+                # Drop relevance if --relevance fixed
+                if args.relevance and "relevance" in params:
+                    del params["relevance"]
+                study.enqueue_trial(params)
+                print(f"Warm-start enqueued: {model_dir}")
+            except Exception as err:
+                print(f"WARN: warm-start failed for {model_dir}: {err}")
 
     study.optimize(objective, n_trials=args.trials, show_progress_bar=True)
 

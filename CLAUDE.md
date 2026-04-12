@@ -77,12 +77,17 @@ predict_trifecta.py / backtest_trifecta.py / tune_trifecta.py
 
 ### server-tune（`./scripts/server-tune.sh`）
 
+P2 戦略 Optuna 探索をサーバで実行。
+
 ```
 --setup                          # 初回セットアップ
---model p2 --trials N            # Optuna 実行
+--trials N                       # Optuna 実行
 --watch                          # ログ監視
---fetch                          # 結果取得
+--fetch                          # 結果取得（log + trials.json）
 --fix-thresholds "gap23=0.13,ev=0.0,top3_conc=0.7"  # 閾値固定でハイパラのみ探索
+--from-model models/p2_v1,models/aa_294  # 既存モデルHPをseedとして投入
+--relevance podium               # relevance scheme 固定
+--seed N                         # random seed (default: 42)
 ```
 
 ### npm scripts

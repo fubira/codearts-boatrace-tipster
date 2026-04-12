@@ -35,19 +35,14 @@ if [ -f "$CONF" ]; then
 fi
 
 # --- Defaults ---
-MODEL="trifecta"  # trifecta | ranking | boat1
 TRIALS=100
 FOLDS=4
 FOLD_MONTHS=2
 RELEVANCE=""
 SEED=42
-TRAIN_START=""
-WARM_START=false
+FROM_MODEL=""
 OBJECTIVE=""
-BETA=""
-WITH_R2=false
 FIX_THRESHOLDS=""
-VALIDATE_TOP=0
 
 SETUP_ONLY=false
 FOREGROUND=false
@@ -71,22 +66,19 @@ while [[ $# -gt 0 ]]; do
     --status) STATUS_ONLY=true; shift ;;
     --fetch) FETCH_ONLY=true; shift ;;
     --skip-sync) SKIP_SYNC=true; shift ;;
-    --model) MODEL="$2"; shift 2 ;;
     --trials) TRIALS="$2"; shift 2 ;;
     --folds) FOLDS="$2"; shift 2 ;;
     --fold-months) FOLD_MONTHS="$2"; shift 2 ;;
     --relevance) RELEVANCE="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
-    --train-start) TRAIN_START="$2"; shift 2 ;;
-    --warm-start) WARM_START=true; shift ;;
+    --from-model) FROM_MODEL="$2"; shift 2 ;;
     --objective) OBJECTIVE="$2"; shift 2 ;;
-    --beta) BETA="$2"; shift 2 ;;
-    --with-r2) WITH_R2=true; shift ;;
     --fix-thresholds) FIX_THRESHOLDS="$2"; shift 2 ;;
-    --validate-top) VALIDATE_TOP="$2"; shift 2 ;;
     --help)
       cat <<'HELP'
 Usage: ./scripts/server-tune.sh [options]
+
+Runs P2 strategy Optuna tuning (tune_p2.py) on the remote server.
 
 Modes:
   (default)         サーバーでnohup実行（即座に返る）
@@ -97,19 +89,14 @@ Modes:
   --setup           初回セットアップ（uv + workspace + deps）
 
 Optuna options:
-  --model M         モデル: trifecta | p2 | ranking | boat1 (default: trifecta)
   --trials N        trial数 (default: 100)
   --folds N         WF-CV fold数 (default: 4)
   --fold-months N   fold幅（月数、default: 2）
-  --relevance R     relevance scheme (default: top_heavy, ranking only)
+  --relevance R     relevance scheme: linear|top_heavy|podium
   --seed N          random seed (default: 42)
-  --train-start D   学習開始日 (default: all)
-  --warm-start      現行model_metaのパラメータで初期化
-  --with-r2         rank-2フォールバック有効化（trifecta, default: 無効）
+  --objective O     tune_p2 objective: growth | kelly (default: growth)
   --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "gap23=0.13,ev=0.0,top3_conc=0.7")
-  --validate-top N  探索後にTop N trialをOOS検証 (Phase 1.5, default: 0)
-  --objective O     boat1 objective: ev_roi | upset_fbeta (default: ev_roi)
-  --beta F          F-beta for upset_fbeta (default: 1.5)
+  --from-model D    既存モデルのHPを初期trialとして投入（カンマ区切り可能）
 
 General:
   --skip-sync       コード・データ同期スキップ
@@ -259,78 +246,22 @@ _fetch() {
 # ============================================================
 _build_cmd() {
   local cmd
-  case "$MODEL" in
-    ranking)
-      cmd="uv run --directory ml python -m scripts.train_eval"
-      cmd+=" --mode optuna"
-      cmd+=" --relevance ${RELEVANCE:-top_heavy}"
-      ;;
-    boat1)
-      cmd="uv run --directory ml python -m scripts.train_boat1_binary"
-      cmd+=" --mode optuna"
-      if [ -n "$OBJECTIVE" ]; then
-        cmd+=" --objective ${OBJECTIVE}"
-      fi
-      if [ -n "$BETA" ]; then
-        cmd+=" --beta ${BETA}"
-      fi
-      ;;
-    p2)
-      cmd="uv run --directory ml python -m scripts.tune_p2"
-      cmd+=" --trials ${TRIALS}"
-      cmd+=" --n-folds ${FOLDS}"
-      cmd+=" --fold-months ${FOLD_MONTHS}"
-      cmd+=" --seed ${SEED}"
-      if [ -n "$OBJECTIVE" ]; then
-        cmd+=" --objective ${OBJECTIVE}"
-      fi
-      if [ -n "$RELEVANCE" ]; then
-        cmd+=" --relevance ${RELEVANCE}"
-      fi
-      if [ -n "$FIX_THRESHOLDS" ]; then
-        cmd+=" --fix-thresholds '${FIX_THRESHOLDS}'"
-      fi
-      echo "$cmd"
-      return
-      ;;
-    trifecta)
-      cmd="uv run --directory ml python -m scripts.tune_trifecta"
-      cmd+=" --trials ${TRIALS}"
-      cmd+=" --n-folds ${FOLDS}"
-      cmd+=" --fold-months ${FOLD_MONTHS}"
-      cmd+=" --seed ${SEED}"
-      if [ "$WARM_START" = true ]; then
-        cmd+=" --warm-start"
-      fi
-      if [ -n "$OBJECTIVE" ]; then
-        cmd+=" --objective ${OBJECTIVE}"
-      fi
-      if [ -n "$RELEVANCE" ]; then
-        cmd+=" --relevance ${RELEVANCE}"
-      fi
-      if [ "$WITH_R2" = true ]; then
-        cmd+=" --with-r2"
-      fi
-      if [ -n "$FIX_THRESHOLDS" ]; then
-        cmd+=" --fix-thresholds '${FIX_THRESHOLDS}'"
-      fi
-      if [ "$VALIDATE_TOP" -gt 0 ] 2>/dev/null; then
-        cmd+=" --validate-top ${VALIDATE_TOP}"
-      fi
-      echo "$cmd"
-      return
-      ;;
-    *)
-      echo "ERROR: unknown model '${MODEL}' (use: ranking | boat1 | trifecta)" >&2
-      exit 1
-      ;;
-  esac
-  cmd+=" --n-trials ${TRIALS}"
+  cmd="uv run --directory ml python -m scripts.tune_p2"
+  cmd+=" --trials ${TRIALS}"
   cmd+=" --n-folds ${FOLDS}"
   cmd+=" --fold-months ${FOLD_MONTHS}"
   cmd+=" --seed ${SEED}"
-  if [ -n "$TRAIN_START" ]; then
-    cmd+=" --start-date ${TRAIN_START}"
+  if [ -n "$OBJECTIVE" ]; then
+    cmd+=" --objective ${OBJECTIVE}"
+  fi
+  if [ -n "$RELEVANCE" ]; then
+    cmd+=" --relevance ${RELEVANCE}"
+  fi
+  if [ -n "$FIX_THRESHOLDS" ]; then
+    cmd+=" --fix-thresholds '${FIX_THRESHOLDS}'"
+  fi
+  if [ -n "$FROM_MODEL" ]; then
+    cmd+=" --from-model '${FROM_MODEL}'"
   fi
   echo "$cmd"
 }
@@ -372,7 +303,7 @@ EOF
   local pid
   pid=$(remote "cat ${REMOTE_PID_FILE}")
   log "Started on ${REMOTE_HOSTNAME} (PID: ${pid})"
-  log "  model=${MODEL} trials=${TRIALS} folds=${FOLDS}"
+  log "  trials=${TRIALS} folds=${FOLDS}"
   log ""
   log "Check progress:  ./scripts/server-tune.sh --status"
   log "Watch log:       ./scripts/server-tune.sh --watch"
