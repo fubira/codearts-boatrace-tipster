@@ -14,16 +14,18 @@ bun run start scrape -d 2025-01-15 -s 04    # 会場指定（平和島=04）
 bun run start scrape -d 2025-01-15 -r 1,2,3 # レース番号指定
 ```
 
-取得済みレースは自動スキップ。`--force` で再取得（キャッシュも更新）、`--cache-only` でキャッシュから再パース、`--from-cache` でHTTP fetchなしのキャッシュ専用投入、`--dry-run` で確認のみ。
+取得済みレースは自動スキップ。`--force` で再取得（キャッシュも更新）、
+`--cache-only` でキャッシュから再パース、`--from-cache` で HTTP fetch なしの
+キャッシュ専用投入、`--dry-run` で確認のみ。
 
 ## データ管理
 
 ```bash
-bun run start data test           # DB 整合性チェック（孤立レコード、重複、月次完全性）
-bun run start data fingerprint    # DB 統計表示（テーブル件数、日付範囲）
-bun run start data verify         # ローカル vs サーバ比較（スキーマ、件数、ID sum）
-bun run start data sync           # サーバからプル（DB + キャッシュ）
-bun run start data sync --push    # ローカルからサーバへプッシュ（DB のみ）
+bun run start data test           # DB 整合性チェック
+bun run start data fingerprint    # DB 統計表示
+bun run start data verify         # ローカル vs サーバ比較
+bun run start data sync           # サーバからプル（DB + キャッシュ + snapshot）
+bun run start data sync --push    # ローカルからサーバへプッシュ
 bun run start data sync --db-only      # DB のみ同期
 bun run start data sync --cache-only   # キャッシュのみ同期
 bun run start data sync --dry-run      # 実行せず確認のみ
@@ -35,178 +37,156 @@ bun run start backup              # ローカルバックアップ（7 世代ロ
 ### 外部バックアップ
 
 ```bash
-./scripts/backup.sh /path/to/dest                 # フル（DB + キャッシュ）
-./scripts/backup.sh --db-only /path/to/dest        # DB のみ
-./scripts/backup.sh --rotate 21 --db-only /path/to/dest  # 21 日ローテーション
+./scripts/backup.sh /path/to/dest                       # フル
+./scripts/backup.sh --db-only /path/to/dest             # DB のみ
+./scripts/backup.sh --rotate 21 --db-only /path/to/dest # 21 世代ローテーション
 ```
 
-## ML: 3連単戦略（メイン）
+## ML: P2 戦略
 
-### ハイパラ探索（Optuna）
+P2 戦略は LightGBM LambdaRank モデル単独。1号艇が1着になるレースで2-3着の
+P2 パターン（最大2点）を購入する3連単戦略。
 
-`tune_trifecta.py` が WF-CV で3連単 X-allflow 戦略の Sharpe を最大化する。結果は model_meta.json に自動保存。
+### モデル管理
+
+```
+ml/models/
+├── active.json     ← 本番モデル指定（{"model": "p2_v2"}）
+├── .run-counter    ← dev model 命名カウンタ（整数1個）
+├── p2_v2/          ← 本番モデル（active.json で参照）
+├── p2_v1/          ← 旧本番モデル（rollback 用）
+├── aa_294/         ← dev candidate（prefix は自動採番）
+├── ab_*/           ← 別 tune run の dev candidate
+└── tune_result/    ← Optuna 探索結果
+```
+
+本番モデルの切替は `active.json` を 1 行書き換えるだけ。コード変更不要。
+
+### Optuna ハイパラ探索
+
+サーバ側 (server-tune.sh) で並列実行する。各 tune は local の `.run-counter`
+から prefix を 1 つ消費し、由来する dev model 全てがその prefix を共有する。
 
 ```bash
-# ローカル実行
-uv run --directory ml python -m scripts.tune_trifecta --trials 100
+./scripts/server-tune.sh --setup                       # 初回セットアップ
+./scripts/server-tune.sh --trials 100                  # 通常探索（広域）
+./scripts/server-tune.sh --trials 100 --from-model models/p2_v2 --narrow
+                                                       # seed 周辺を集中探索
+./scripts/server-tune.sh --status                      # 進捗確認
+./scripts/server-tune.sh --watch                       # ログ監視（完了で自動終了）
+./scripts/server-tune.sh --fetch                       # 結果ダウンロード
 
-# サーバ実行（推奨）
-./scripts/server-tune.sh --model trifecta --trials 100
+# よく使うオプション
+--fix-thresholds "gap23=0.13,ev=0.0,top3_conc=0.6"    # 閾値を固定して HP のみ探索
+--from-model models/p2_v2                              # 既存モデル HP を warm-start
+--narrow                                               # --from-model 周辺だけを探索
+--n-jobs 2                                             # 並列 trial 数（default: 2）
+--num-threads 4                                        # trial あたり LightGBM threads
+--seed N                                               # 明示指定で再現性確保
+--relevance podium                                     # relevance scheme 固定
+--objective growth|kelly                               # 最適化目的（default: growth）
 ```
 
-### 本番モデル学習
+**注意**:
+- サーバでの ML 実行は必ず `server-tune.sh` 経由で行う。直接 ssh で `uv run`
+  を叩くとコード不整合が発生する
+- `--seed` は無指定なら自動ランダム。明示指定は再現性確保したい時のみ
+- `--n-jobs > 1` はサーバ専用（`BOATRACE_TUNE_PARALLEL=1` env var 必須、
+  server-tune.sh が自動セット）
 
-model_meta.json のハイパラで学習し、モデルを保存する。
+### dev モデルの学習・昇格
+
+tune の trials.json から特定 trial を選んで本格学習する。tune の `run_prefix`
+を自動継承するので `--prefix` 指定は通常不要。
 
 ```bash
-# ランキングモデル
-uv run --directory ml python -m scripts.train_ranking --save --model-meta models/trifecta_v1/ranking
+# tune の上位 trial を dev モデルとして保存
+cd ml && uv run python -m scripts.train_dev_model \
+  --tune-log logs/tune/2026-04-12_2153_server-tune.trials.json \
+  --trials 294,266,28
+# → models/ab_294/, ab_266/, ab_28/ が作成される（ab は trials.json の run_prefix）
 
-# 1号艇二値分類
-uv run --directory ml python -m scripts.train_boat1_binary --mode single
+# dev モデルの一覧
+uv run python -m scripts.train_dev_model --list
 ```
 
-### バックテスト
+本番昇格は `ml/models/active.json` の `model` フィールドを書き換えるだけ:
 
-保存済み本番モデルで OOS 期間を評価する。WF-CV モードはハイパラ探索の検証専用。
+```json
+{"model": "ab_294"}
+```
+
+サーバ側に同期するときは scp + active.json 編集:
 
 ```bash
-# 期間指定（本番モデルをロード、再学習しない）
-uv run --directory ml python -m scripts.backtest_trifecta --from 2026-01-01 --to 2026-04-08
-
-# WF-CV（ハイパラ探索の検証専用）
-uv run --directory ml python -m scripts.backtest_trifecta --wfcv
-
-# EV 閾値スイープ
-uv run --directory ml python -m scripts.backtest_trifecta --ev-sweep
-
-# オプション
---model-dir models/trifecta_v1   # モデルディレクトリ（デフォルト）
---b1-threshold 0.42              # model_meta から自動読み込み
---ev-threshold 0.36              # model_meta から自動読み込み
+scp -r ml/models/ab_294 one:/home/one/boatrace-tipster/ml/models/
+ssh one "echo '{\"model\": \"ab_294\"}' > /home/one/boatrace-tipster/ml/models/active.json"
 ```
 
-### モンテカルロシミュレーション
-
-保存済みモデルの OOS 統計に基づく収益・リスク予測。
+### バックテスト・OOS 評価
 
 ```bash
-# 保存済みモデルの OOS データから経験的パラメータを収集して実行
-uv run --directory ml python -m scripts.simulate_monte_carlo --from-backtest
+# 期間 OOS 評価（active モデル使用、daily 単位の summary）
+cd ml && uv run python -m scripts.daily_p2_summary --from 2026-01-01 --to 2026-04-12
 
-# 閾値比較
-uv run --directory ml python -m scripts.simulate_monte_carlo --from-backtest \
-  --compare "0.42:0.20,0.42:0.30,0.42:0.36" --all-flow
-
-# パラメータ変更
-uv run --directory ml python -m scripts.simulate_monte_carlo --bankroll 100000 --bet-cap 3000
+# 別モデルとの比較
+cd ml && uv run python -m scripts.daily_p2_summary --from 2026-01-01 --to 2026-04-12 \
+  --model-dir models/p2_v1
 ```
 
-### サーバーでの Optuna 実行
+`daily_p2_summary` は2つの path で評価する:
+- **確定オッズ path**: 全レースを `race_odds`（最終確定）で評価。サンプル豊富
+- **T-5 path**: `race_odds_snapshots` の T-5 オッズで評価（runner の予測時点を再現）
 
-計算量の大きい Optuna 探索はサーバーで実行する。`server-tune.sh` がコード・DB同期 → nohup実行 → ログ管理を一括で行う。
+### Predict (T-5 再現含む)
 
 ```bash
-./scripts/server-tune.sh --setup                        # 初回セットアップ
-./scripts/server-tune.sh --model trifecta --trials 100  # 3連単戦略の探索
-./scripts/server-tune.sh --model boat1 --trials 100     # 二値分類の探索
-./scripts/server-tune.sh --status                       # 進捗確認
-./scripts/server-tune.sh --watch                        # ログ監視（完了で自動終了）
-./scripts/server-tune.sh --fetch                        # 結果ダウンロード
+# 本日の予測（active モデル）
+bun run start predict -d 2026-04-13
 
-# オプション
---skip-sync            # コード・データ同期スキップ（DB を手動で送った場合等）
---warm-start           # 現行 model_meta のパラメータで初期化
---seed 43              # 乱数シード（デフォルト: 42、変更で探索範囲拡大）
---foreground           # SSH 接続維持モード
+# T-5 snapshot で再現（runner の T-5 判断と一致）
+bun run start predict -d 2026-04-13 --use-snapshots
+
+# 別モデルで予測
+bun run start predict -d 2026-04-13 --model-dir ml/models/p2_v1
+
+# JSON 出力
+bun run start predict -d 2026-04-13 --json
 ```
-
-**注意**: サーバーでの ML 実行は必ず `server-tune.sh` 経由で行う。直接 ssh で `uv run` を叩くとコード不整合が発生する。
 
 ## ML: 特徴量パイプライン
 
-### データフロー
+P2 戦略では2つの特徴量構築 path がある:
 
-```
-SQLite DB
-  ↓  DuckDB READ_ONLY ATTACH
-全データ読み込み (races + race_entries + race_odds)
-  ↓
-歴史的特徴量（leak-safe: cum_all - cum_daily）
-  ↓
-ローリング特徴量（cumsum+shift O(n)）
-  ↓
-開催内特徴量（tournament_id ベース）
-  ↓
-漏洩特徴量（gate_bias, upset_rate）
-  ↓
-カテゴリカルエンコーディング
-  ↓  日付フィルタ
-相対特徴量（レース内 z-score）
-  ↓
-交互作用特徴量（class×boat, wind×boat 等）
-  ↓
-build_features_df()  → DataFrame 全列保持（二値分類用）
-  ↓  prepare_feature_matrix()
-ランキング用         → (X, y, meta) 24特徴量
-  ↓  reshape_to_boat1()
-1号艇二値分類用      → (X_b1, y_b1, meta_b1) 28特徴量
-```
+- **フルパイプライン** (`build_features_df`): DB 全件読み込み → 累積統計
+  → 日付フィルタ → 相対・交互作用特徴量。学習・バックテスト用。初回 ~20秒、
+  2回目以降は pickle キャッシュで ~1秒
+- **snapshot パイプライン** (`build_features_from_snapshot`): 事前計算済み
+  統計 (`data/stats-snapshots/YYYY-MM-DD.db`) と当日エントリの JOIN。
+  推論用（runner が使う）。~4秒
 
-### 特徴量の追加方法
-
-1. 歴史的特徴量: `features.py` に `_add_*()` 関数を追加し、`build_features_df()` 内で呼び出す
-2. 相対/交互作用特徴量: `feature_config.py` の `compute_relative_features()` / `compute_interaction_features()` に追加
-3. ランキングモデル用: `FEATURE_COLS` の末尾に追加（順序変更禁止）
-4. 二値分類用: `boat1_features.py` の `BOAT1_FEATURE_COLS` と `reshape_to_boat1()` に追加
-
-### Leak-safe パターン
-
-同一日レースの結果漏洩を防ぐため、全ての歴史的特徴量で以下のパターンを使う:
-
-```python
-prior = cum_all - cum_daily      # 同一日を除外
-prior_count = count_all - count_daily
-result = prior / prior_count      # NaN if no prior data
-```
-
-### 漏洩特徴量（gate_bias / upset_rate）
-
-学習時は漏洩あり（intraday cumsum）で木構造を改善し、評価時は `neutralize_leaked_features()` でレース内 mean に置換する。学習時の漏洩を除去してはならない。
-
-## EV 戦略（3連単 X-allflow）
-
-1号艇飛び予測時、非1号艇の1着固定 × 2-3着全流し（20点）。
-
-```
-1. b1_prob < b1_threshold → 1号艇が負けると判断
-2. ランキングモデルの softmax 確率で1着 X を予測（非1号艇の最上位）
-3. EV = model_prob / market_prob × 0.75 - 1
-4. EV >= ev_threshold で購入
-5. 20点: X-{全}-{全}（1着 X 固定、2-3着全流し）
-```
-
-- 閾値は model_meta.json から読み込み（b1_threshold, ev_threshold）
-- 評価ロジックは `evaluate_trifecta_strategy()` に一本化（tune, backtest, MC が共用）
-- オッズは特徴量に含めない（モデルは独立に確率推定）
-
-## Stats Snapshot（推論高速化）
-
-累積統計を事前計算し、予測時の DB フルスキャン（~30-60 秒）を ~4 秒に短縮する。runner 起動時に自動構築される。
+### Stats snapshot
 
 ```bash
 # snapshot 構築（through-date = 予測日の前日）
-uv run --directory ml python -m scripts.build_snapshot --through-date 2026-04-01
+cd ml && uv run python -m scripts.build_snapshot --through-date 2026-04-12
 
-# snapshot を使った高速予測
-uv run --directory ml python -m scripts.predict_trifecta --date 2026-04-02 \
-  --snapshot data/stats-snapshots/2026-04-01.db
+# snapshot とフルパイプラインの一致検証
+cd ml && uv run python -m scripts.verify_snapshot --date 2026-04-13
 
-# snapshot の正確性検証（フルパイプラインと全カラム比較）
-uv run --directory ml python -m scripts.verify_snapshot --date 2026-04-02
+# 3 path 一貫性テスト（backtest / predict full / predict snapshot）
+cd ml && PYTHONPATH=scripts:$PYTHONPATH uv run python scripts/test_predict_backtest_consistency.py
 ```
 
-snapshot は `data/stats-snapshots/YYYY-MM-DD.db`（~51 MB）に日付別保存。30 日ローテーション。
+snapshot は `data/stats-snapshots/YYYY-MM-DD.db`（~51 MB）に日付別保存、
+runner 起動時に自動構築・30 日ローテーション。
+
+### 漏洩管理
+
+- **予測時に不明な情報は特徴量に使わない**: `course_number`（実際の進入コース）
+  は `boat_number` で代替
+- `gate_bias` / `upset_rate` は学習時に漏洩あり（intraday）で木構造を改善し、
+  評価/predict 時は `neutralize_leaked_features()` でレース内 mean に置換
 
 ## 開発コマンド
 
@@ -218,5 +198,5 @@ bun run test          # TS テスト
 bun run format        # フォーマット
 
 # Python テスト
-uv run --directory ml pytest
+cd ml && uv run pytest
 ```

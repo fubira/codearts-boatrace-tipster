@@ -1,14 +1,14 @@
 # boatrace-tipster
 
-競艇予想AI - 機械学習（LightGBM）による競艇予想ソフトウェア
+競艇予想AI - 機械学習（LightGBM LambdaRank）による P2 三連単戦略
 
 ## 技術スタック
 
 | レイヤー | 技術 |
 |---------|------|
 | CLI・データ収集 | TypeScript, Bun, Cheerio |
-| データベース | SQLite (better-sqlite3, WAL), DuckDB (分析クエリ) |
-| ML | Python, uv, LightGBM (Binary / LambdaRank) |
+| データベース | SQLite (WAL), DuckDB (分析クエリ) |
+| ML | Python, uv, LightGBM LambdaRank, Optuna |
 | デプロイ | Docker, GHCR, watchtower |
 
 ## セットアップ
@@ -22,17 +22,14 @@ cd ml && uv sync
 
 ```bash
 # 1. データ収集
-bun run start scrape -m 202501                # レース + 展示タイム
-bun run start scrape-odds -m 202501           # オッズ
+bun run start scrape -m 202601           # 月単位
+bun run start scrape-odds -m 202601
 
-# 2. モデル学習・保存
-uv run --directory ml python -m scripts.train_boat1_binary --save
+# 2. 予測（active モデルから自動解決）
+bun run start predict -d 2026-04-12
 
-# 3. 予測
-bun run start predict -d 2026-04-02
-
-# 4. バックテスト
-bun run start analyze --from 2026-03-19 --to 2026-04-03
+# 3. 自動運用デーモン
+bun run start run                         # DRY RUN
 ```
 
 各コマンドの詳細は `--help` で確認できる。
@@ -71,41 +68,39 @@ bun run start backup              # ローカルバックアップ（7 世代保
 ## 予測・分析
 
 ```bash
-# モデル保存（初回 or 再学習時）
-uv run --directory ml python -m scripts.train_boat1_binary --save
+# 指定日の予測（active モデルを ml/models/active.json から解決）
+bun run start predict -d 2026-04-12
+bun run start predict -d 2026-04-12 --json          # JSON 出力
+bun run start predict -d 2026-04-12 --use-snapshots # T-5 snapshot odds で再現
 
-# 指定日の予測
-bun run start predict -d 2026-04-02          # テーブル表示
-bun run start predict -d 2026-04-02 --json   # JSON 出力
-bun run start predict -d 2026-04-02 --all    # 全レース表示
-
-# 期間バックテスト
-bun run start analyze --from 2026-03-19 --to 2026-04-03
-bun run start analyze --from 2026-03-19 --to 2026-04-03 --ev-threshold 20  # EV≥+20% のみ
+# OOS バックテスト（Python、active モデル）
+cd ml && uv run python -m scripts.daily_p2_summary --from 2026-01-01 --to 2026-04-12
 ```
 
-## 自動運用（デーモン）
+## 自動運用デーモン
 
 ```bash
-bun run start run                             # DRY RUN（デフォルト）
-bun run start run --ev-threshold 20           # EV≥+20% で厳選
-bun run start run --bankroll 100000 --bet-cap 5000
-bun run start run --live                      # LIVE モード（将来の自動購入用）
+bun run start run                                   # DRY RUN（デフォルト）
+bun run start run --bet-cap 30000 --bankroll 70000  # サイジング指定
+bun run start run --live                            # LIVE モード（将来の自動購入用）
 ```
 
-締切時刻ベースで自動データ取得 → 予測 → Slack 通知を行う。`.env` に `SLACK_WEBHOOK_URL` を設定すると Slack に通知が飛ぶ。未設定時はコンソール出力。
+締切時刻ベースで自動データ取得 → T-5 で predict → T-1 で drift 判定 → Slack 通知。
+`.env` に `SLACK_WEBHOOK_URL` を設定すると Slack に通知が飛ぶ（未設定時はコンソール出力）。
 
-## ML 学習
+## ML 学習・チューニング
+
+サーバ側の Optuna 探索 (server-tune.sh) で並列実行・自動 prefix 採番される。
 
 ```bash
-uv run --directory ml python -m scripts.train_boat1_binary --mode wfcv     # 二値分類
-uv run --directory ml python -m scripts.train_boat1_binary --mode optuna --n-trials 100
-uv run --directory ml python -m scripts.train_eval --mode wfcv             # ランキング
-# サーバー Optuna
-./scripts/server-tune.sh --model boat1 --trials 100  # 二値分類
-./scripts/server-tune.sh --trials 100                 # ランキング
-./scripts/server-tune.sh --watch                      # ログ監視
-./scripts/server-tune.sh --fetch                      # 結果取得
+./scripts/server-tune.sh --trials 100                # 通常探索
+./scripts/server-tune.sh --trials 100 --from-model models/p2_v2 --narrow
+./scripts/server-tune.sh --watch                     # ログ監視
+./scripts/server-tune.sh --fetch                     # 結果取得
+
+# 上位 trial を dev モデルとして学習
+cd ml && uv run python -m scripts.train_dev_model --tune-log <log> --trials 294
+# 本番昇格は ml/models/active.json を書き換えるだけ
 ```
 
 ## プロジェクト構造
@@ -117,17 +112,19 @@ src/
     scraper/        スクレイピング（プラグイン式、gzip キャッシュ）
     database/       SQLite 管理（スキーマ、マイグレーション、整合性チェック）
     runner/         自動運用デーモン（スケジューラ、Slack 通知）
-  shared/           共有モジュール（ロガー、設定）
-ml/                 Python ML エンジン（uv 管理、LightGBM）
-  models/           保存済みモデル（boat1/model.pkl）
+  shared/           共有モジュール（ロガー、設定、active model 解決）
+ml/
+  models/
+    active.json     本番モデル指定（{"model": "p2_v2"}）
+    .run-counter    dev model 命名カウンタ（整数1個）
+    p2_v2/          本番モデル（active.json で参照）
+    aa_294/         dev candidate（prefix は自動採番）
   src/boatrace_tipster_ml/
     features.py     特徴量パイプライン（leak-safe cumulative、ローリング）
-    feature_config.py  特徴量定義、エンコーディング、相対/交互作用特徴量
+    snapshot_features.py  事前計算済み統計からの高速特徴量構築
     model.py        LambdaRank モデル、時系列分割
-    evaluate.py     ランキング指標、配当 ROI シミュレーション
-    boat1_features.py  1号艇二値分類用データ変形（6行→1行/レース）
-    boat1_model.py  LGBMClassifier、EV 分析、閾値チューニング
-  scripts/          学習・分析スクリプト
+    registry.py     active.json + .run-counter ヘルパ
+  scripts/          学習・チューニング・推論スクリプト
 scripts/            運用スクリプト（backup, server-tune 等）
 data/               SQLite DB、HTML キャッシュ、バックアップ
 ```

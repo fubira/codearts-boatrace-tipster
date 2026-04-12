@@ -100,7 +100,7 @@ Optuna options:
   --folds N         WF-CV fold数 (default: 4)
   --fold-months N   fold幅（月数、default: 2）
   --relevance R     relevance scheme: linear|top_heavy|podium
-  --seed N          random seed (default: 42)
+  --seed N          random seed (default: 自動ランダム、明示で再現性確保)
   --objective O     tune_p2 objective: growth | kelly (default: growth)
   --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "gap23=0.13,ev=0.0,top3_conc=0.7")
   --from-model D    既存モデルのHPを初期trialとして投入（カンマ区切り可能）
