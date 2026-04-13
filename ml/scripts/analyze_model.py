@@ -278,10 +278,10 @@ def main() -> None:
     conc = st.get("top3_conc_threshold")
     gap23 = st.get("gap23_threshold")
     ev = st.get("ev_threshold")
-    print(
-        f"Strategy: conc>={conc:.4f} gap23>={gap23:.3f} ev>={ev:.3f}"
-        if conc is not None else "Strategy: (no strategy section)"
-    )
+    if conc is not None and gap23 is not None and ev is not None:
+        print(f"Strategy: conc>={conc:.4f} gap23>={gap23:.3f} ev>={ev:.3f}")
+    else:
+        print("Strategy: (incomplete strategy section)")
     excluded = st.get("excluded_stadiums") or []
     if excluded:
         excl_names = [stadium_names.get(s, str(s)) for s in excluded]

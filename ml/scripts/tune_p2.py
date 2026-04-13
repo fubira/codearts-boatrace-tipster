@@ -759,18 +759,24 @@ def main():
     # Inherit excluded_stadiums from the first --from-model seed (if any).
     # Stadium exclusions are a strategic decision decoupled from HP tuning,
     # so they should persist across retunes rather than being dropped.
+    # Emit a warning on read failure: a silent drop here would recreate the
+    # same "invisible information loss" failure mode tracked in knowledge/.
     if args.from_model:
         first_seed = args.from_model.split(",")[0].strip()
-        try:
-            seed_meta_path = Path(first_seed) / "ranking" / "model_meta.json"
-            if seed_meta_path.exists():
+        seed_meta_path = Path(first_seed) / "ranking" / "model_meta.json"
+        if seed_meta_path.exists():
+            try:
                 with open(seed_meta_path) as f:
                     seed_meta = json.load(f)
                 seed_excluded = seed_meta.get("strategy", {}).get("excluded_stadiums")
                 if seed_excluded:
                     strategy["excluded_stadiums"] = seed_excluded
-        except (OSError, json.JSONDecodeError):
-            pass
+            except (OSError, json.JSONDecodeError) as err:
+                print(
+                    f"WARN: failed to inherit excluded_stadiums from "
+                    f"{seed_meta_path}: {err}",
+                    file=sys.stderr,
+                )
     save_model_meta(
         meta_dir,
         feature_columns=FEATURES,
