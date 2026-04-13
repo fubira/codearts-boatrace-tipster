@@ -2,9 +2,18 @@
 
 Pulls parameters (hit_rate / bets_per_day / tickets_per_bet / payout
 distribution) from analyze_model's evaluation of the active model on the
-given OOS period, then runs the generic simulate_once engine. Never use an
-analysis window that includes training data: use --from 2026-01-01 or later
-for p2_v2 (end_date = 2026-01-01).
+given OOS period, then runs a P2-specific simulate engine.
+
+The engine differs from the legacy simulate_monte_carlo (X-allflow, 20
+tickets/bet) in two ways:
+- `tickets_per_bet` is fractional (~1.3 for P2 adaptive 1-2 tickets). We
+  sample per-bet ticket count via Bernoulli on the fractional part instead
+  of rounding to int, so cost scaling is accurate
+- Payout scales with `unit` (not `n_tickets * unit`) because only one of
+  the 1-2 P2 tickets can hit a given outcome
+
+Never use an analysis window that includes training data: use
+`--from 2026-01-01` or later for p2_v2 (end_date = 2026-01-01).
 
 Usage (module invocation — no PYTHONPATH hacks):
     cd ml && uv run python -m scripts.simulate_p2_mc --from 2026-01-01 --to "$(date +%F)"
@@ -25,9 +34,120 @@ from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import load_model, load_model_meta
 from boatrace_tipster_ml.registry import get_active_model_dir
 from scripts.analyze_model import evaluate_period
-from scripts.simulate_monte_carlo import simulate_once
 
 FIELD_SIZE = 6
+
+
+def simulate_p2_once(
+    n_days: int,
+    rng: np.random.Generator,
+    *,
+    hit_rate: float,
+    bets_per_day: float,
+    tickets_per_bet: float,
+    payout_mu: float,
+    payout_sigma: float,
+    initial_bankroll: float,
+    unit_divisor: int,
+    min_unit: int,
+    max_unit: int,
+) -> dict:
+    """Simulate one P2 strategy trajectory over n_days.
+
+    Differs from simulate_monte_carlo.simulate_once by using Bernoulli
+    sampling for fractional tickets_per_bet. For example, with 1.31
+    tickets/bet, each bet buys 2 tickets with P=0.31 and 1 ticket with
+    P=0.69. This preserves the true average cost (1.31 * unit) instead
+    of rounding to 1 (which would undercount cost by ~31%).
+
+    Payout when hit scales with `unit` regardless of ticket count because
+    only one of the 1-2 P2 tickets can hit a given race outcome.
+    """
+    bankroll = float(initial_bankroll)
+    peak = bankroll
+    max_dd_yen = 0.0
+    max_dd_pct = 0.0
+    consec_loss = 0
+    max_consec_loss = 0
+    total_wagered = 0.0
+    total_payout = 0.0
+    win_days = 0
+    all_loss_days = 0
+
+    # Bernoulli params for stochastic ticket count
+    base_tickets = int(math.floor(tickets_per_bet))
+    extra_prob = tickets_per_bet - base_tickets  # P(one extra ticket)
+
+    for _day in range(n_days):
+        n_bets = rng.poisson(bets_per_day)
+        if n_bets == 0:
+            continue
+
+        raw_unit = bankroll / unit_divisor
+        unit = max(min_unit, min(max_unit, int(raw_unit / 100) * 100))
+
+        day_cost = 0.0
+        day_payout = 0.0
+        day_wins = 0
+
+        for _ in range(n_bets):
+            n_tickets = base_tickets + (1 if rng.random() < extra_prob else 0)
+            if n_tickets == 0:
+                continue
+            cost = n_tickets * unit
+            day_cost += cost
+
+            if rng.random() < hit_rate:
+                odds_mult = rng.lognormal(payout_mu, payout_sigma)
+                # Only one ticket can hit per race outcome; payout scales
+                # with `unit`, not with `n_tickets * unit`.
+                day_payout += odds_mult * unit
+                day_wins += 1
+
+        bankroll += day_payout - day_cost
+        total_wagered += day_cost
+        total_payout += day_payout
+
+        if day_payout > day_cost:
+            win_days += 1
+            consec_loss = 0
+        else:
+            consec_loss += 1
+            max_consec_loss = max(max_consec_loss, consec_loss)
+            if day_wins == 0:
+                all_loss_days += 1
+
+        if bankroll > peak:
+            peak = bankroll
+        dd_yen = peak - bankroll
+        dd_pct = dd_yen / peak if peak > 0 else 0
+        max_dd_yen = max(max_dd_yen, dd_yen)
+        max_dd_pct = max(max_dd_pct, dd_pct)
+
+        # Bust: can't afford max tickets at min unit
+        min_cost = min_unit * math.ceil(tickets_per_bet)
+        if bankroll < min_cost:
+            return {
+                "final_bankroll": bankroll,
+                "profit": bankroll - initial_bankroll,
+                "max_dd_yen": max_dd_yen,
+                "max_dd_pct": max_dd_pct,
+                "max_consec_loss": max_consec_loss,
+                "win_day_rate": win_days / n_days,
+                "all_loss_day_rate": all_loss_days / n_days,
+                "bust": True,
+            }
+
+    return {
+        "final_bankroll": bankroll,
+        "profit": bankroll - initial_bankroll,
+        "max_dd_yen": max_dd_yen,
+        "max_dd_pct": max_dd_pct,
+        "max_consec_loss": max_consec_loss,
+        "win_day_rate": win_days / n_days,
+        "all_loss_day_rate": all_loss_days / n_days,
+        "bust": False,
+    }
 
 
 def extract_p2_params(purchases: list, total_days: int) -> dict:
@@ -98,7 +218,7 @@ def run_mc(
 
     for label, n_days in periods.items():
         results = [
-            simulate_once(
+            simulate_p2_once(
                 n_days, rng,
                 hit_rate=params["hit_rate"],
                 bets_per_day=params["bets_per_day"],
@@ -178,6 +298,14 @@ def main() -> None:
     purchases, _ = evaluate_period(
         model, meta, df, odds, args.from_date, args.to_date
     )
+    if not purchases:
+        print(
+            f"ERROR: No purchases found in {args.from_date} ~ {args.to_date}. "
+            f"Check strategy filters and period.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     active_days = count_active_days(args.db_path, args.from_date, args.to_date)
     params = extract_p2_params(purchases, active_days)
 
