@@ -45,7 +45,7 @@ export function loadModelStrategy(): ModelStrategy {
     gap23Threshold: 0.13,
     top3ConcThreshold: 0.0,
     gap12MinThreshold: 0.0,
-    unitDivisor: 150,
+    unitDivisor: 200,
     betCap: 30000,
   };
   if (!existsSync(metaPath)) {
