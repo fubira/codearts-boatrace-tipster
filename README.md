@@ -26,7 +26,7 @@ bun run start scrape -m 202601           # 月単位
 bun run start scrape-odds -m 202601
 
 # 2. 予測（active モデルから自動解決）
-bun run start predict -d 2026-04-12
+bun run start predict -d "$(date +%F)"
 
 # 3. 自動運用デーモン
 bun run start run                         # DRY RUN
@@ -69,12 +69,16 @@ bun run start backup              # ローカルバックアップ（7 世代保
 
 ```bash
 # 指定日の予測（active モデルを ml/models/active.json から解決）
-bun run start predict -d 2026-04-12
-bun run start predict -d 2026-04-12 --json          # JSON 出力
-bun run start predict -d 2026-04-12 --use-snapshots # T-5 snapshot odds で再現
+bun run start predict -d "$(date +%F)"
+bun run start predict -d "$(date +%F)" --json          # JSON 出力
+bun run start predict -d "$(date +%F)" --use-snapshots # T-5 snapshot odds で再現
 
-# OOS バックテスト（Python、active モデル）
-cd ml && uv run python -m scripts.daily_p2_summary --from 2026-01-01 --to 2026-04-12
+# OOS バックテスト（学習期間外のみ: p2_v2 は --from 2026-01-01 以降）
+cd ml && uv run python -m scripts.daily_p2_summary --from 2026-01-01 --to "$(date +%F)"
+
+# 会場別 / 期間別 / feature importance の診断
+cd ml && uv run python scripts/analyze_model.py --from 2026-01-01 --to "$(date +%F)" --show-importance
+cd ml && uv run python scripts/analyze_model.py --from 2026-01-01 --to "$(date +%F)" --split-by month
 ```
 
 ## 自動運用デーモン
