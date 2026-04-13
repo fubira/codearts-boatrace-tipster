@@ -291,6 +291,24 @@ def cmd_train(args) -> None:
     # Parse log (prefers trials.json for user_attrs access)
     print(f"Parsing {log_path}...")
     log_info = parse_tune_log(log_path)
+    print(
+        f"  source={log_info['source']}, {len(log_info['trials'])} trials, "
+        f"best growth={log_info['best_growth']}"
+    )
+    if log_info["source"] == "log":
+        print(
+            "  WARN: Using log text fallback (no trials.json). best_iter tracking "
+            "unavailable — will fall back to n_estimators upper bound."
+        )
+
+    # Validate trials BEFORE resolving prefix. This prevents consuming a fresh
+    # prefix from the registry when the train will fail anyway (e.g., wrong
+    # tune-log path that fell back to log text and lost the trial table).
+    trial_nums = [int(x) for x in args.trials.split(",")]
+    missing = [t for t in trial_nums if t not in log_info["trials"]]
+    if missing:
+        print(f"ERROR: Trials not found in log: {missing}")
+        sys.exit(1)
 
     # Resolve prefix priority: explicit --prefix > tune's run_prefix > new
     # prefix from registry. The tune itself reserves a prefix at start time
@@ -304,22 +322,6 @@ def cmd_train(args) -> None:
     else:
         prefix = registry_next_prefix()
         consumed_new = True
-    print(
-        f"  source={log_info['source']}, {len(log_info['trials'])} trials, "
-        f"best growth={log_info['best_growth']}"
-    )
-    if log_info["source"] == "log":
-        print(
-            "  WARN: Using log text fallback (no trials.json). best_iter tracking "
-            "unavailable — will fall back to n_estimators upper bound."
-        )
-
-    # Select trials
-    trial_nums = [int(x) for x in args.trials.split(",")]
-    missing = [t for t in trial_nums if t not in log_info["trials"]]
-    if missing:
-        print(f"ERROR: Trials not found in log: {missing}")
-        sys.exit(1)
 
     # Get fix_thresholds from log. top3_conc fallback is used by params_to_hp
     # because trials sampled with --fix-thresholds top3_conc=X don't carry the
