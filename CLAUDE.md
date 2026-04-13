@@ -75,6 +75,9 @@ analyze_model.py --from DATE --to DATE [--model-dir DIR]
                  [--split-by none|quarter|month] [--stadium CSV]
                  [--show-importance] [--json]
 
+threshold_sweep.py --from DATE --to DATE [--model-dir DIR]
+                   [--axis conc|ev|gap23] [--start N] [--stop N] [--step N]
+
 simulate_p2_mc.py --from DATE --to DATE [--model-dir DIR]
                   [--bankroll N] [--unit-divisor N] [--bet-cap N]
                   [--n-sims N] [--seed N] [--days 30,90,180,365]
