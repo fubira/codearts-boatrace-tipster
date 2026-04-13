@@ -131,8 +131,10 @@ def predict_p2(
     gap23_threshold = strategy.get("gap23_threshold", DEFAULT_GAP23_THRESHOLD)
     top3_conc_threshold = strategy.get("top3_conc_threshold", DEFAULT_TOP3_CONC_THRESHOLD)
     ev_threshold = strategy.get("ev_threshold", DEFAULT_EV_THRESHOLD)
+    excluded_stadiums = set(strategy.get("excluded_stadiums") or [])
     print(
-        f"P2 Strategy: gap23>={gap23_threshold:.3f} conc>={top3_conc_threshold:.3f} ev>={ev_threshold:.3f}",
+        f"P2 Strategy: gap23>={gap23_threshold:.3f} conc>={top3_conc_threshold:.3f} "
+        f"ev>={ev_threshold:.3f} excluded_stadiums={sorted(excluded_stadiums) or 'none'}",
         file=sys.stderr,
     )
 
@@ -214,6 +216,19 @@ def predict_p2(
         po = pred_order[i]
         probs = model_probs[i]
         bc_status = _bc_status(rid)
+
+        # Filter 0: stadium exclusion (structurally unprofitable venues)
+        if excluded_stadiums:
+            b1_idx = b1_rid_map.get(rid)
+            if b1_idx is not None:
+                sid = int(b1_rows["stadium_id"].values[b1_idx])
+                if sid in excluded_stadiums:
+                    skipped[rid] = {
+                        "reason": "stadium_excluded",
+                        "stadium_id": sid,
+                        "bc_status": bc_status,
+                    }
+                    continue
 
         # Filter 1: top-1 must be boat 1
         if top_boats[i, 0] != 1:

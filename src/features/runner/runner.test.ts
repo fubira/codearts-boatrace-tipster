@@ -92,6 +92,12 @@ describe("formatSkipReason", () => {
     );
   });
 
+  test("stadium_excluded returns fixed label", () => {
+    expect(
+      formatSkipReason({ skipReason: "stadium_excluded", stadiumId: 18 }, opts),
+    ).toBe("stadium_excluded");
+  });
+
   test("different threshold values are reflected", () => {
     const customOpts = {
       evThreshold: 0.05,

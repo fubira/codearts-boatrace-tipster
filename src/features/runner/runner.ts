@@ -76,6 +76,7 @@ export interface SkippedPrediction {
   top1Boat?: number; // for not_b1_top
   top3Conc?: number; // for top3_conc_low / no_ev_tickets
   gap23?: number; // for gap23_low / no_ev_tickets
+  stadiumId?: number; // for stadium_excluded
   bcStatus?: string;
 }
 
@@ -92,6 +93,9 @@ export function formatSkipReason(
   const evTh = (opts.evThreshold * 100).toFixed(0);
   if (r === "not_b1_top" && s.top1Boat != null) {
     return `not_b1_top (top1=${s.top1Boat}号艇)`;
+  }
+  if (r === "stadium_excluded") {
+    return "stadium_excluded";
   }
   if (r === "top3_conc_low" && s.top3Conc != null) {
     return `top3_conc_low (${(s.top3Conc * 100).toFixed(0)}% < th=${concTh}%)`;
@@ -129,6 +133,7 @@ interface RunnerState {
     gap23_low: number;
     no_ev_tickets: number;
     drift_drop: number;
+    stadium_excluded: number;
   };
   t1DroppedTickets: number;
 }
@@ -252,6 +257,7 @@ interface PredictionResult {
       top1_boat?: number;
       top3_conc?: number;
       gap23?: number;
+      stadium_id?: number;
       bc_status?: string;
     }
   >;
@@ -385,6 +391,7 @@ function updatePredictionCache(
       top1Boat: info.top1_boat,
       top3Conc: info.top3_conc,
       gap23: info.gap23,
+      stadiumId: info.stadium_id,
       bcStatus: info.bc_status,
     });
     // Count skip reason for daily summary
@@ -872,6 +879,7 @@ async function setupDay(
       gap23_low: 0,
       no_ev_tickets: 0,
       drift_drop: 0,
+      stadium_excluded: 0,
     },
     t1DroppedTickets: 0,
   };
