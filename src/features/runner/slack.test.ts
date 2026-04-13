@@ -200,6 +200,7 @@ describe("notifyDailySummary", () => {
     gap23_low: 0,
     no_ev_tickets: 0,
     drift_drop: 0,
+    withdrawal: 0,
   };
 
   test("computes ROI and shows skip/drift breakdown", async () => {
@@ -224,6 +225,7 @@ describe("notifyDailySummary", () => {
         gap23_low: 45,
         no_ev_tickets: 16,
         drift_drop: 0,
+        withdrawal: 1,
       },
       t1DroppedTickets: 3,
     };

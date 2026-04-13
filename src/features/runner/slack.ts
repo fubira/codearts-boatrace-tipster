@@ -212,6 +212,7 @@ export interface DailySummaryInfo {
     gap23_low: number;
     no_ev_tickets: number;
     drift_drop: number;
+    withdrawal: number;
   };
   t1DroppedTickets: number;
 }
@@ -246,7 +247,8 @@ export async function notifyDailySummary(s: DailySummaryInfo): Promise<void> {
     sc.top3_conc_low +
     sc.gap23_low +
     sc.no_ev_tickets +
-    sc.drift_drop;
+    sc.drift_drop +
+    sc.withdrawal;
   const skipDetail = [
     `not_B1=${sc.not_b1_top}`,
     `gap12=${sc.gap12_low}`,
@@ -254,6 +256,7 @@ export async function notifyDailySummary(s: DailySummaryInfo): Promise<void> {
     `gap23=${sc.gap23_low}`,
     `no_EV=${sc.no_ev_tickets}`,
     `drift=${sc.drift_drop}`,
+    `withdraw=${sc.withdrawal}`,
   ].join(" / ");
 
   const tpr =

@@ -80,6 +80,7 @@ export interface SkippedPrediction {
   gap23?: number; // for gap23_low / no_ev_tickets
   gap12?: number; // for gap12_low
   stadiumId?: number; // for stadium_excluded
+  withdrawnBoats?: number[]; // for withdrawal
   bcStatus?: string;
   // P2 tickets the runner would have bought if all filters had passed.
   // Populated for gap12_low / top3_conc_low / gap23_low / no_ev_tickets so
@@ -125,6 +126,12 @@ export function formatSkipReason(
   if (r === "stadium_excluded") {
     return "stadium_excluded";
   }
+  if (r === "withdrawal") {
+    const boats = s.withdrawnBoats?.length
+      ? s.withdrawnBoats.map((b) => `${b}号艇`).join(",")
+      : "?";
+    return `withdrawal (${boats}欠場)`;
+  }
   const cut = formatWouldBeTickets(s.wouldBeTickets);
   if (r === "gap12_low" && s.gap12 != null) {
     return `gap12_low (${(s.gap12 * 100).toFixed(1)}% < th=${gap12Th}%)${cut}`;
@@ -167,6 +174,7 @@ interface RunnerState {
     no_ev_tickets: number;
     drift_drop: number;
     stadium_excluded: number;
+    withdrawal: number;
   };
   t1DroppedTickets: number;
 }
@@ -293,6 +301,7 @@ interface PredictionResult {
       gap23?: number;
       gap12?: number;
       stadium_id?: number;
+      withdrawn_boats?: number[];
       bc_status?: string;
       would_be_tickets?: {
         combo: string;
@@ -436,6 +445,7 @@ function updatePredictionCache(
       gap23: info.gap23,
       gap12: info.gap12,
       stadiumId: info.stadium_id,
+      withdrawnBoats: info.withdrawn_boats,
       bcStatus: info.bc_status,
       wouldBeTickets: info.would_be_tickets?.map((t) => ({
         combo: t.combo,
@@ -932,6 +942,7 @@ async function setupDay(
       no_ev_tickets: 0,
       drift_drop: 0,
       stadium_excluded: 0,
+      withdrawal: 0,
     },
     t1DroppedTickets: 0,
   };

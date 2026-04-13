@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from scripts.predict_p2 import build_p2_would_be_tickets
+from scripts.predict_p2 import (
+    build_p2_would_be_tickets,
+    build_racing_boats_index,
+)
 
 
 # Softmax probabilities for 6 boats, indexed by boat_number-1 (i.e. probs[0]
@@ -121,3 +124,94 @@ def test_consistency_with_tune_p2_trifecta_prob():
     )
     assert result[0]["model_prob"] == round(_trifecta_prob(PROBS, I1, I2, I3), 6)
     assert result[1]["model_prob"] == round(_trifecta_prob(PROBS, I1, I3, I2), 6)
+
+
+# ---------------------------------------------------------------------------
+# build_racing_boats_index — withdrawal detection
+# ---------------------------------------------------------------------------
+
+
+def _all_trifecta_odds(racing_boats: list[int], rid: int = RID, odds: float = 10.0) -> dict:
+    """Build every 3連単 combination among the given racing boats."""
+    out = {}
+    for a in racing_boats:
+        for b in racing_boats:
+            if b == a:
+                continue
+            for c in racing_boats:
+                if c in (a, b):
+                    continue
+                out[(rid, f"{a}-{b}-{c}")] = odds
+    return out
+
+
+def test_racing_boats_full_race():
+    """Full 3連単 odds across all 6 boats → {1..6}, 120 combos."""
+    odds = _all_trifecta_odds([1, 2, 3, 4, 5, 6])
+    index = build_racing_boats_index(odds)
+    assert index[RID]["boats"] == {1, 2, 3, 4, 5, 6}
+    assert index[RID]["count"] == 120
+
+
+def test_racing_boats_with_one_withdrawal():
+    """Boat 2 withdrawn → combos involve only {1,3,4,5,6}, 60 combos."""
+    odds = _all_trifecta_odds([1, 3, 4, 5, 6])
+    index = build_racing_boats_index(odds)
+    # Boat 2 must NOT appear in the index (no combo has it in 1st position)
+    assert index[RID]["boats"] == {1, 3, 4, 5, 6}
+    assert 2 not in index[RID]["boats"]
+    assert index[RID]["count"] == 60
+
+
+def test_racing_boats_with_two_withdrawals():
+    """Boats 2 and 5 withdrawn → combos involve only {1,3,4,6}, 24 combos."""
+    odds = _all_trifecta_odds([1, 3, 4, 6])
+    index = build_racing_boats_index(odds)
+    assert index[RID]["boats"] == {1, 3, 4, 6}
+    assert index[RID]["count"] == 24  # 4 × 3 × 2
+
+
+def test_racing_boats_skips_zero_and_negative_odds():
+    """Odds <= 0 should not contribute to the racing set or count."""
+    odds = {
+        (RID, "1-2-3"): 10.0,
+        (RID, "2-1-3"): 0.0,   # zero
+        (RID, "3-1-2"): -1.0,  # negative
+    }
+    index = build_racing_boats_index(odds)
+    # Only "1-2-3" contributes → {1}, count 1
+    assert index[RID]["boats"] == {1}
+    assert index[RID]["count"] == 1
+
+
+def test_racing_boats_ignores_malformed_combo():
+    """Non-digit combo heads are silently skipped (defensive parsing)."""
+    odds = {
+        (RID, "1-2-3"): 10.0,
+        (RID, "abc-1-2"): 10.0,  # non-digit head
+        (RID, "-1-2"): 10.0,     # empty head
+    }
+    index = build_racing_boats_index(odds)
+    # Only "1-2-3" contributes
+    assert index[RID]["boats"] == {1}
+    assert index[RID]["count"] == 1
+
+
+def test_racing_boats_empty_odds_absent_from_index():
+    """Races without odds should not appear in the index."""
+    index = build_racing_boats_index({})
+    assert index == {}
+
+
+def test_racing_boats_multiple_rids_independent():
+    """Different race_ids should be indexed independently."""
+    odds = {
+        (100, "1-2-3"): 10.0,
+        (100, "3-4-5"): 10.0,
+        (200, "4-5-6"): 10.0,
+    }
+    index = build_racing_boats_index(odds)
+    assert index[100]["boats"] == {1, 3}
+    assert index[100]["count"] == 2
+    assert index[200]["boats"] == {4}
+    assert index[200]["count"] == 1

@@ -157,6 +157,21 @@ describe("formatSkipReason", () => {
     ).toBe("stadium_excluded");
   });
 
+  test("withdrawal shows withdrawn boat numbers", () => {
+    expect(
+      formatSkipReason({ skipReason: "withdrawal", withdrawnBoats: [2] }, opts),
+    ).toBe("withdrawal (2号艇欠場)");
+  });
+
+  test("withdrawal with multiple boats joins them", () => {
+    expect(
+      formatSkipReason(
+        { skipReason: "withdrawal", withdrawnBoats: [2, 5] },
+        opts,
+      ),
+    ).toBe("withdrawal (2号艇,5号艇欠場)");
+  });
+
   test("different threshold values are reflected", () => {
     const customOpts = {
       evThreshold: 0.05,

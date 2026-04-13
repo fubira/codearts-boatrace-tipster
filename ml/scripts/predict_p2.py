@@ -82,6 +82,43 @@ def build_p2_would_be_tickets(
     return tickets
 
 
+def build_racing_boats_index(
+    trifecta_odds: dict[tuple[int, str], float],
+) -> dict[int, dict]:
+    """Derive the set of racing boats per race from trifecta odds combinations.
+
+    A withdrawn boat does not appear in any valid trifecta combination, so the
+    set of distinct 1st-position boats across combos is the set of boats
+    actually racing. A full race yields ({1..6}, 120 combos); a 1-boat
+    withdrawal yields (5 boats, 60 combos); a 2-boat withdrawal yields
+    (4 boats, 24 combos).
+
+    The combo count is also tracked so callers can sanity-check before acting
+    on the racing-boat set — partial data (e.g. a parser failure leaving
+    < 20 combos) shouldn't be mistaken for a withdrawal.
+
+    Returns {rid: {"boats": set[int], "count": int}}. Races not present in
+    odds_map are absent from the returned index.
+    """
+    index: dict[int, dict] = {}
+    for (rid, combo), odds in trifecta_odds.items():
+        if not odds or odds <= 0:
+            continue
+        head = combo.split("-", 1)[0]
+        if not head.isdigit():
+            continue
+        entry = index.setdefault(rid, {"boats": set(), "count": 0})
+        entry["boats"].add(int(head))
+        entry["count"] += 1
+    return index
+
+
+# Minimum 3連単 combos required before we trust the withdrawal-detection set.
+# 4-boat race (rare double withdrawal) = 24 combos. Below this we treat the
+# race as having incomplete data and skip the detection.
+MIN_COMBOS_FOR_WITHDRAWAL_DETECTION = 20
+
+
 def _load_stadium_names(db_path: str) -> dict[int, str]:
     conn = get_connection(db_path)
     try:
@@ -244,6 +281,10 @@ def predict_p2(
         db_path, date, next_day, use_snapshots=use_snapshots
     )
     stadium_names = _load_stadium_names(db_path)
+    # Detect withdrawn boats by counting distinct 1st-position boats in combos.
+    # Races not present (no odds yet) are absent from this index — we only act
+    # when odds exist but show a boat missing.
+    racing_boats_index = build_racing_boats_index(trifecta_odds)
 
     # Race-level metadata (boat_number == 1 rows for stadium_id, race_number)
     b1_rows = df[df["boat_number"] == 1][available_meta].reset_index(drop=True)
@@ -254,6 +295,7 @@ def predict_p2(
     evaluated_race_ids = []
     skipped: dict[int, dict] = {}
     n_total = n_races
+    n_withdrawal = 0
     n_b1_top = 0
     n_gap12_pass = 0
     n_conc_pass = 0
@@ -278,6 +320,27 @@ def predict_p2(
                         "bc_status": bc_status,
                     }
                     continue
+
+        # Filter 0.5: withdrawal detection (late scratching).
+        # The model still sees 6 boats because race_entries keeps the original
+        # field, so its prediction is invalid whenever the boat is no longer
+        # racing. Detect via the 1st-position boats in trifecta odds — a
+        # withdrawal yields fewer than 6 distinct boats. Require >= 20 combos
+        # to avoid misreading partial data as withdrawal.
+        racing_entry = racing_boats_index.get(rid)
+        if (
+            racing_entry is not None
+            and racing_entry["count"] >= MIN_COMBOS_FOR_WITHDRAWAL_DETECTION
+            and 0 < len(racing_entry["boats"]) < FIELD_SIZE
+        ):
+            withdrawn = sorted(set(range(1, FIELD_SIZE + 1)) - racing_entry["boats"])
+            skipped[rid] = {
+                "reason": "withdrawal",
+                "withdrawn_boats": withdrawn,
+                "bc_status": bc_status,
+            }
+            n_withdrawal += 1
+            continue
 
         # Filter 1: top-1 must be boat 1
         if top_boats[i, 0] != 1:
@@ -390,6 +453,7 @@ def predict_p2(
         "skipped": skipped,
         "stats": {
             "total": n_total,
+            "withdrawal": n_withdrawal,
             "b1_top": n_b1_top,
             "gap12_pass": n_gap12_pass,
             "conc_pass": n_conc_pass,
