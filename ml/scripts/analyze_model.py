@@ -230,6 +230,10 @@ def main() -> None:
         "--split-by", choices=["none", "quarter", "month"], default="none",
         help="Split time into periods for trend analysis",
     )
+    parser.add_argument(
+        "--stadium", default=None,
+        help="Comma-separated stadium IDs to focus on (filters output)",
+    )
     parser.add_argument("--show-importance", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -255,6 +259,15 @@ def main() -> None:
     purchases, total_by_stadium = evaluate_period(
         model, meta, df, odds, args.from_date, args.to_date
     )
+
+    # --stadium filter: focus on specific stadium IDs
+    focus_stadiums: set[int] | None = None
+    if args.stadium:
+        focus_stadiums = {int(s) for s in args.stadium.split(",")}
+        purchases = [p for p in purchases if p.stadium_id in focus_stadiums]
+        total_by_stadium = {
+            sid: n for sid, n in total_by_stadium.items() if sid in focus_stadiums
+        }
 
     if args.json:
         by_stadium = aggregate(purchases, key=lambda p: p.stadium_id)
