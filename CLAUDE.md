@@ -83,6 +83,10 @@ filter_axis_scan.py --from DATE --to DATE [--model-dir DIR]
                     --axis gap34|p1|entropy   # 5分位層別 + 閾値スイープで cliff を探す
 tournament_day_analysis.py --from DATE --to DATE [--model-dir DIR]
                            # 開催日(1-6) で baseline 性能を層別、月別再現性チェック付き
+seed_stability_check.py --tune-log PATH --top-n N --seeds 42,100,200,300,400 \
+                        --from DATE --to DATE [--gap12-th 0.04]
+                        # tune の上位 N 個を K seed で再学習 → OOS 安定性検証 (winner's curse 検出)
+                        # ディスクに model を残さず in-memory で完結 (~30s/trial-seed)
 
 simulate_p2_mc.py --from DATE --to DATE [--model-dir DIR]
                   [--bankroll N] [--unit-divisor N] [--bet-cap N]
