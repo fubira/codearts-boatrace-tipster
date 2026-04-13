@@ -211,3 +211,25 @@ class TestModelMetaSaveLoad:
     def test_load_missing_returns_none(self, tmp_path):
         meta = load_model_meta(str(tmp_path))
         assert meta is None
+
+    def test_float_precision_preserved(self, tmp_path):
+        """Regression: LightGBM HP like subsample/colsample_bytree must round-trip
+        at full double precision. Silent rounding (e.g., :.2g, round(x, 2)) caused
+        aa_294/p2_v1/p2_v2 to drift ~16% on growth until detected on 2026-04-13."""
+        out_dir = str(tmp_path)
+        hp = {
+            "subsample": 0.7302700512037856,
+            "colsample_bytree": 0.6240721896783721,
+            "reg_alpha": 8.715701573782917e-06,
+            "reg_lambda": 0.09885538716630769,
+            "learning_rate": 0.006172936736632081,
+        }
+        save_model_meta(out_dir, ["f1"], hp, {})
+        meta = load_model_meta(out_dir)
+
+        assert meta is not None
+        for key, expected in hp.items():
+            actual = meta["hyperparameters"][key]
+            assert actual == expected, (
+                f"{key} lost precision: got {actual!r}, expected {expected!r}"
+            )

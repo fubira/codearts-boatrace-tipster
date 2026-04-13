@@ -40,3 +40,4 @@ tmp/
 # Misc
 .wrangler/
 CONTINUATION_PROMPT.md
+.claude/
