@@ -28,6 +28,7 @@ AXIS_META_KEY = {
     "conc": "top3_conc_threshold",
     "ev": "ev_threshold",
     "gap23": "gap23_threshold",
+    "gap12": "gap12_min_threshold",
 }
 
 
@@ -50,6 +51,7 @@ def main() -> None:
         "conc": (0.30, 0.80, 0.05),
         "ev": (-0.20, 0.60, 0.05),
         "gap23": (0.00, 0.30, 0.02),
+        "gap12": (0.00, 0.20, 0.02),
     }
     d_start, d_stop, d_step = defaults[args.axis]
     start = args.start if args.start is not None else d_start

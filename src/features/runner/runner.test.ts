@@ -45,6 +45,7 @@ describe("formatSkipReason", () => {
     evThreshold: 0.0,
     gap23Threshold: 0.13,
     top3ConcThreshold: 0.6,
+    gap12MinThreshold: 0.04,
   };
 
   test("not_b1_top shows predicted top1 boat", () => {
@@ -69,6 +70,64 @@ describe("formatSkipReason", () => {
     expect(
       formatSkipReason({ skipReason: "gap23_low", gap23: 0.0821 }, opts),
     ).toBe("gap23_low (8.2% < th=13.0%)");
+  });
+
+  test("gap12_low shows value and threshold with 1 decimal", () => {
+    expect(
+      formatSkipReason({ skipReason: "gap12_low", gap12: 0.028 }, opts),
+    ).toBe("gap12_low (2.8% < th=4.0%)");
+  });
+
+  test("gap12_low appends would-be tickets when provided", () => {
+    expect(
+      formatSkipReason(
+        {
+          skipReason: "gap12_low",
+          gap12: 0.028,
+          wouldBeTickets: [
+            { combo: "1-2-3", modelProb: 0.12, marketOdds: 15.2, ev: 0.37 },
+            { combo: "1-3-2", modelProb: 0.08, marketOdds: 22.0, ev: 0.32 },
+          ],
+        },
+        opts,
+      ),
+    ).toBe(
+      "gap12_low (2.8% < th=4.0%) | cut: 1-2-3(EV 37% @15.2), 1-3-2(EV 32% @22.0)",
+    );
+  });
+
+  test("cut display marks missing odds as n/a", () => {
+    expect(
+      formatSkipReason(
+        {
+          skipReason: "top3_conc_low",
+          top3Conc: 0.55,
+          wouldBeTickets: [
+            { combo: "1-2-3", modelProb: 0.12, marketOdds: null, ev: null },
+          ],
+        },
+        opts,
+      ),
+    ).toBe("top3_conc_low (55% < th=60%) | cut: 1-2-3(odds=n/a)");
+  });
+
+  test("no_ev_tickets shows cut tickets with their actual EVs", () => {
+    expect(
+      formatSkipReason(
+        {
+          skipReason: "no_ev_tickets",
+          top3Conc: 0.83,
+          gap23: 0.15,
+          wouldBeTickets: [
+            { combo: "1-2-3", modelProb: 0.1, marketOdds: 5.0, ev: -0.25 },
+            { combo: "1-3-2", modelProb: 0.05, marketOdds: 8.0, ev: -0.7 },
+          ],
+        },
+        opts,
+      ),
+    ).toBe(
+      "no_ev_tickets (conc=83%, gap23=15.0%, all EV<0%) | cut: 1-2-3(EV -25% @5.0), 1-3-2(EV -70% @8.0)",
+    );
   });
 
   test("no_ev_tickets shows both conc and gap23 with ev threshold", () => {
@@ -103,6 +162,7 @@ describe("formatSkipReason", () => {
       evThreshold: 0.05,
       gap23Threshold: 0.1,
       top3ConcThreshold: 0.65,
+      gap12MinThreshold: 0.04,
     };
     expect(
       formatSkipReason(

@@ -74,6 +74,8 @@ def _load_enqueue_params(model_dir: str) -> dict:
         params["gap23_threshold"] = strategy["gap23_threshold"]
     if "ev_threshold" in strategy and strategy["ev_threshold"] is not None:
         params["ev_threshold"] = strategy["ev_threshold"]
+    if "gap12_min_threshold" in strategy and strategy["gap12_min_threshold"] is not None:
+        params["gap12_min_threshold"] = strategy["gap12_min_threshold"]
     # Relevance scheme if it's in the search space
     if "relevance_scheme" in hp:
         params["relevance"] = hp["relevance_scheme"]
@@ -114,6 +116,7 @@ NARROW_ABS_DELTA = {
     "top3_conc_threshold": 0.15,
     "gap23_threshold": 0.05,
     "ev_threshold": 0.15,
+    "gap12_min_threshold": 0.04,
 }
 
 
@@ -177,16 +180,18 @@ def evaluate_p2_strategy(
     ev_threshold: float,
     *,
     top3_conc_threshold: float = 0.0,
+    gap12_min_threshold: float = 0.0,
     per_race: bool = False,
 ) -> dict | list[dict]:
     """Evaluate P2 adaptive strategy.
 
     For each race:
     1. Check if top-1 prediction is boat 1
-    2. Check if top3_concentration >= threshold (rank2+3 separated from rest)
-    3. Check if gap23 >= threshold
-    4. For P2 tickets (1-2-3 and 1-3-2), compute 3連単 EV
-    5. Buy only tickets with EV >= threshold
+    2. Check if gap12 >= threshold (model's 1/2 confidence gap)
+    3. Check if top3_concentration >= threshold (rank2+3 separated from rest)
+    4. Check if gap23 >= threshold
+    5. For P2 tickets (1-2-3 and 1-3-2), compute 3連単 EV
+    6. Buy only tickets with EV >= threshold
 
     Returns summary dict or per-race list.
     """
@@ -221,12 +226,17 @@ def evaluate_p2_strategy(
         p2_prob = model_probs[i, pred_order[i, 1]]
         p3_prob = model_probs[i, pred_order[i, 2]]
 
-        # Filter 2: top3_concentration threshold
+        # Filter 2: gap12 threshold (model's 1 vs 2 confidence gap must be meaningful)
+        gap12 = p1_prob - p2_prob
+        if gap12 < gap12_min_threshold:
+            continue
+
+        # Filter 3: top3_concentration threshold
         top3_conc = (p2_prob + p3_prob) / (1 - p1_prob + 1e-10)
         if top3_conc < top3_conc_threshold:
             continue
 
-        # Filter 3: gap23 threshold
+        # Filter 4: gap23 threshold
         gap23 = p2_prob - p3_prob
         if gap23 < gap23_threshold:
             continue
@@ -318,7 +328,7 @@ def main():
     parser.add_argument("--relevance", default=None,
                         help="Fix relevance scheme (linear/top_heavy/podium). If omitted, included in search space.")
     parser.add_argument("--fix-thresholds", default=None,
-                        help="Fix strategy thresholds. Format: gap23=0.15,ev=0.1,top3_conc=0.7")
+                        help="Fix strategy thresholds. Format: gap23=0.15,ev=0.1,top3_conc=0.7,gap12=0.04")
     parser.add_argument("--output-json", default="models/tune_result/trials.json",
                         help="Path to save all trial details as JSON")
     parser.add_argument("--from-model", default=None,
@@ -528,6 +538,18 @@ def main():
         else:
             top3_conc_threshold = trial.suggest_float("top3_conc_threshold", 0.0, 0.85)
 
+        if "gap12" in fixed_thresholds:
+            gap12_min_threshold = fixed_thresholds["gap12"]
+        elif narrow_seed and "gap12_min_threshold" in narrow_seed:
+            g12_lo, g12_hi = _narrow_abs(
+                narrow_seed["gap12_min_threshold"],
+                NARROW_ABS_DELTA["gap12_min_threshold"],
+                0.0, 0.20,
+            )
+            gap12_min_threshold = trial.suggest_float("gap12_min_threshold", g12_lo, g12_hi)
+        else:
+            gap12_min_threshold = trial.suggest_float("gap12_min_threshold", 0.0, 0.20)
+
         fold_profits = []
         fold_best_iters = []
         total_races = 0
@@ -569,6 +591,7 @@ def main():
                 gap23_threshold=gap23_threshold,
                 ev_threshold=ev_threshold,
                 top3_conc_threshold=top3_conc_threshold,
+                gap12_min_threshold=gap12_min_threshold,
             )
 
             fold_profit = result["payout"] - result["cost"]
@@ -727,6 +750,7 @@ def main():
         g23 = t.params.get("gap23_threshold", fixed_thresholds.get("gap23", "?"))
         evt = t.params.get("ev_threshold", fixed_thresholds.get("ev", "?"))
         t3c = t.params.get("top3_conc_threshold", fixed_thresholds.get("top3_conc", "?"))
+        g12 = t.params.get("gap12_min_threshold", fixed_thresholds.get("gap12", "?"))
         growth = ua.get("growth", 0.0)
         kelly_v = ua.get("kelly", "?")
         roi = ua.get("mean_roi", 0.0)
@@ -735,7 +759,7 @@ def main():
         print(
             f"  #{t.number:>3}: growth={growth:.6f} kelly={kelly_v} ROI={roi:.0%} "
             f"P/L={pl:+,.0f} n={n} "
-            f"rel={rel} gap23={g23} ev={evt} conc={t3c}"
+            f"rel={rel} gap23={g23} ev={evt} conc={t3c} gap12={g12}"
         )
 
     # Save best params
@@ -753,6 +777,7 @@ def main():
         "gap23_threshold": bp.get("gap23_threshold", fixed_thresholds.get("gap23")),
         "ev_threshold": bp.get("ev_threshold", fixed_thresholds.get("ev")),
         "top3_conc_threshold": bp.get("top3_conc_threshold", fixed_thresholds.get("top3_conc")),
+        "gap12_min_threshold": bp.get("gap12_min_threshold", fixed_thresholds.get("gap12")),
         "ev_basis": "3連単 odds per ticket",
         "features": "non_odds_21",
     }

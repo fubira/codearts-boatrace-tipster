@@ -143,12 +143,15 @@ def parse_tune_log(log_path: Path) -> dict:
     }
 
 
-def params_to_hp(params: dict, conc_default: float = 0.0) -> tuple[dict, float, int, float]:
-    """Extract HP dict, learning_rate, n_estimators, top3_conc_threshold from Optuna params.
+def params_to_hp(
+    params: dict, conc_default: float = 0.0, gap12_default: float = 0.0,
+) -> tuple[dict, float, int, float, float]:
+    """Extract HP dict, learning_rate, n_estimators, top3_conc_threshold,
+    gap12_min_threshold from Optuna params.
 
-    `conc_default` is used when top3_conc_threshold was fixed via
+    `conc_default` / `gap12_default` are used when the threshold was fixed via
     --fix-thresholds during tune (so it's absent from params). Caller passes
-    fix_thresholds["top3_conc"] in that case.
+    fix_thresholds["top3_conc"] / fix_thresholds["gap12"] in that case.
     """
     hp = {
         "num_leaves": params["num_leaves"],
@@ -162,11 +165,12 @@ def params_to_hp(params: dict, conc_default: float = 0.0) -> tuple[dict, float, 
     lr = params["learning_rate"]
     n_est = params["n_estimators"]
     conc = params.get("top3_conc_threshold", conc_default)
-    return hp, lr, n_est, conc
+    gap12 = params.get("gap12_min_threshold", gap12_default)
+    return hp, lr, n_est, conc, gap12
 
 
 def train_one(df, prefix, trial_num, trial_info, end_date, val_months, log_path,
-              gap23_th, ev_th, conc_th_default=0.0):
+              gap23_th, ev_th, conc_th_default=0.0, gap12_th_default=0.0):
     """Train a single trial and save to models/<prefix>_<trial>/ranking/.
 
     Uses avg_best_iter from user_attrs (if available) instead of params'
@@ -175,7 +179,9 @@ def train_one(df, prefix, trial_num, trial_info, end_date, val_months, log_path,
     """
     params = trial_info["params"]
     user_attrs = trial_info.get("user_attrs", {})
-    hp, lr, n_est_upper, conc_th = params_to_hp(params, conc_default=conc_th_default)
+    hp, lr, n_est_upper, conc_th, gap12_th = params_to_hp(
+        params, conc_default=conc_th_default, gap12_default=gap12_th_default,
+    )
 
     # Effective iter count: prefer avg_best_iter from WF-CV if available
     avg_best_iter = user_attrs.get("avg_best_iter")
@@ -249,6 +255,7 @@ def train_one(df, prefix, trial_num, trial_info, end_date, val_months, log_path,
         "bet_pattern": "1-(2,3)-(2,3) adaptive",
         "gap23_threshold": gap23_th,
         "top3_conc_threshold": conc_th,
+        "gap12_min_threshold": gap12_th,
         "ev_threshold": ev_th,
         "unit_divisor": 150,
         "bet_cap": 30000,
@@ -330,6 +337,7 @@ def cmd_train(args) -> None:
     gap23_th = fix_th.get("gap23", 0.13)
     ev_th = fix_th.get("ev", 0.0)
     conc_th_default = fix_th.get("top3_conc", 0.0)
+    gap12_th_default = fix_th.get("gap12", 0.0)
 
     # Load features once
     print("Loading features...", flush=True)
@@ -341,7 +349,9 @@ def cmd_train(args) -> None:
     for tn in trial_nums:
         trial_info = log_info["trials"][tn]
         name = train_one(df, prefix, tn, trial_info, args.end_date, args.val_months,
-                         log_path, gap23_th, ev_th, conc_th_default=conc_th_default)
+                         log_path, gap23_th, ev_th,
+                         conc_th_default=conc_th_default,
+                         gap12_th_default=gap12_th_default)
         saved.append(tn)
 
     # The counter is already advanced if registry_next_prefix() was called above.

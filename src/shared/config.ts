@@ -32,6 +32,7 @@ export interface ModelStrategy {
   evThreshold: number;
   gap23Threshold: number;
   top3ConcThreshold: number;
+  gap12MinThreshold: number;
   unitDivisor: number;
   betCap: number;
 }
@@ -43,6 +44,7 @@ export function loadModelStrategy(): ModelStrategy {
     evThreshold: 0.0,
     gap23Threshold: 0.13,
     top3ConcThreshold: 0.0,
+    gap12MinThreshold: 0.0,
     unitDivisor: 150,
     betCap: 30000,
   };
@@ -56,6 +58,8 @@ export function loadModelStrategy(): ModelStrategy {
     gap23Threshold: strategy.gap23_threshold ?? defaults.gap23Threshold,
     top3ConcThreshold:
       strategy.top3_conc_threshold ?? defaults.top3ConcThreshold,
+    gap12MinThreshold:
+      strategy.gap12_min_threshold ?? defaults.gap12MinThreshold,
     unitDivisor: strategy.unit_divisor ?? defaults.unitDivisor,
     betCap: strategy.bet_cap ?? defaults.betCap,
   };

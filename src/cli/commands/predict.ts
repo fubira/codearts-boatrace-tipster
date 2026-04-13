@@ -18,6 +18,7 @@ interface P2Prediction {
   race_number: number;
   top3_conc: number;
   gap23: number;
+  gap12: number;
   tickets: P2Ticket[];
   has_exhibition: boolean;
 }
@@ -28,17 +29,25 @@ interface PredictP2Result {
   strategy: string;
   gap23_threshold: number;
   top3_conc_threshold: number;
+  gap12_min_threshold: number;
   ev_threshold: number;
   n_races: number;
   predictions: P2Prediction[];
   evaluated_race_ids: number[];
   skipped: Record<
     number,
-    { reason: string; top1_boat?: number; top3_conc?: number; gap23?: number }
+    {
+      reason: string;
+      top1_boat?: number;
+      top3_conc?: number;
+      gap23?: number;
+      gap12?: number;
+    }
   >;
   stats?: {
     total: number;
     b1_top: number;
+    gap12_pass?: number;
     conc_pass: number;
     gap23_pass: number;
     predicted: number;
@@ -119,15 +128,16 @@ function formatP2Table(result: PredictP2Result): void {
   const { predictions, stats } = result;
   const concTh = (result.top3_conc_threshold * 100).toFixed(0);
   const gapTh = (result.gap23_threshold * 100).toFixed(1);
+  const gap12Th = ((result.gap12_min_threshold ?? 0) * 100).toFixed(1);
   const evTh = (result.ev_threshold * 100).toFixed(0);
 
   console.log(`P2 Predictions: ${result.date}`);
   console.log(
-    `Model: ${result.model_dir.split("/").slice(-1)[0]} | conc>=${concTh}% gap23>=${gapTh}% EV>=${evTh}%`,
+    `Model: ${result.model_dir.split("/").slice(-1)[0]} | gap12>=${gap12Th}% conc>=${concTh}% gap23>=${gapTh}% EV>=${evTh}%`,
   );
   if (stats) {
     console.log(
-      `Funnel: ${stats.total}R → B1 top ${stats.b1_top} → conc ${stats.conc_pass} → gap23 ${stats.gap23_pass} → predicted ${stats.predicted}`,
+      `Funnel: ${stats.total}R → B1 top ${stats.b1_top} → gap12 ${stats.gap12_pass ?? "?"} → conc ${stats.conc_pass} → gap23 ${stats.gap23_pass} → predicted ${stats.predicted}`,
     );
   }
   console.log();

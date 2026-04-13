@@ -190,6 +190,7 @@ def test_narrow_constants_present():
     expected_log = {"learning_rate", "reg_alpha", "reg_lambda"}
     expected_abs = {
         "top3_conc_threshold", "gap23_threshold", "ev_threshold",
+        "gap12_min_threshold",
     }
     assert set(NARROW_RATIO.keys()) == expected_ratio
     assert set(NARROW_LOG_FACTOR.keys()) == expected_log

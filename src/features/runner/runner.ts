@@ -45,6 +45,7 @@ export interface RunnerOptions {
   evThreshold: number;
   gap23Threshold: number;
   top3ConcThreshold: number;
+  gap12MinThreshold: number;
   betCap: number;
   unitDivisor: number;
   bankroll: number;
@@ -66,6 +67,7 @@ interface P2Ticket {
 interface P2Prediction {
   top3Conc: number;
   gap23: number;
+  gap12: number;
   tickets: P2Ticket[];
   hasExhibition: boolean;
   bcStatus: string; // "full" | "missing" | "partial:n/6"
@@ -76,20 +78,46 @@ export interface SkippedPrediction {
   top1Boat?: number; // for not_b1_top
   top3Conc?: number; // for top3_conc_low / no_ev_tickets
   gap23?: number; // for gap23_low / no_ev_tickets
+  gap12?: number; // for gap12_low
   stadiumId?: number; // for stadium_excluded
   bcStatus?: string;
+  // P2 tickets the runner would have bought if all filters had passed.
+  // Populated for gap12_low / top3_conc_low / gap23_low / no_ev_tickets so
+  // filter-stage SKIP logs can show which tickets got cut. null odds/ev
+  // mean the market side was missing at predict time.
+  wouldBeTickets?: {
+    combo: string;
+    modelProb: number;
+    marketOdds: number | null;
+    ev: number | null;
+  }[];
+}
+
+/** Format the would-be ticket list for inline SKIP log display. */
+function formatWouldBeTickets(
+  tickets: NonNullable<SkippedPrediction["wouldBeTickets"]> | undefined,
+): string {
+  if (!tickets || tickets.length === 0) return "";
+  const parts = tickets.map((t) => {
+    if (t.marketOdds == null || t.ev == null) {
+      return `${t.combo}(odds=n/a)`;
+    }
+    return `${t.combo}(EV ${(t.ev * 100).toFixed(0)}% @${t.marketOdds.toFixed(1)})`;
+  });
+  return ` | cut: ${parts.join(", ")}`;
 }
 
 export function formatSkipReason(
   s: SkippedPrediction,
   opts: Pick<
     RunnerOptions,
-    "evThreshold" | "gap23Threshold" | "top3ConcThreshold"
+    "evThreshold" | "gap23Threshold" | "top3ConcThreshold" | "gap12MinThreshold"
   >,
 ): string {
   const r = s.skipReason;
   const concTh = (opts.top3ConcThreshold * 100).toFixed(0);
   const gapTh = (opts.gap23Threshold * 100).toFixed(1);
+  const gap12Th = (opts.gap12MinThreshold * 100).toFixed(1);
   const evTh = (opts.evThreshold * 100).toFixed(0);
   if (r === "not_b1_top" && s.top1Boat != null) {
     return `not_b1_top (top1=${s.top1Boat}号艇)`;
@@ -97,18 +125,22 @@ export function formatSkipReason(
   if (r === "stadium_excluded") {
     return "stadium_excluded";
   }
+  const cut = formatWouldBeTickets(s.wouldBeTickets);
+  if (r === "gap12_low" && s.gap12 != null) {
+    return `gap12_low (${(s.gap12 * 100).toFixed(1)}% < th=${gap12Th}%)${cut}`;
+  }
   if (r === "top3_conc_low" && s.top3Conc != null) {
-    return `top3_conc_low (${(s.top3Conc * 100).toFixed(0)}% < th=${concTh}%)`;
+    return `top3_conc_low (${(s.top3Conc * 100).toFixed(0)}% < th=${concTh}%)${cut}`;
   }
   if (r === "gap23_low" && s.gap23 != null) {
-    return `gap23_low (${(s.gap23 * 100).toFixed(1)}% < th=${gapTh}%)`;
+    return `gap23_low (${(s.gap23 * 100).toFixed(1)}% < th=${gapTh}%)${cut}`;
   }
   if (r === "no_ev_tickets") {
     const parts: string[] = [];
     if (s.top3Conc != null)
       parts.push(`conc=${(s.top3Conc * 100).toFixed(0)}%`);
     if (s.gap23 != null) parts.push(`gap23=${(s.gap23 * 100).toFixed(1)}%`);
-    return `no_ev_tickets (${parts.join(", ")}, all EV<${evTh}%)`;
+    return `no_ev_tickets (${parts.join(", ")}, all EV<${evTh}%)${cut}`;
   }
   return r;
 }
@@ -129,6 +161,7 @@ interface RunnerState {
   // Counters for daily summary
   skipCounts: {
     not_b1_top: number;
+    gap12_low: number;
     top3_conc_low: number;
     gap23_low: number;
     no_ev_tickets: number;
@@ -245,6 +278,7 @@ interface PredictionResult {
     raceId: number;
     top3Conc: number;
     gap23: number;
+    gap12: number;
     tickets: P2Ticket[];
     hasExhibition: boolean;
     bcStatus: string;
@@ -257,8 +291,15 @@ interface PredictionResult {
       top1_boat?: number;
       top3_conc?: number;
       gap23?: number;
+      gap12?: number;
       stadium_id?: number;
       bc_status?: string;
+      would_be_tickets?: {
+        combo: string;
+        model_prob: number;
+        market_odds: number | null;
+        ev: number | null;
+      }[];
     }
   >;
 }
@@ -319,7 +360,7 @@ async function runPrediction(
   if (result.stats) {
     const s = result.stats;
     logger.debug(
-      `P2 stats: ${s.total}R → B1 top ${s.b1_top} → conc ${s.conc_pass} → gap23 ${s.gap23_pass} → predicted ${s.predicted}`,
+      `P2 stats: ${s.total}R → B1 top ${s.b1_top} → gap12 ${s.gap12_pass ?? "?"} → conc ${s.conc_pass} → gap23 ${s.gap23_pass} → predicted ${s.predicted}`,
     );
   }
 
@@ -328,6 +369,7 @@ async function runPrediction(
       race_id: number;
       top3_conc: number;
       gap23: number;
+      gap12: number;
       tickets: {
         combo: string;
         model_prob: number;
@@ -340,6 +382,7 @@ async function runPrediction(
       raceId: p.race_id,
       top3Conc: p.top3_conc,
       gap23: p.gap23,
+      gap12: p.gap12 ?? 0,
       tickets: p.tickets.map((t) => ({
         combo: t.combo,
         modelProb: t.model_prob,
@@ -391,8 +434,15 @@ function updatePredictionCache(
       top1Boat: info.top1_boat,
       top3Conc: info.top3_conc,
       gap23: info.gap23,
+      gap12: info.gap12,
       stadiumId: info.stadium_id,
       bcStatus: info.bc_status,
+      wouldBeTickets: info.would_be_tickets?.map((t) => ({
+        combo: t.combo,
+        modelProb: t.model_prob,
+        marketOdds: t.market_odds,
+        ev: t.ev,
+      })),
     });
     // Count skip reason for daily summary
     if (info.reason in state.skipCounts) {
@@ -403,6 +453,7 @@ function updatePredictionCache(
     state.predictionCache.set(p.raceId, {
       top3Conc: p.top3Conc,
       gap23: p.gap23,
+      gap12: p.gap12,
       tickets: p.tickets,
       hasExhibition: p.hasExhibition,
       bcStatus: p.bcStatus,
@@ -464,7 +515,7 @@ async function makeBetDecisions(
       bets.set(slot.raceId, decision);
 
       logger.info(
-        `[P2] BET: ${label} | conc=${(cached.top3Conc * 100).toFixed(0)}% gap23=${(cached.gap23 * 100).toFixed(1)}% | ¥${unit.toLocaleString()}×${tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}`,
+        `[P2] BET: ${label} | gap12=${(cached.gap12 * 100).toFixed(1)}% conc=${(cached.top3Conc * 100).toFixed(0)}% gap23=${(cached.gap23 * 100).toFixed(1)}% | ¥${unit.toLocaleString()}×${tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}`,
       );
 
       await notifyPrediction({
@@ -618,7 +669,7 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
             .map((t) => `${t.combo}(EV ${(t.ev * 100).toFixed(0)}%)`)
             .join(", ");
           logger.info(
-            `[T-5] ${label} | conc=${(cached.top3Conc * 100).toFixed(0)}% gap23=${(cached.gap23 * 100).toFixed(1)}% | ${ticketStr}${bcTag}`,
+            `[T-5] ${label} | gap12=${(cached.gap12 * 100).toFixed(1)}% conc=${(cached.top3Conc * 100).toFixed(0)}% gap23=${(cached.gap23 * 100).toFixed(1)}% | ${ticketStr}${bcTag}`,
           );
         }
       }
@@ -875,6 +926,7 @@ async function setupDay(
     snapshotPath,
     skipCounts: {
       not_b1_top: 0,
+      gap12_low: 0,
       top3_conc_low: 0,
       gap23_low: 0,
       no_ev_tickets: 0,

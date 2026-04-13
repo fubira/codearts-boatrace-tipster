@@ -53,6 +53,7 @@ export const runCommand = new Command("run")
       evThreshold: opts.evThreshold ?? strategy.evThreshold,
       gap23Threshold: strategy.gap23Threshold,
       top3ConcThreshold: strategy.top3ConcThreshold,
+      gap12MinThreshold: strategy.gap12MinThreshold,
       betCap: opts.betCap ?? strategy.betCap,
       unitDivisor: opts.unitDivisor ?? strategy.unitDivisor,
       bankroll: opts.bankroll,

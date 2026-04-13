@@ -207,6 +207,7 @@ export interface DailySummaryInfo {
   startedAt: string; // ISO of first start
   skipCounts: {
     not_b1_top: number;
+    gap12_low: number;
     top3_conc_low: number;
     gap23_low: number;
     no_ev_tickets: number;
@@ -241,12 +242,14 @@ export async function notifyDailySummary(s: DailySummaryInfo): Promise<void> {
   const sc = s.skipCounts;
   const totalSkip =
     sc.not_b1_top +
+    sc.gap12_low +
     sc.top3_conc_low +
     sc.gap23_low +
     sc.no_ev_tickets +
     sc.drift_drop;
   const skipDetail = [
     `not_B1=${sc.not_b1_top}`,
+    `gap12=${sc.gap12_low}`,
     `conc=${sc.top3_conc_low}`,
     `gap23=${sc.gap23_low}`,
     `no_EV=${sc.no_ev_tickets}`,

@@ -195,6 +195,7 @@ describe("notifyResult", () => {
 describe("notifyDailySummary", () => {
   const baseSkipCounts = {
     not_b1_top: 0,
+    gap12_low: 0,
     top3_conc_low: 0,
     gap23_low: 0,
     no_ev_tickets: 0,
@@ -218,6 +219,7 @@ describe("notifyDailySummary", () => {
       startedAt: "2026-04-07T07:00:00+09:00",
       skipCounts: {
         not_b1_top: 12,
+        gap12_low: 5,
         top3_conc_low: 30,
         gap23_low: 45,
         no_ev_tickets: 16,
@@ -238,6 +240,7 @@ describe("notifyDailySummary", () => {
     expect(block).toContain("+¥3,750");
     expect(block).toContain("40.0%"); // hit 2/5
     expect(block).toContain("not_B1=12");
+    expect(block).toContain("gap12=5");
     expect(block).toContain("conc=30");
     expect(block).toContain("gap23=45");
     expect(block).toContain("drift=0");

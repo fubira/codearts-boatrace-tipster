@@ -34,6 +34,52 @@ FIELD_SIZE = 6
 DEFAULT_GAP23_THRESHOLD = 0.13
 DEFAULT_TOP3_CONC_THRESHOLD = 0.0
 DEFAULT_EV_THRESHOLD = 0.0
+DEFAULT_GAP12_MIN_THRESHOLD = 0.0
+
+
+def build_p2_would_be_tickets(
+    probs_6,
+    i1: int,
+    i2: int,
+    i3: int,
+    r2: int,
+    r3: int,
+    trifecta_odds: dict,
+    rid: int,
+) -> list[dict]:
+    """Build would-be P2 ticket records for the two 1-head orderings.
+
+    Returns 2 dicts (combos 1-r2-r3 and 1-r3-r2), each with:
+      combo: str
+      model_prob: rounded Plackett-Luce probability (always present)
+      market_odds: rounded float, or None if odds missing / non-positive
+      ev: rounded float, or None if odds missing (no threshold applied)
+
+    Caller applies the EV threshold to pick the final buy list.
+    """
+    tickets: list[dict] = []
+    for combo, ia, ib, ic in [
+        (f"1-{r2}-{r3}", i1, i2, i3),
+        (f"1-{r3}-{r2}", i1, i3, i2),
+    ]:
+        mp = _trifecta_prob(probs_6, ia, ib, ic)
+        mkt_odds = trifecta_odds.get((rid, combo))
+        if mkt_odds and mkt_odds > 0:
+            ev = mp / (1.0 / mkt_odds) * 0.75 - 1
+            tickets.append({
+                "combo": combo,
+                "model_prob": round(mp, 6),
+                "market_odds": round(mkt_odds, 1),
+                "ev": round(ev, 4),
+            })
+        else:
+            tickets.append({
+                "combo": combo,
+                "model_prob": round(mp, 6),
+                "market_odds": None,
+                "ev": None,
+            })
+    return tickets
 
 
 def _load_stadium_names(db_path: str) -> dict[int, str]:
@@ -131,10 +177,12 @@ def predict_p2(
     gap23_threshold = strategy.get("gap23_threshold", DEFAULT_GAP23_THRESHOLD)
     top3_conc_threshold = strategy.get("top3_conc_threshold", DEFAULT_TOP3_CONC_THRESHOLD)
     ev_threshold = strategy.get("ev_threshold", DEFAULT_EV_THRESHOLD)
+    gap12_min_threshold = strategy.get("gap12_min_threshold", DEFAULT_GAP12_MIN_THRESHOLD)
     excluded_stadiums = set(strategy.get("excluded_stadiums") or [])
     print(
-        f"P2 Strategy: gap23>={gap23_threshold:.3f} conc>={top3_conc_threshold:.3f} "
-        f"ev>={ev_threshold:.3f} excluded_stadiums={sorted(excluded_stadiums) or 'none'}",
+        f"P2 Strategy: gap12>={gap12_min_threshold:.3f} gap23>={gap23_threshold:.3f} "
+        f"conc>={top3_conc_threshold:.3f} ev>={ev_threshold:.3f} "
+        f"excluded_stadiums={sorted(excluded_stadiums) or 'none'}",
         file=sys.stderr,
     )
 
@@ -207,6 +255,7 @@ def predict_p2(
     skipped: dict[int, dict] = {}
     n_total = n_races
     n_b1_top = 0
+    n_gap12_pass = 0
     n_conc_pass = 0
     n_gap23_pass = 0
     n_predicted = 0
@@ -245,55 +294,63 @@ def predict_p2(
         p2 = float(probs[po[1]])
         p3 = float(probs[po[2]])
 
-        # Filter 2: top3_concentration
+        # Compute would-be P2 tickets for ALL races that have boat1 on top,
+        # regardless of whether the race ultimately passes the later filters —
+        # SKIP logs show "which tickets were cut" for post-hoc threshold review.
+        r2, r3 = int(top_boats[i, 1]), int(top_boats[i, 2])
+        i1, i2, i3 = po[0], po[1], po[2]
+        would_be_tickets = build_p2_would_be_tickets(
+            probs, i1, i2, i3, r2, r3, trifecta_odds, rid,
+        )
+
+        # Filter 2: gap12 (model must show meaningful confidence gap between 1 and 2)
+        gap12 = p1 - p2
+        if gap12 < gap12_min_threshold:
+            skipped[rid] = {
+                "reason": "gap12_low",
+                "gap12": round(gap12, 4),
+                "would_be_tickets": would_be_tickets,
+                "bc_status": bc_status,
+            }
+            continue
+        n_gap12_pass += 1
+
+        # Filter 3: top3_concentration
         top3_conc = (p2 + p3) / (1 - p1 + 1e-10)
         if top3_conc < top3_conc_threshold:
             skipped[rid] = {
                 "reason": "top3_conc_low",
                 "top3_conc": round(top3_conc, 4),
+                "would_be_tickets": would_be_tickets,
                 "bc_status": bc_status,
             }
             continue
         n_conc_pass += 1
 
-        # Filter 3: gap23
+        # Filter 4: gap23
         gap23 = p2 - p3
         if gap23 < gap23_threshold:
             skipped[rid] = {
                 "reason": "gap23_low",
                 "gap23": round(gap23, 4),
+                "would_be_tickets": would_be_tickets,
                 "bc_status": bc_status,
             }
             continue
         n_gap23_pass += 1
 
-        # P2 tickets
-        r2, r3 = int(top_boats[i, 1]), int(top_boats[i, 2])
-        i1, i2, i3 = po[0], po[1], po[2]
-
-        tickets = []
-        for combo, mp_fn in [
-            (f"1-{r2}-{r3}", lambda: _trifecta_prob(probs, i1, i2, i3)),
-            (f"1-{r3}-{r2}", lambda: _trifecta_prob(probs, i1, i3, i2)),
-        ]:
-            mkt_odds = trifecta_odds.get((rid, combo))
-            if not mkt_odds or mkt_odds <= 0:
-                continue
-            mp = mp_fn()
-            ev = mp / (1.0 / mkt_odds) * 0.75 - 1
-            if ev >= ev_threshold:
-                tickets.append({
-                    "combo": combo,
-                    "model_prob": round(mp, 6),
-                    "market_odds": round(mkt_odds, 1),
-                    "ev": round(ev, 4),
-                })
+        # Apply per-ticket EV filter to would_be_tickets to finalize the buy list
+        tickets = [
+            t for t in would_be_tickets
+            if t["market_odds"] is not None and t["ev"] is not None and t["ev"] >= ev_threshold
+        ]
 
         if not tickets:
             skipped[rid] = {
                 "reason": "no_ev_tickets",
                 "gap23": round(gap23, 4),
                 "top3_conc": round(top3_conc, 4),
+                "would_be_tickets": would_be_tickets,
                 "bc_status": bc_status,
             }
             continue
@@ -313,6 +370,7 @@ def predict_p2(
             "race_number": rnum,
             "top3_conc": round(top3_conc, 4),
             "gap23": round(gap23, 4),
+            "gap12": round(gap12, 4),
             "tickets": tickets,
             "has_exhibition": True,  # always True for non-odds features
             "bc_status": bc_status,
@@ -324,6 +382,7 @@ def predict_p2(
         "strategy": "P2",
         "gap23_threshold": gap23_threshold,
         "top3_conc_threshold": top3_conc_threshold,
+        "gap12_min_threshold": gap12_min_threshold,
         "ev_threshold": ev_threshold,
         "n_races": len(predictions),
         "predictions": predictions,
@@ -332,6 +391,7 @@ def predict_p2(
         "stats": {
             "total": n_total,
             "b1_top": n_b1_top,
+            "gap12_pass": n_gap12_pass,
             "conc_pass": n_conc_pass,
             "gap23_pass": n_gap23_pass,
             "predicted": n_predicted,

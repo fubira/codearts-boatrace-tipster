@@ -67,6 +67,7 @@ def evaluate_period(
     st = meta.get("strategy", {})
     conc_th = st.get("top3_conc_threshold", 0.0)
     gap23_th = st.get("gap23_threshold", 0.0)
+    gap12_th = st.get("gap12_min_threshold", 0.0)
     ev_th = st.get("ev_threshold", 0.0)
     excluded = set(st.get("excluded_stadiums") or [])
 
@@ -104,6 +105,9 @@ def evaluate_period(
         p1 = float(mp[i, po[i, 0]])
         p2 = float(mp[i, po[i, 1]])
         p3 = float(mp[i, po[i, 2]])
+        gap12 = p1 - p2
+        if gap12 < gap12_th:
+            continue
         top3_conc = (p2 + p3) / (1 - p1 + 1e-10)
         gap23 = p2 - p3
         if top3_conc < conc_th or gap23 < gap23_th:
@@ -291,8 +295,12 @@ def main() -> None:
     conc = st.get("top3_conc_threshold")
     gap23 = st.get("gap23_threshold")
     ev = st.get("ev_threshold")
+    gap12 = st.get("gap12_min_threshold", 0.0)
     if conc is not None and gap23 is not None and ev is not None:
-        print(f"Strategy: conc>={conc:.4f} gap23>={gap23:.3f} ev>={ev:.3f}")
+        print(
+            f"Strategy: gap12>={gap12:.3f} conc>={conc:.4f} "
+            f"gap23>={gap23:.3f} ev>={ev:.3f}"
+        )
     else:
         print("Strategy: (incomplete strategy section)")
     excluded = st.get("excluded_stadiums") or []
