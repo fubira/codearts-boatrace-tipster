@@ -16,7 +16,7 @@ import { pythonCommand } from "@/shared/python";
 import {
   type BankrollState,
   loadBankrollState,
-  updateBankroll,
+  saveBankrollState,
 } from "./bankroll-state";
 import {
   type BetDecision,
@@ -92,6 +92,30 @@ export interface SkippedPrediction {
     marketOdds: number | null;
     ev: number | null;
   }[];
+}
+
+/** True if any boat in the dash-separated combo is in the refunded set.
+ * Used at result time to detect tickets returned due to flying disqualification
+ * or other in-race anomalies. Pure function, exported for unit tests. */
+export function ticketContainsRefundedBoat(
+  combo: string,
+  refundedBoats: Set<number>,
+): boolean {
+  return combo.split("-").some((b) => refundedBoats.has(Number(b)));
+}
+
+/** Decide the tag for a result log line. Exported for unit tests. */
+export function resultTag(
+  won: boolean,
+  refundedCount: number,
+  ticketCount: number,
+): "WIN" | "REFUND" | "LOSE" {
+  if (won) return "WIN";
+  // Only mark REFUND when there ARE tickets and they are ALL refunded.
+  // ticketCount === 0 means we have no ticket info (e.g. cache lost), which
+  // is NOT a refund and should fall through to LOSE.
+  if (ticketCount > 0 && refundedCount === ticketCount) return "REFUND";
+  return "LOSE";
 }
 
 /** Format the would-be ticket list for inline SKIP log display. */
@@ -469,6 +493,7 @@ function updatePredictionCache(
       bcStatus: p.bcStatus,
     });
   }
+  persistRunnerState(state);
   logger.debug(
     `Prediction cache: ${result.predictions.length} qualifying / ${result.evaluatedRaceIds.length} evaluated`,
   );
@@ -511,6 +536,10 @@ async function makeBetDecisions(
     const totalWager = unit * tickets.length;
 
     if (unit > 0 && totalWager <= state.bankroll) {
+      // Atomic state mutation: record bet, deduct bankroll, persist once.
+      // Two separate persists would leave a window where the bet is recorded
+      // but the bankroll is not yet deducted; a crash there would over-credit
+      // the bankroll on the next result. Single persist closes the window.
       const decision: BetDecision = {
         raceId: slot.raceId,
         stadiumName: slot.stadiumName,
@@ -521,8 +550,16 @@ async function makeBetDecisions(
         ev: avgEv * 100,
         betAmount: totalWager,
         recommend: true,
+        tickets: tickets.map((t) => ({
+          combo: t.combo,
+          modelProb: t.modelProb,
+          marketOdds: t.marketOdds,
+          ev: t.ev,
+        })),
       };
       bets.set(slot.raceId, decision);
+      state.bankroll -= totalWager;
+      persistRunnerState(state);
 
       logger.info(
         `[P2] BET: ${label} | gap12=${(cached.gap12 * 100).toFixed(1)}% conc=${(cached.top3Conc * 100).toFixed(0)}% gap23=${(cached.gap23 * 100).toFixed(1)}% | ¥${unit.toLocaleString()}×${tickets.length}=¥${totalWager.toLocaleString()} | ${ticketStr}`,
@@ -543,9 +580,6 @@ async function makeBetDecisions(
         unit,
         betAmount: totalWager,
       });
-
-      state.bankroll -= totalWager;
-      updateBankroll(state.bankrollState, state.bankroll);
     } else {
       logger.info(
         `[P2] SKIP: ${label} | bankroll insufficient (¥${state.bankroll.toLocaleString()})`,
@@ -749,11 +783,12 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     if (survivingTickets.length === 0) {
       logger.info(`[P2] SKIP: ${label} | all tickets dropped after drift`);
       state.skipCounts.drift_drop++;
+      persistRunnerState(state);
       slot.status = "decided";
       continue;
     }
 
-    // Bet decision
+    // Bet decision (also persists runner state on bet)
     await makeBetDecisions([slot], state, opts, bets);
     slot.status = "decided";
   }
@@ -762,15 +797,27 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
   for (const slot of resultSlots) {
     try {
       const db = getDatabase();
-      const entries = db
+      // Fetch ALL entries (finishers + DSQ'd) so we can detect refunded combos.
+      // A boat with NULL finish_position is either DSQ'd mid-race (e.g. flying
+      // start) or didn't start; either way, combos containing it are refunded.
+      const allEntries = db
         .query(
           `SELECT boat_number, finish_position FROM race_entries
-           WHERE race_id = ? AND finish_position IS NOT NULL
-           ORDER BY finish_position`,
+           WHERE race_id = ? ORDER BY boat_number`,
         )
-        .all(slot.raceId) as { boat_number: number; finish_position: number }[];
+        .all(slot.raceId) as {
+        boat_number: number;
+        finish_position: number | null;
+      }[];
 
-      if (entries.length === 0) {
+      const finishers = allEntries
+        .filter((e) => e.finish_position != null)
+        .sort(
+          (a, b) =>
+            (a.finish_position as number) - (b.finish_position as number),
+        );
+
+      if (finishers.length === 0) {
         slot.status = "result_pending";
         continue;
       }
@@ -781,17 +828,38 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
         continue;
       }
 
-      const actual1st = entries[0]?.boat_number;
-      const actual2nd = entries[1]?.boat_number;
-      const actual3rd = entries[2]?.boat_number;
+      const refundedBoats = new Set<number>(
+        allEntries
+          .filter((e) => e.finish_position == null)
+          .map((e) => e.boat_number),
+      );
+      const actual1st = finishers[0]?.boat_number;
+      const actual2nd = finishers[1]?.boat_number;
+      const actual3rd = finishers[2]?.boat_number;
 
-      const cached = state.predictionCache?.get(slot.raceId);
-      const tickets = cached && !("skipReason" in cached) ? cached.tickets : [];
+      // Use tickets from BetDecision (persisted at BET time) so refund and
+      // payout logic survives a runner restart that wipes the prediction cache.
+      const tickets = bet.tickets;
+      const unitStake = tickets.length > 0 ? bet.betAmount / tickets.length : 0;
+      const refundedTicketCount = tickets.filter((t) =>
+        ticketContainsRefundedBoat(t.combo, refundedBoats),
+      ).length;
+      const refundedAmount = refundedTicketCount * unitStake;
+
       const hitCombo =
         actual1st && actual2nd && actual3rd
           ? `${actual1st}-${actual2nd}-${actual3rd}`
           : null;
-      const won = hitCombo != null && tickets.some((t) => t.combo === hitCombo);
+      // A refunded ticket cannot win even if its combo coincidentally matches
+      // hitCombo, because hitCombo is built from non-DSQ finishers and would
+      // not include a refunded boat anyway. The check is defensive.
+      const won =
+        hitCombo != null &&
+        tickets.some(
+          (t) =>
+            t.combo === hitCombo &&
+            !ticketContainsRefundedBoat(t.combo, refundedBoats),
+        );
 
       // Official payout (確定オッズ × 100円) from race_payouts
       let officialPayoutPer100 = 0;
@@ -807,23 +875,30 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
 
       let payout = 0;
       if (won && officialPayoutPer100 > 0) {
-        const unit = tickets.length > 0 ? bet.betAmount / tickets.length : 0;
-        payout = Math.round((unit / 100) * officialPayoutPer100);
+        payout = Math.round((unitStake / 100) * officialPayoutPer100);
       }
 
-      state.bankroll += payout;
-      updateBankroll(state.bankrollState, state.bankroll);
+      // Bankroll already had bet.betAmount deducted at BET time. At result we
+      // credit (payout + refundedAmount). Refunded tickets get their stake
+      // back without affecting P/L.
+      state.bankroll += payout + refundedAmount;
       results.set(slot.raceId, { won, payout });
+      persistRunnerState(state);
 
       const resultStr = hitCombo ?? "N/A";
-      const pl = payout - bet.betAmount;
+      const pl = payout + refundedAmount - bet.betAmount;
       const plStr =
         pl >= 0
           ? `+¥${pl.toLocaleString()}`
           : `-¥${Math.abs(pl).toLocaleString()}`;
       const combosLog = tickets.map((t) => t.combo).join(",");
+      const refundTag =
+        refundedTicketCount > 0
+          ? ` | 返還 ${refundedTicketCount}/${tickets.length}券 ¥${refundedAmount.toLocaleString()}`
+          : "";
+      const tag = resultTag(won, refundedTicketCount, tickets.length);
       logger.info(
-        `[P2] ${won ? "WIN" : "LOSE"}: ${slot.stadiumName} R${slot.raceNumber} | 買目 ${combosLog} | 結果 ${resultStr} | 確定 ¥${officialPayoutPer100 || "-"} | ${plStr} (残¥${state.bankroll.toLocaleString()})`,
+        `[P2] ${tag}: ${slot.stadiumName} R${slot.raceNumber} | 買目 ${combosLog} | 結果 ${resultStr} | 確定 ¥${officialPayoutPer100 || "-"}${refundTag} | ${plStr} (残¥${state.bankroll.toLocaleString()})`,
       );
 
       await notifyResult({
@@ -863,6 +938,29 @@ const stadiumNames = new Map(
     name,
   ]),
 );
+
+/** Snapshot in-memory daily state + bankroll into bankrollState and persist.
+ * Called after every state mutation so daily Slack summary can recover from
+ * mid-day runner restarts. */
+function persistRunnerState(state: RunnerState): void {
+  state.bankrollState.bankroll = state.bankroll;
+  state.bankrollState.lastUpdate = new Date().toISOString();
+  state.bankrollState.today = {
+    date: state.date,
+    bets: Array.from(state.bets.entries()).map(([raceId, decision]) => ({
+      raceId,
+      decision: { ...decision },
+    })),
+    results: Array.from(state.results.entries()).map(([raceId, r]) => ({
+      raceId,
+      won: r.won,
+      payout: r.payout,
+    })),
+    skipCounts: { ...state.skipCounts },
+    t1DroppedTickets: state.t1DroppedTickets,
+  };
+  saveBankrollState(state.bankrollState);
+}
 
 async function setupDay(
   opts: RunnerOptions,
@@ -946,6 +1044,31 @@ async function setupDay(
     },
     t1DroppedTickets: 0,
   };
+
+  // Restore today's snapshot if a same-day persisted state exists.
+  // This recovers bets/results/skipCounts after a mid-day runner restart so
+  // the daily Slack summary reports the full day's activity.
+  const snapshot = bankrollState.today;
+  if (snapshot && snapshot.date === date) {
+    for (const { raceId, decision } of snapshot.bets) {
+      state.bets.set(raceId, decision);
+    }
+    for (const { raceId, won, payout } of snapshot.results) {
+      state.results.set(raceId, { won, payout });
+    }
+    Object.assign(state.skipCounts, snapshot.skipCounts);
+    state.t1DroppedTickets = snapshot.t1DroppedTickets;
+    logger.info(
+      `Restored daily snapshot: ${state.bets.size} bet(s), ${state.results.size} result(s), ${state.t1DroppedTickets} drift drop(s)`,
+    );
+  } else if (snapshot && snapshot.date !== date) {
+    // Day has rolled over — drop yesterday's snapshot, keep bankroll only.
+    bankrollState.today = undefined;
+    saveBankrollState(bankrollState);
+    logger.info(
+      `Discarded stale snapshot from ${snapshot.date} (today is ${date})`,
+    );
+  }
 
   await notifyStartup({
     version: config.version,

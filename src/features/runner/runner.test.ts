@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { calcTrifectaUnit, formatSkipReason } from "./runner";
+import {
+  calcTrifectaUnit,
+  formatSkipReason,
+  resultTag,
+  ticketContainsRefundedBoat,
+} from "./runner";
 
 describe("calcTrifectaUnit", () => {
   const CAP = 30000;
@@ -37,6 +42,59 @@ describe("calcTrifectaUnit", () => {
   test("MAX unit with large bankroll", () => {
     // 4500000 / 150 = 30000 = CAP exactly
     expect(calcTrifectaUnit(4500000, CAP, DIV)).toBe(30000);
+  });
+});
+
+describe("ticketContainsRefundedBoat", () => {
+  test("returns true when combo includes a refunded boat", () => {
+    expect(ticketContainsRefundedBoat("1-3-2", new Set([3]))).toBe(true);
+  });
+
+  test("returns true when refunded boat is at any position", () => {
+    expect(ticketContainsRefundedBoat("3-1-2", new Set([3]))).toBe(true);
+    expect(ticketContainsRefundedBoat("1-2-3", new Set([3]))).toBe(true);
+    expect(ticketContainsRefundedBoat("2-3-1", new Set([3]))).toBe(true);
+  });
+
+  test("returns false when no refunded boat is in the combo", () => {
+    expect(ticketContainsRefundedBoat("1-4-5", new Set([3]))).toBe(false);
+  });
+
+  test("returns false with empty refunded set", () => {
+    expect(ticketContainsRefundedBoat("1-2-3", new Set())).toBe(false);
+  });
+
+  test("handles multiple refunded boats", () => {
+    expect(ticketContainsRefundedBoat("1-4-5", new Set([2, 3]))).toBe(false);
+    expect(ticketContainsRefundedBoat("1-2-5", new Set([2, 3]))).toBe(true);
+    expect(ticketContainsRefundedBoat("1-2-3", new Set([2, 3]))).toBe(true);
+  });
+});
+
+describe("resultTag", () => {
+  test("won → WIN regardless of refunds", () => {
+    expect(resultTag(true, 0, 2)).toBe("WIN");
+    expect(resultTag(true, 1, 2)).toBe("WIN");
+  });
+
+  test("not won, all tickets refunded → REFUND", () => {
+    expect(resultTag(false, 2, 2)).toBe("REFUND");
+    expect(resultTag(false, 1, 1)).toBe("REFUND");
+  });
+
+  test("not won, partial refund → LOSE", () => {
+    expect(resultTag(false, 1, 2)).toBe("LOSE");
+  });
+
+  test("not won, no refund → LOSE", () => {
+    expect(resultTag(false, 0, 2)).toBe("LOSE");
+  });
+
+  test("zero tickets is LOSE, never REFUND (cache-lost guard)", () => {
+    // ticketCount=0 means the result phase has no ticket info (e.g. cache
+    // was wiped by a restart and BetDecision was missing tickets). Must NOT
+    // report REFUND because we cannot prove the bet was actually refunded.
+    expect(resultTag(false, 0, 0)).toBe("LOSE");
   });
 });
 

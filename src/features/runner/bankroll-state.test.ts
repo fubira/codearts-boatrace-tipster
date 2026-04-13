@@ -126,3 +126,74 @@ describe("saveBankrollState", () => {
     expect(existsSync(deepPath)).toBe(true);
   });
 });
+
+describe("today snapshot persistence", () => {
+  test("today snapshot survives save/load round trip", () => {
+    const state = loadBankrollState(70000, statePath);
+    state.today = {
+      date: "2026-04-13",
+      bets: [
+        {
+          raceId: 100,
+          decision: {
+            raceId: 100,
+            stadiumName: "桐生",
+            raceNumber: 5,
+            boatNumber: 1,
+            prob: 0,
+            odds: 0,
+            ev: 25,
+            betAmount: 800,
+            recommend: true,
+            tickets: [
+              { combo: "1-3-2", modelProb: 0.18, marketOdds: 12.4, ev: 0.67 },
+              { combo: "1-2-3", modelProb: 0.12, marketOdds: 18.7, ev: 0.68 },
+            ],
+          },
+        },
+      ],
+      results: [{ raceId: 100, won: false, payout: 0 }],
+      skipCounts: {
+        not_b1_top: 1,
+        gap12_low: 2,
+        top3_conc_low: 3,
+        gap23_low: 4,
+        no_ev_tickets: 5,
+        drift_drop: 6,
+        stadium_excluded: 7,
+        withdrawal: 8,
+      },
+      t1DroppedTickets: 9,
+    };
+    saveBankrollState(state);
+
+    const reloaded = loadBankrollState(99999, statePath);
+    expect(reloaded.today).toBeDefined();
+    expect(reloaded.today?.date).toBe("2026-04-13");
+    expect(reloaded.today?.bets).toHaveLength(1);
+    expect(reloaded.today?.bets[0].decision.stadiumName).toBe("桐生");
+    expect(reloaded.today?.bets[0].decision.betAmount).toBe(800);
+    expect(reloaded.today?.bets[0].decision.tickets).toHaveLength(2);
+    expect(reloaded.today?.bets[0].decision.tickets[0].combo).toBe("1-3-2");
+    expect(reloaded.today?.bets[0].decision.tickets[0].marketOdds).toBe(12.4);
+    expect(reloaded.today?.results).toHaveLength(1);
+    expect(reloaded.today?.results[0].won).toBe(false);
+    expect(reloaded.today?.skipCounts.gap12_low).toBe(2);
+    expect(reloaded.today?.skipCounts.withdrawal).toBe(8);
+    expect(reloaded.today?.t1DroppedTickets).toBe(9);
+  });
+
+  test("absent today field loads as undefined (backward compat)", () => {
+    const legacy: BankrollState = {
+      bankroll: 50000,
+      allTimeInitial: 70000,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      lastUpdate: "2026-04-12T12:00:00.000Z",
+    };
+    writeFileSync(statePath, JSON.stringify(legacy));
+
+    const loaded = loadBankrollState(99999, statePath);
+    expect(loaded.bankroll).toBe(50000);
+    expect(loaded.today).toBeUndefined();
+  });
+});

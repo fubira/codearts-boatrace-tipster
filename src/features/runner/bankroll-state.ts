@@ -1,7 +1,9 @@
-/** Persist bankroll across runner restarts.
+/** Persist runner state across restarts.
  *
- * Short-term solution until the purchase history DB (see plan) is built.
- * Tracks current bankroll + all-time starting value for cumulative P/L.
+ * Tracks bankroll (long-lived, across days) and today's daily snapshot
+ * (bets/results/skipCounts) so the daily Slack summary survives a restart
+ * mid-day. The `today` snapshot is keyed by JST date and discarded on day
+ * change; only bankroll persists across days.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,11 +13,61 @@ import { logger } from "@/shared/logger";
 
 const DEFAULT_STATE_PATH = resolve(config.dataDir, "runner-state.json");
 
+/** Per-day runner counters. Reset on day boundary. */
+export interface DailyRunnerSnapshot {
+  /** YYYY-MM-DD in JST. Reset when a new day starts. */
+  date: string;
+  /** All bets placed today, JSON-serialized form of state.bets Map.
+   * Decision shape mirrors BetDecision in race-scheduler.ts; kept inline to
+   * avoid a circular import. Update both together. */
+  bets: Array<{
+    raceId: number;
+    decision: {
+      raceId: number;
+      stadiumName: string;
+      raceNumber: number;
+      boatNumber: number;
+      prob: number;
+      odds: number;
+      ev: number;
+      betAmount: number;
+      recommend: boolean;
+      tickets: Array<{
+        combo: string;
+        modelProb: number;
+        marketOdds: number;
+        ev: number;
+      }>;
+    };
+  }>;
+  /** All race results today, JSON-serialized form of state.results Map. */
+  results: Array<{
+    raceId: number;
+    won: boolean;
+    payout: number;
+  }>;
+  /** Daily skip count breakdown. */
+  skipCounts: {
+    not_b1_top: number;
+    gap12_low: number;
+    top3_conc_low: number;
+    gap23_low: number;
+    no_ev_tickets: number;
+    drift_drop: number;
+    stadium_excluded: number;
+    withdrawal: number;
+  };
+  /** Cumulative T-1 drift drops for the day. */
+  t1DroppedTickets: number;
+}
+
 export interface BankrollState {
   bankroll: number;
   allTimeInitial: number;
   startedAt: string; // first run ISO date
   lastUpdate: string; // ISO timestamp
+  /** Today's snapshot. Null/missing on first run or after day rollover. */
+  today?: DailyRunnerSnapshot;
   /** Path this state is persisted to. Not serialized. */
   _path?: string;
 }

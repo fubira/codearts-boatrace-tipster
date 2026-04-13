@@ -20,6 +20,16 @@ export interface RaceSlot {
 }
 
 /** Bet decision stored during prediction. */
+/** A single trifecta ticket as known at BET time.
+ * Persisted with BetDecision so the result phase can detect refunds and
+ * compute payouts even after a runner restart wipes the prediction cache. */
+export interface BetTicketRecord {
+  combo: string;
+  modelProb: number;
+  marketOdds: number;
+  ev: number;
+}
+
 export interface BetDecision {
   raceId: number;
   stadiumName: string;
@@ -30,6 +40,8 @@ export interface BetDecision {
   ev: number;
   betAmount: number;
   recommend: boolean;
+  /** Tickets the runner committed to at BET time (post-T-1 drift). */
+  tickets: BetTicketRecord[];
 }
 
 // Timing constants (minutes relative to deadline)
