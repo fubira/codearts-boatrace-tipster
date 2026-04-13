@@ -73,6 +73,8 @@ def simulate_p2_once(
     total_payout = 0.0
     win_days = 0
     all_loss_days = 0
+    total_bets = 0
+    active_days = 0  # days with at least one bet placed
 
     # Bernoulli params for stochastic ticket count
     base_tickets = int(math.floor(tickets_per_bet))
@@ -82,6 +84,8 @@ def simulate_p2_once(
         n_bets = rng.poisson(bets_per_day)
         if n_bets == 0:
             continue
+        active_days += 1
+        total_bets += n_bets
 
         raw_unit = bankroll / unit_divisor
         unit = max(min_unit, min(max_unit, int(raw_unit / 100) * 100))
@@ -135,6 +139,8 @@ def simulate_p2_once(
                 "max_consec_loss": max_consec_loss,
                 "win_day_rate": win_days / n_days,
                 "all_loss_day_rate": all_loss_days / n_days,
+                "avg_bets_per_day": total_bets / n_days,
+                "total_bets": total_bets,
                 "bust": True,
             }
 
@@ -146,6 +152,8 @@ def simulate_p2_once(
         "max_consec_loss": max_consec_loss,
         "win_day_rate": win_days / n_days,
         "all_loss_day_rate": all_loss_days / n_days,
+        "avg_bets_per_day": total_bets / n_days,
+        "total_bets": total_bets,
         "bust": False,
     }
 
@@ -212,10 +220,17 @@ def run_mc(
           f"({params['n_wins']} wins)")
     print()
 
-    header = f"{'Period':>8} {'BR med':>10} {'P/L med':>12} {'P25':>12} {'P75':>12} {'DD med':>7} {'Bust':>6}"
-    print(header)
-    print("-" * len(header))
+    # Table 1: P/L distribution (percentiles + mean)
+    print("## P/L distribution")
+    header1 = (
+        f"{'Period':>8} "
+        f"{'P5':>11} {'P25':>11} {'P50':>11} {'P75':>11} {'P95':>11} "
+        f"{'mean':>11}"
+    )
+    print(header1)
+    print("-" * len(header1))
 
+    all_results: dict[str, list[dict]] = {}
     for label, n_days in periods.items():
         results = [
             simulate_p2_once(
@@ -232,21 +247,93 @@ def run_mc(
             )
             for _ in range(n_sims)
         ]
-
-        final_brs = np.array([r["final_bankroll"] for r in results])
+        all_results[label] = results
         profits = np.array([r["profit"] for r in results])
-        dd_pcts = np.array([r["max_dd_pct"] for r in results])
-        busts = sum(1 for r in results if r["bust"])
 
         print(
             f"{label:>8} "
-            f"¥{np.median(final_brs):>9,.0f} "
-            f"{np.median(profits):>+11,.0f} "
-            f"{np.percentile(profits, 25):>+11,.0f} "
-            f"{np.percentile(profits, 75):>+11,.0f} "
+            f"{np.percentile(profits, 5):>+10,.0f} "
+            f"{np.percentile(profits, 25):>+10,.0f} "
+            f"{np.percentile(profits, 50):>+10,.0f} "
+            f"{np.percentile(profits, 75):>+10,.0f} "
+            f"{np.percentile(profits, 95):>+10,.0f} "
+            f"{np.mean(profits):>+10,.0f}"
+        )
+
+    print()
+
+    # Table 2: Downside metrics
+    print("## Downside")
+    header2 = (
+        f"{'Period':>8} {'Loss%':>7} {'≤0%':>7} {'Worst':>13} "
+        f"{'DD med':>7} {'DD P95':>7} {'DD max':>7} {'Bust':>6}"
+    )
+    print(header2)
+    print("-" * len(header2))
+    for label, results in all_results.items():
+        profits = np.array([r["profit"] for r in results])
+        dd_pcts = np.array([r["max_dd_pct"] for r in results])
+        busts = sum(1 for r in results if r["bust"])
+        loss_rate = float(np.mean(profits < 0))
+        breakeven_or_loss = float(np.mean(profits <= 0))
+        print(
+            f"{label:>8} "
+            f"{loss_rate:>6.1%} "
+            f"{breakeven_or_loss:>6.1%} "
+            f"{profits.min():>+12,.0f} "
             f"{np.median(dd_pcts):>6.1%} "
+            f"{np.percentile(dd_pcts, 95):>6.1%} "
+            f"{dd_pcts.max():>6.1%} "
             f"{busts / n_sims:>6.1%}"
         )
+
+    print()
+
+    # Table 3: Upside / growth
+    print("## Growth (final bankroll)")
+    header3 = f"{'Period':>8} {'BR P5':>12} {'BR P50':>12} {'BR P95':>12} {'Best':>14}"
+    print(header3)
+    print("-" * len(header3))
+    for label, results in all_results.items():
+        final_brs = np.array([r["final_bankroll"] for r in results])
+        print(
+            f"{label:>8} "
+            f"¥{np.percentile(final_brs, 5):>10,.0f} "
+            f"¥{np.percentile(final_brs, 50):>10,.0f} "
+            f"¥{np.percentile(final_brs, 95):>10,.0f} "
+            f"¥{final_brs.max():>12,.0f}"
+        )
+
+    print()
+
+    # Table 4: Activity (bets / win days)
+    print("## Activity")
+    header4 = (
+        f"{'Period':>8} {'bets/day':>10} {'total bets':>12} "
+        f"{'勝ち日':>8} {'全敗日':>8} {'max 連敗':>10}"
+    )
+    print(header4)
+    print("-" * len(header4))
+    for label, results in all_results.items():
+        avg_bpd = np.mean([r["avg_bets_per_day"] for r in results])
+        total_b = np.mean([r["total_bets"] for r in results])
+        win_day = np.mean([r["win_day_rate"] for r in results])
+        loss_day = np.mean([r["all_loss_day_rate"] for r in results])
+        max_streak = np.mean([r["max_consec_loss"] for r in results])
+        print(
+            f"{label:>8} "
+            f"{avg_bpd:>9.2f} "
+            f"{total_b:>11,.0f} "
+            f"{win_day:>7.1%} "
+            f"{loss_day:>7.1%} "
+            f"{max_streak:>9.1f}"
+        )
+
+    print()
+    print(
+        f"Note: profits are profit-from-initial (not total turnover). "
+        f"initial bankroll = ¥{initial_bankroll:,.0f}"
+    )
 
 
 def count_active_days(db_path: str, from_date: str, to_date: str) -> int:
