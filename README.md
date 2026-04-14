@@ -94,15 +94,15 @@ bun run start run --live                            # LIVE モード（将来の
 
 ## ML 学習・チューニング
 
-サーバ側の Optuna 探索 (server-tune.sh) で並列実行・自動 prefix 採番される。
+サーバ側の Optuna 探索 (server-tune.sh) で並列実行・自動 prefix 採番される。Phase 1 (tune) 完了後に Phase 2 (Kelly 上位 N × 5 seed stability check) がサーバで自動連続実行され、kick 1 回 + fetch 1 回で promote 候補の ranking まで取得できる。
 
 ```bash
-./scripts/server-tune.sh --trials 100                # 通常探索
-./scripts/server-tune.sh --trials 100 --from-model models/p2_v2 --narrow
+./scripts/server-tune.sh --trials 400                # 通常探索 (overnight target)
+./scripts/server-tune.sh --trials 400 --from-model models/p2_v2 --narrow
 ./scripts/server-tune.sh --watch                     # ログ監視
-./scripts/server-tune.sh --fetch                     # 結果取得
+./scripts/server-tune.sh --fetch                     # 結果取得 (Phase 1 + Phase 2 の log)
 
-# 上位 trial を dev モデルとして学習
+# 上位 trial を dev モデルとして学習 (Phase 2 の stability_score 上位から)
 cd ml && uv run python -m scripts.train_dev_model --tune-log <log> --trials 294
 # 本番昇格は ml/models/active.json を書き換えるだけ
 ```
