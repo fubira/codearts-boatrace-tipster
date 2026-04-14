@@ -48,7 +48,8 @@ N_JOBS=2
 NUM_THREADS=2
 OBJECTIVE=""
 FIX_THRESHOLDS=""
-PHASE2_TOP="10"          # default 10 by Kelly. --phase2 N to override, --no-phase2 to disable
+PHASE2_TOP=""            # empty = auto-scale from TRIALS (see resolve below).
+                         # --phase2 N: override. --no-phase2: disable.
 PHASE2_FROM="2026-01-01"
 PHASE2_TO=""             # empty = today
 
@@ -86,7 +87,7 @@ while [[ $# -gt 0 ]]; do
     --objective) OBJECTIVE="$2"; shift 2 ;;
     --fix-thresholds) FIX_THRESHOLDS="$2"; shift 2 ;;
     --phase2) PHASE2_TOP="$2"; shift 2 ;;
-    --no-phase2) PHASE2_TOP=""; shift ;;
+    --no-phase2) PHASE2_TOP="SKIP"; shift ;;
     --phase2-from) PHASE2_FROM="$2"; shift 2 ;;
     --phase2-to) PHASE2_TO="$2"; shift 2 ;;
     --help)
@@ -117,10 +118,10 @@ Optuna options:
   --num-threads N   trial あたりの LightGBM スレッド数 (default: 2 = 4thread/2jobs、i7-6700 の半分)
 
 Phase 2 (デフォルト ON、Phase 1 完了後にサーバで連続実行):
-  --phase2 N        Kelly 上位 N 個を seed_stability_check で 5 seed 評価 (default: 10)。
+  --phase2 N        Kelly 上位 N 個を seed_stability_check で 5 seed 評価。
+                    省略時は trials/25 で自動 scale (50→2, 400→16, 500→20)。
+                    2026-04-14 実測で「trial 数 / ~25 個」が真に検証すべき候補数。
                     最終 ranking は stability_score (mean - std) で並ぶ。
-                    Phase 1 と同じ remote run script 内で連続実行されるので、
-                    kick 1 回・fetch 1 回で完結 (A→B→C のサイクル不要)。
   --no-phase2       Phase 2 を無効化 (Phase 1 だけ実行)
   --phase2-from D   Phase 2 OOS 評価期間 開始 (default: 2026-01-01)
   --phase2-to D     Phase 2 OOS 評価期間 終了 (default: 今日)
@@ -312,6 +313,23 @@ _detach_run() {
   local tune_cmd
   tune_cmd=$(_build_cmd)
 
+  # Resolve Phase 2 top-N. Empty = auto-scale: max(TRIALS/25, 2).
+  # This gives 50 trials → 2, 100 → 4, 400 → 16, 500 → 20 — scales with
+  # how many "real candidates" a tune run typically produces (rough rule
+  # of thumb from 2026-04-14: one usable HP per ~25-50 trials).
+  # Explicit "SKIP" from --no-phase2 disables Phase 2 entirely.
+  local phase2_top_resolved=""
+  if [ "${PHASE2_TOP}" = "SKIP" ]; then
+    phase2_top_resolved=""
+  elif [ -z "${PHASE2_TOP}" ]; then
+    phase2_top_resolved=$(( TRIALS / 25 ))
+    if [ "${phase2_top_resolved}" -lt 2 ]; then
+      phase2_top_resolved=2
+    fi
+  else
+    phase2_top_resolved="${PHASE2_TOP}"
+  fi
+
   # Resolve gap12_th from local active model so Phase 2 uses the current
   # production filter (not a hardcoded value that drifts).
   local active_model
@@ -334,10 +352,10 @@ EOF
   # inside the remote script so the user only kicks once and only
   # fetches once — no local A→B→C babysitting.
   local phase2_cmd=""
-  if [ -n "${PHASE2_TOP}" ]; then
+  if [ -n "${phase2_top_resolved}" ]; then
     phase2_cmd="nice -n 19 ionice -c 3 uv run --directory ml python -m scripts.seed_stability_check"
     phase2_cmd+=" --tune-log ${REMOTE_LOG_FILE}"
-    phase2_cmd+=" --top-n ${PHASE2_TOP}"
+    phase2_cmd+=" --top-n ${phase2_top_resolved}"
     phase2_cmd+=" --from ${PHASE2_FROM}"
     phase2_cmd+=" --to ${phase2_to}"
     phase2_cmd+=" --gap12-th ${gap12_th}"
@@ -384,8 +402,8 @@ EOF
   pid=$(remote "cat ${REMOTE_PID_FILE}")
   log "Started on ${REMOTE_HOSTNAME} (PID: ${pid})"
   log "  Phase 1: ${TRIALS} trials × ${FOLDS} folds"
-  if [ -n "${PHASE2_TOP}" ]; then
-    log "  Phase 2: Kelly top ${PHASE2_TOP} × 5 seeds (gap12=${gap12_th}, to=${phase2_to})"
+  if [ -n "${phase2_top_resolved}" ]; then
+    log "  Phase 2: Kelly top ${phase2_top_resolved} × 5 seeds (gap12=${gap12_th}, to=${phase2_to})"
   else
     log "  Phase 2: skipped (--no-phase2)"
   fi
