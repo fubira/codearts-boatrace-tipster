@@ -48,6 +48,9 @@ N_JOBS=2
 NUM_THREADS=2
 OBJECTIVE=""
 FIX_THRESHOLDS=""
+PHASE2_TOP="10"          # default 10 by Kelly. --phase2 N to override, --no-phase2 to disable
+PHASE2_FROM="2026-01-01"
+PHASE2_TO=""             # empty = today
 
 SETUP_ONLY=false
 FOREGROUND=false
@@ -82,6 +85,10 @@ while [[ $# -gt 0 ]]; do
     --num-threads) NUM_THREADS="$2"; shift 2 ;;
     --objective) OBJECTIVE="$2"; shift 2 ;;
     --fix-thresholds) FIX_THRESHOLDS="$2"; shift 2 ;;
+    --phase2) PHASE2_TOP="$2"; shift 2 ;;
+    --no-phase2) PHASE2_TOP=""; shift ;;
+    --phase2-from) PHASE2_FROM="$2"; shift 2 ;;
+    --phase2-to) PHASE2_TO="$2"; shift 2 ;;
     --help)
       cat <<'HELP'
 Usage: ./scripts/server-tune.sh [options]
@@ -108,6 +115,15 @@ Optuna options:
   --narrow          --from-model の最初のモデル周辺だけを探索（要 --from-model）
   --n-jobs N        並列 trial 数 (default: 2、サーバーでのみ許可)
   --num-threads N   trial あたりの LightGBM スレッド数 (default: 2 = 4thread/2jobs、i7-6700 の半分)
+
+Phase 2 (--fetch 後に自動実行、デフォルト ON):
+  --phase2 N        Kelly 上位 N 個を seed_stability_check で 5 seed 評価 (default: 10)。
+                    最終 ranking は stability_score (mean - std) で並ぶ。
+                    Phase 1 の WF-CV 値は seed luck で上下するため、本来の性能は
+                    Phase 2 でしか測れない (2026-04-14 確定)。
+  --no-phase2       Phase 2 を無効化 (Phase 1 ログだけ取得して終了)
+  --phase2-from D   Phase 2 OOS 評価期間 開始 (default: 2026-01-01)
+  --phase2-to D     Phase 2 OOS 評価期間 終了 (default: 今日)
 
 General:
   --skip-sync       コード・データ同期スキップ
@@ -224,7 +240,8 @@ _status() {
 _watch() {
   log "Watching server log (auto-exits on completion)..."
   remote -t "while [ ! -f ${REMOTE_LOG_FILE} ]; do sleep 1; done; tail -f ${REMOTE_LOG_FILE} | sed -u '/=== Done ===/q'"
-  log "Completed. Run --fetch to download results."
+  log "Tune completed. Auto-fetching + Phase 2..."
+  _fetch
 }
 
 _fetch() {
@@ -254,6 +271,26 @@ _fetch() {
   echo ""
   echo "=== Results ==="
   remote "sed -n '/^=\\{60\\}/,/^Total time/p' ${REMOTE_LOG_FILE} 2>/dev/null" || true
+
+  # Phase 2: Local seed_stability_check on Kelly-top trials.
+  # Phase 1 (above) used a single LightGBM seed and is noise-dominated,
+  # so its top trials may include winner's curse picks (e.g. 4-12 #266 was
+  # growth #1 but OOS-worst). Phase 2 retrains the Kelly-top N candidates
+  # with 5 seeds and ranks them by stability_score = mean - std.
+  if [ -n "${PHASE2_TOP}" ]; then
+    local to_date="${PHASE2_TO:-$(date '+%Y-%m-%d')}"
+    log "=== Phase 2: seed_stability_check (top ${PHASE2_TOP} by Kelly) ==="
+    log "  OOS period: ${PHASE2_FROM} ~ ${to_date}"
+    log "  Tune log: ${log_file}"
+    (
+      cd ml && PYTHONPATH=scripts:src uv run python scripts/seed_stability_check.py \
+        --tune-log "../${log_file}" \
+        --top-n "${PHASE2_TOP}" \
+        --from "${PHASE2_FROM}" \
+        --to "${to_date}" \
+        --gap12-th 0.04
+    ) || log "WARNING: phase2 seed_stability_check failed"
+  fi
 }
 
 # ============================================================

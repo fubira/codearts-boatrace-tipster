@@ -565,6 +565,13 @@ def main():
             # X already has exactly the FEATURES columns. LightGBM is silent
             # (verbose=-1 in DEFAULT_PARAMS), so no stdout redirect needed —
             # the redirect was thread-unsafe under --n-jobs > 1.
+            # Early stopping disabled: Test E (2026-04-14) showed that
+            # early_stopping_rounds=200 picks wildly different best_iter
+            # values from tiny val data perturbations (e.g. 363 vs 808 from
+            # a 0.4% train data shift), causing 2x growth differences for
+            # the same HP. Full training matches production (which uses
+            # n_estimators upper bound, no early stop) and gives stable
+            # predictions across data shifts.
             rank_model, _ = train_model(
                 fold["train"]["X"], fold["train"]["y"], fold["train"]["meta"],
                 fold["val"]["X"], fold["val"]["y"], fold["val"]["meta"],
@@ -572,11 +579,12 @@ def main():
                 learning_rate=learning_rate,
                 relevance_scheme=relevance,
                 extra_params=rank_params,
-                early_stopping_rounds=200,
+                early_stopping_rounds=None,
             )
-            # Track effective iteration count for production training
-            best_it = getattr(rank_model, "best_iteration_", None)
-            fold_best_iters.append(best_it if best_it is not None else n_estimators)
+            # Without early stopping, best_iter == n_estimators always.
+            # Kept for backwards compatibility with downstream tools that
+            # read avg_best_iter (now equals avg n_estimators).
+            fold_best_iters.append(n_estimators)
 
             rank_scores = rank_model.predict(fold["test"]["X"])
 

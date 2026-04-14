@@ -154,7 +154,11 @@ def main():
     parser.add_argument("--tune-log", required=True,
                         help="Path to tune log (or trials.json sidecar)")
     parser.add_argument("--top-n", type=int, default=5,
-                        help="Number of top trials to evaluate (default: 5)")
+                        help="Number of top trials to evaluate (default: 5). "
+                             "Ignored when --trials is given.")
+    parser.add_argument("--trials", default=None,
+                        help="Explicit comma-separated trial numbers to evaluate "
+                             "(e.g. '17,19'). Overrides --top-n.")
     parser.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS),
                         help="Comma-separated LightGBM random_state seeds")
     parser.add_argument("--from", dest="from_date", required=True)
@@ -183,12 +187,29 @@ def main():
     gap12_default = fix_th.get("gap12", 0.0)
 
     # log_info["trials"] is {trial_number: {growth, params, user_attrs}}.
-    # Sort by growth desc and keep (number, info) pairs.
-    trial_items = sorted(
-        log_info["trials"].items(),
-        key=lambda kv: kv[1].get("growth") or float("-inf"),
-        reverse=True,
-    )[: args.top_n]
+    if args.trials:
+        # Explicit selection: trial numbers given by user, preserve their order.
+        wanted = [int(t.strip()) for t in args.trials.split(",")]
+        trial_items = []
+        for num in wanted:
+            if num in log_info["trials"]:
+                trial_items.append((num, log_info["trials"][num]))
+            else:
+                print(f"WARN: trial #{num} not in log, skipping", file=sys.stderr)
+    else:
+        # Top N by Kelly (Phase 2 selection criterion as of 2026-04-14).
+        # We deliberately do NOT use growth or P/L: the 4-12 tune showed
+        # growth #1 (#266, kelly 0.28) was OOS-worst, while kelly #1 (#294,
+        # growth 4位) became p2_v2 production. Kelly correlates better with
+        # OOS performance than growth in our data. The final ranking after
+        # seed eval uses stability_score = mean - std (printed below).
+        # Note: kelly lives in user_attrs (not at the top of the trial dict).
+        def _kelly(kv):
+            ua = kv[1].get("user_attrs") or {}
+            return ua.get("kelly") or float("-inf")
+        trial_items = sorted(
+            log_info["trials"].items(), key=_kelly, reverse=True,
+        )[: args.top_n]
     if not trial_items:
         print("No trials found.", file=sys.stderr)
         sys.exit(1)
@@ -248,11 +269,17 @@ def main():
 
         mean_pl = statistics.mean(trial_pls)
         std_pl = statistics.stdev(trial_pls) if len(trial_pls) > 1 else 0.0
+        # Hit rate is critical for Kelly stability: a trial with high mean P/L
+        # but low hit rate accumulates consecutive losses, blowing up bankroll
+        # variance under fractional Kelly. Track mean hit rate alongside P/L.
+        trial_hits = [s["hit_pct"] for _, s in per_seed_rows]
+        mean_hit = statistics.mean(trial_hits)
         results.append({
             "trial": trial_num,
             "wf_cv_value": trial.get("growth"),
             "mean_pl": mean_pl,
             "std_pl": std_pl,
+            "mean_hit": mean_hit,
             "per_seed": per_seed_rows,
             "elapsed": elapsed,
             "relevance": relevance,
@@ -265,23 +292,34 @@ def main():
             file=sys.stderr,
         )
 
-    # Output: per-trial summary then per-seed details
+    # Output: per-trial summary then per-seed details.
+    # Sort by stability_score = mean - std (penalize variance). This
+    # automatically demotes winner's curse trials and surfaces robust HPs.
+    for r in results:
+        r["stability_score"] = r["mean_pl"] - r["std_pl"]
+
     print(f"\n=== Seed stability check ===")
     print(f"Tune log: {args.tune_log}")
     print(f"Period: {args.from_date} ~ {args.to_date}")
     print(f"Seeds: {seeds}")
+    print(f"Ranked by stability_score = mean - std (higher = more robust)")
+    print(f"Hit% is mean across seeds. Hit% < 10% destabilizes Kelly betting.")
     print()
     print(
-        f"{'trial':>6} {'WF-CV':>9} {'mean P/L':>11} {'std P/L':>10} "
-        f"{'min':>10} {'max':>10} {'rel':>10}"
+        f"{'trial':>6} {'WF-CV':>9} {'stability':>11} {'mean P/L':>11} "
+        f"{'std P/L':>10} {'min':>10} {'max':>10} {'hit%':>6} {'rel':>10}"
     )
-    print("-" * 72)
-    for r in sorted(results, key=lambda r: -r["mean_pl"]):
+    print("-" * 92)
+    for r in sorted(results, key=lambda r: -r["stability_score"]):
         pls = [s["pl"] for _, s in r["per_seed"]]
+        # Mark hit rate < 10% with a warning glyph (Kelly instability risk)
+        hit_marker = " " if r["mean_hit"] >= 10.0 else "!"
         print(
             f"  #{r['trial']:>3} {r['wf_cv_value']:>9.6f} "
+            f"{r['stability_score']:>+11,.0f} "
             f"{r['mean_pl']:>+11,.0f} {r['std_pl']:>10,.0f} "
-            f"{min(pls):>+10,.0f} {max(pls):>+10,.0f} {r['relevance']:>10}"
+            f"{min(pls):>+10,.0f} {max(pls):>+10,.0f} "
+            f"{r['mean_hit']:>5.1f}{hit_marker}{r['relevance']:>10}"
         )
 
     print()
