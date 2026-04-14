@@ -553,6 +553,7 @@ def main():
         fold_profits = []
         fold_best_iters = []
         total_races = 0
+        total_wins = 0
         total_cost = 0.0
         total_payout = 0.0
         rois = []
@@ -600,6 +601,7 @@ def main():
             fold_profit = result["payout"] - result["cost"]
             fold_profits.append(fold_profit)
             total_races += result["races"]
+            total_wins += result["wins"]
             total_cost += result["cost"]
             total_payout += result["payout"]
             rois.append(result["roi"] if result["cost"] > 0 else 0)
@@ -625,12 +627,19 @@ def main():
             else 0
         )
 
+        # Hit rate across all folds. Used by downstream tools (Phase 2
+        # selection filter, feedback_hit_rate_10pct_boundary). <10% is a
+        # Kelly stability risk — low-hit × high-ROI HPs blow up variance.
+        hit_pct = (100 * total_wins / total_races) if total_races > 0 else 0.0
+
         # Set user_attrs BEFORE any early return so downstream tools (Top 10
         # print, trials.json, train_dev_model.py) can safely read them for all
         # COMPLETE trials.
         trial.set_user_attr("mean_roi", round(mean_roi, 4))
         trial.set_user_attr("rois", [round(r, 4) for r in rois])
         trial.set_user_attr("total_races", total_races)
+        trial.set_user_attr("total_wins", total_wins)
+        trial.set_user_attr("hit_pct", round(hit_pct, 2))
         trial.set_user_attr("profit", round(profit, 1))
         trial.set_user_attr("growth", round(growth, 6))
         trial.set_user_attr("kelly", round(kelly, 4))
@@ -708,6 +717,7 @@ def main():
     ba = study.best_trial.user_attrs
     print(f"\nBest trial metrics:")
     print(f"  Mean ROI: {ba.get('mean_roi', 0):.1%}")
+    print(f"  Hit%:     {ba.get('hit_pct', 0):.1f}%")
     print(f"  Profit:   {ba.get('profit', 0):+,.0f}円")
     print(f"  Races:    {ba.get('total_races', 0)}")
     print(f"  Growth:   {ba.get('growth', 'N/A')}")
@@ -759,9 +769,10 @@ def main():
         roi = ua.get("mean_roi", 0.0)
         pl = ua.get("profit", 0.0)
         n = ua.get("total_races", 0)
+        hit = ua.get("hit_pct", 0.0)
         print(
             f"  #{t.number:>3}: growth={growth:.6f} kelly={kelly_v} ROI={roi:.0%} "
-            f"P/L={pl:+,.0f} n={n} "
+            f"hit={hit:.1f}% P/L={pl:+,.0f} n={n} "
             f"rel={rel} gap23={g23} ev={evt} conc={t3c} gap12={g12}"
         )
 
