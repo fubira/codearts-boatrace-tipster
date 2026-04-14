@@ -154,6 +154,21 @@ bun run start predict -d 2026-04-13 --model-dir ml/models/p2_v1
 bun run start predict -d 2026-04-13 --json
 ```
 
+### 運用診断
+
+日次・週次の状況確認スクリプト。DB の最新レースから自動で期間を解決するので引数なしでも動く。
+
+```bash
+# 1 日の P2 判定を bucket 別に分類 (BOUGHT / not_b1 / gap12_low / conc_low / gap23_low / ev_low)
+# borderline skip と「閾値を緩めた場合の追加 hit」を表示
+cd ml && uv run python -m scripts.analyze_decisions              # 最新日
+cd ml && uv run python -m scripts.analyze_decisions --date 2026-04-14
+
+# recent (default 7 日) vs baseline (default 30 日) で miss 内訳を比較
+# 最近のハズレが過去と同じ分布かを確認、週次 health check
+cd ml && uv run python -m scripts.compare_miss_patterns
+```
+
 ## ML: 特徴量パイプライン
 
 P2 戦略では2つの特徴量構築 path がある:
