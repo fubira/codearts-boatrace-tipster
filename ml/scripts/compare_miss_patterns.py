@@ -32,6 +32,7 @@ import argparse
 import contextlib
 import io
 import json
+import math
 import pickle
 from collections import Counter
 
@@ -109,15 +110,22 @@ def analyze_period(df_full, odds_map, model, feature_means, strategy,
         hit_combo = f"{a1}-{a2}-{a3}"
         any_hit = any(t["combo"] == hit_combo for t in tickets)
 
-        # Boat 1 actual finish position (1-6)
+        # Boat 1 actual finish position (1-6) or DSQ (NaN from フライング/欠場).
+        # int(np.nan) raises ValueError, so explicitly guard against NaN.
         boat1_idx = np.where(boats_2d[i] == 1)[0][0]
-        boat1_finish = int(finish_2d[i, boat1_idx])  # 1=1st, 2=2nd, etc. NaN=DSQ
+        boat1_raw = finish_2d[i, boat1_idx]
+        if isinstance(boat1_raw, float) and math.isnan(boat1_raw):
+            boat1_finish = 0  # 0 = DSQ sentinel
+        else:
+            boat1_finish = int(boat1_raw)
 
         # Classify miss reason
         if any_hit:
             miss_reason = "HIT"
+        elif boat1_finish == 0:
+            miss_reason = "boat1_DSQ"
         elif boat1_finish != 1:
-            miss_reason = f"boat1_{boat1_finish}th" if boat1_finish else "boat1_DSQ"
+            miss_reason = f"boat1_{boat1_finish}th"
         else:
             # Boat 1 won but 2/3 order wrong
             miss_reason = "2_3_order_wrong"

@@ -192,8 +192,13 @@ def main():
             mark = "★" if t["hit"] else " "
             print(f"    {mark}{t['combo']} @ {t['odds']:.1f} (EV {t['ev']:+.1%})")
 
-    # "If we lowered the bar" analysis
-    print(f"\n=== What if we relaxed each threshold by small margin ===\n")
+    # "If we lowered the bar" analysis.
+    # NOTE: Counts races that PASSED this specific filter at the relaxed
+    # threshold. Subsequent filters (next in chain: conc → gap23 → ev) may
+    # still reject them. This is an UPPER BOUND for "extra races if threshold
+    # relaxed", not the actual incremental buy count. To get the actual count,
+    # run the full filter chain with the relaxed threshold.
+    print(f"\n=== What if we relaxed each threshold by small margin (upper bound) ===\n")
     for delta_name, delta_val in [("gap12 -0.005", 0.005), ("gap12 -0.01", 0.01),
                                     ("conc -0.02", 0.02), ("conc -0.05", 0.05),
                                     ("gap23 -0.01", 0.01), ("gap23 -0.02", 0.02)]:
