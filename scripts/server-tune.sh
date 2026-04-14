@@ -116,12 +116,12 @@ Optuna options:
   --n-jobs N        並列 trial 数 (default: 2、サーバーでのみ許可)
   --num-threads N   trial あたりの LightGBM スレッド数 (default: 2 = 4thread/2jobs、i7-6700 の半分)
 
-Phase 2 (--fetch 後に自動実行、デフォルト ON):
+Phase 2 (デフォルト ON、Phase 1 完了後にサーバで連続実行):
   --phase2 N        Kelly 上位 N 個を seed_stability_check で 5 seed 評価 (default: 10)。
                     最終 ranking は stability_score (mean - std) で並ぶ。
-                    Phase 1 の WF-CV 値は seed luck で上下するため、本来の性能は
-                    Phase 2 でしか測れない (2026-04-14 確定)。
-  --no-phase2       Phase 2 を無効化 (Phase 1 ログだけ取得して終了)
+                    Phase 1 と同じ remote run script 内で連続実行されるので、
+                    kick 1 回・fetch 1 回で完結 (A→B→C のサイクル不要)。
+  --no-phase2       Phase 2 を無効化 (Phase 1 だけ実行)
   --phase2-from D   Phase 2 OOS 評価期間 開始 (default: 2026-01-01)
   --phase2-to D     Phase 2 OOS 評価期間 終了 (default: 今日)
 
@@ -240,7 +240,7 @@ _status() {
 _watch() {
   log "Watching server log (auto-exits on completion)..."
   remote -t "while [ ! -f ${REMOTE_LOG_FILE} ]; do sleep 1; done; tail -f ${REMOTE_LOG_FILE} | sed -u '/=== Done ===/q'"
-  log "Tune completed. Auto-fetching + Phase 2..."
+  log "Completed. Auto-fetching (Phase 1 + Phase 2 both ran on server)..."
   _fetch
 }
 
@@ -267,46 +267,12 @@ _fetch() {
       log "WARNING: failed to download trials.json"
   fi
 
-  # Show results summary from log
+  # Show last ~60 lines (includes Phase 2 stability ranking output).
+  # Phase 1 + Phase 2 both ran on the server as part of the detach script,
+  # so the log already contains the final stability_score ranking.
   echo ""
   echo "=== Results ==="
-  remote "sed -n '/^=\\{60\\}/,/^Total time/p' ${REMOTE_LOG_FILE} 2>/dev/null" || true
-
-  # Phase 2: Local seed_stability_check on Kelly-top trials.
-  # Phase 1 (above) used a single LightGBM seed and is noise-dominated,
-  # so its top trials may include winner's curse picks (e.g. 4-12 #266 was
-  # growth #1 but OOS-worst). Phase 2 retrains the Kelly-top N candidates
-  # with 5 seeds and ranks them by stability_score = mean - std.
-  if [ -n "${PHASE2_TOP}" ]; then
-    local to_date="${PHASE2_TO:-$(date '+%Y-%m-%d')}"
-    local abs_log
-    abs_log="$(realpath "${log_file}")"
-    local phase2_log="${log_file%.log}.phase2.log"
-    local abs_phase2
-    abs_phase2="$(realpath -m "${phase2_log}")"
-
-    # Read active model's gap12_min_threshold from its model_meta.json so
-    # Phase 2 always evaluates at the current production filter, not a
-    # hardcoded value that drifts when production filter changes.
-    local active_model
-    active_model="$(cd ml && uv run python -c "import json; print(json.load(open('models/active.json'))['model'])" 2>/dev/null || echo "p2_v2")"
-    local gap12_th
-    gap12_th="$(cd ml && uv run python -c "import json; m=json.load(open('models/${active_model}/ranking/model_meta.json')); print(m['strategy']['gap12_min_threshold'])" 2>/dev/null || echo "0.04")"
-
-    log "=== Phase 2: seed_stability_check (top ${PHASE2_TOP} by Kelly) ==="
-    log "  OOS period: ${PHASE2_FROM} ~ ${to_date}"
-    log "  gap12_th: ${gap12_th} (from models/${active_model}/ranking/model_meta.json)"
-    log "  Tune log: ${log_file}"
-    log "  Phase 2 log: ${phase2_log}"
-    (
-      cd ml && PYTHONPATH=scripts:src uv run python scripts/seed_stability_check.py \
-        --tune-log "${abs_log}" \
-        --top-n "${PHASE2_TOP}" \
-        --from "${PHASE2_FROM}" \
-        --to "${to_date}" \
-        --gap12-th "${gap12_th}"
-    ) 2>&1 | tee "${abs_phase2}" || log "WARNING: phase2 seed_stability_check failed"
-  fi
+  remote "tail -60 ${REMOTE_LOG_FILE} 2>/dev/null" || true
 }
 
 # ============================================================
@@ -346,6 +312,14 @@ _detach_run() {
   local tune_cmd
   tune_cmd=$(_build_cmd)
 
+  # Resolve gap12_th from local active model so Phase 2 uses the current
+  # production filter (not a hardcoded value that drifts).
+  local active_model
+  active_model="$(cd ml && uv run python -c "import json; print(json.load(open('models/active.json'))['model'])" 2>/dev/null || echo "p2_v2")"
+  local gap12_th
+  gap12_th="$(cd ml && uv run python -c "import json; m=json.load(open('models/${active_model}/ranking/model_meta.json')); print(m['strategy']['gap12_min_threshold'])" 2>/dev/null || echo "0.04")"
+  local phase2_to="${PHASE2_TO:-$(date '+%Y-%m-%d')}"
+
   # Archive previous log using its mtime as YYYY-MM-DD_HHMM
   remote bash <<EOF
 mkdir -p ${REMOTE_DIR_RESOLVED}/tune-logs
@@ -354,6 +328,20 @@ if [ -s "${REMOTE_LOG_FILE}" ]; then
   cp "${REMOTE_LOG_FILE}" "${REMOTE_DIR_RESOLVED}/tune-logs/\${prev_ts}_server-tune.log" 2>/dev/null || true
 fi
 EOF
+
+  # Build the Phase 2 command (seed_stability_check) to run on server
+  # right after Phase 1 completes. tateyamakun pattern: both phases run
+  # inside the remote script so the user only kicks once and only
+  # fetches once — no local A→B→C babysitting.
+  local phase2_cmd=""
+  if [ -n "${PHASE2_TOP}" ]; then
+    phase2_cmd="nice -n 19 ionice -c 3 uv run --directory ml python -m scripts.seed_stability_check"
+    phase2_cmd+=" --tune-log ${REMOTE_LOG_FILE}"
+    phase2_cmd+=" --top-n ${PHASE2_TOP}"
+    phase2_cmd+=" --from ${PHASE2_FROM}"
+    phase2_cmd+=" --to ${phase2_to}"
+    phase2_cmd+=" --gap12-th ${gap12_th}"
+  fi
 
   # Create run script
   remote bash <<EOF
@@ -372,11 +360,19 @@ trap 'rm -f ${REMOTE_PID_FILE}' EXIT
 echo "Started at \$(date '+%Y-%m-%d %H:%M:%S %Z')" > "\$LOG"
 echo "Command: ${tune_cmd}" >> "\$LOG"
 echo "" >> "\$LOG"
-# nice / ionice: yield CPU and IO to the docker containers (runner /
-# scraper / watchtower) running on the same machine. tune is a
-# background research workload — production tasks must always win.
+# Phase 1: Optuna tune (nice / ionice to yield CPU+IO to docker containers
+# running on the same machine: runner / scraper / watchtower).
+echo "=== Phase 1: Optuna tune ===" >> "\$LOG"
 nice -n 19 ionice -c 3 ${tune_cmd} >> "\$LOG" 2>&1
 echo "" >> "\$LOG"
+# Phase 2: seed_stability_check on Kelly top-N of Phase 1 results.
+# Runs on server so no local intervention is required.
+if [ -n "${phase2_cmd}" ]; then
+  echo "=== Phase 2: seed_stability_check ===" >> "\$LOG"
+  date '+%Y-%m-%d %H:%M:%S %Z' >> "\$LOG"
+  ${phase2_cmd} >> "\$LOG" 2>&1 || echo "Phase 2 failed" >> "\$LOG"
+  echo "" >> "\$LOG"
+fi
 echo "=== Done ===" >> "\$LOG"
 date '+%Y-%m-%d %H:%M:%S %Z' >> "\$LOG"
 INNERSCRIPT
@@ -387,7 +383,12 @@ EOF
   local pid
   pid=$(remote "cat ${REMOTE_PID_FILE}")
   log "Started on ${REMOTE_HOSTNAME} (PID: ${pid})"
-  log "  trials=${TRIALS} folds=${FOLDS}"
+  log "  Phase 1: ${TRIALS} trials × ${FOLDS} folds"
+  if [ -n "${PHASE2_TOP}" ]; then
+    log "  Phase 2: Kelly top ${PHASE2_TOP} × 5 seeds (gap12=${gap12_th}, to=${phase2_to})"
+  else
+    log "  Phase 2: skipped (--no-phase2)"
+  fi
   log ""
   log "Check progress:  ./scripts/server-tune.sh --status"
   log "Watch log:       ./scripts/server-tune.sh --watch"
