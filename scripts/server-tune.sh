@@ -86,7 +86,12 @@ while [[ $# -gt 0 ]]; do
     --num-threads) NUM_THREADS="$2"; shift 2 ;;
     --objective) OBJECTIVE="$2"; shift 2 ;;
     --fix-thresholds) FIX_THRESHOLDS="$2"; shift 2 ;;
-    --phase2) PHASE2_TOP="$2"; shift 2 ;;
+    --phase2)
+      if ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: --phase2 requires a positive integer, got '$2'" >&2
+        exit 1
+      fi
+      PHASE2_TOP="$2"; shift 2 ;;
     --no-phase2) PHASE2_TOP="SKIP"; shift ;;
     --phase2-from) PHASE2_FROM="$2"; shift 2 ;;
     --phase2-to) PHASE2_TO="$2"; shift 2 ;;
