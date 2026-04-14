@@ -15,8 +15,6 @@ their semantics.
 
 from __future__ import annotations
 
-import json
-import pickle
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,7 +22,9 @@ import numpy as np
 import pandas as pd
 
 from boatrace_tipster_ml.db import get_connection
-from scripts.tune_p2 import FEATURES, _trifecta_prob
+from boatrace_tipster_ml.feature_config import FEATURES
+from boatrace_tipster_ml.model import load_model, load_model_meta
+from scripts.tune_p2 import _trifecta_prob
 
 FIELD_SIZE = 6
 
@@ -62,11 +62,18 @@ class RaceDecision:
 
 
 def load_model_and_strategy(model_dir: str) -> tuple[Any, dict, dict[str, float]]:
-    """Load a saved P2 ranking model and its strategy + feature_means."""
-    with open(f"{model_dir}/ranking/model.pkl", "rb") as f:
-        model = pickle.load(f)
-    with open(f"{model_dir}/ranking/model_meta.json") as f:
-        meta = json.load(f)
+    """Load a saved P2 ranking model and its strategy + feature_means.
+
+    `model_dir` is the parent directory (e.g. `models/p2_v2`); the actual
+    artifacts live in `<model_dir>/ranking/` per the project layout.
+    Delegates to `boatrace_tipster_ml.model` so path conventions stay
+    centralized.
+    """
+    ranking_dir = f"{model_dir}/ranking"
+    model = load_model(ranking_dir)
+    meta = load_model_meta(ranking_dir)
+    if meta is None:
+        raise FileNotFoundError(f"model_meta.json not found in {ranking_dir}")
     return model, meta["strategy"], meta["feature_means"]
 
 

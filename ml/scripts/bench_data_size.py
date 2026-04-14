@@ -23,9 +23,10 @@ import numpy as np
 import pandas as pd
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
+from boatrace_tipster_ml.feature_config import FEATURES
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import train_model
-from scripts.tune_p2 import FEATURES, _load_trifecta_odds, evaluate_p2_strategy
+from scripts.tune_p2 import _load_trifecta_odds, evaluate_p2_strategy
 
 FIELD_SIZE = 6
 

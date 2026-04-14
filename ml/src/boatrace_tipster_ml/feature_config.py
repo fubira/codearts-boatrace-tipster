@@ -63,6 +63,21 @@ FEATURE_COLS: list[str] = [
     "race_min_avg_course_diff",
 ]
 
+# Non-odds P2 strategy features (21). Used by tune_p2 / train_ranking /
+# predict_p2 / _p2_decision and the ops diagnostic scripts. Kept separate
+# from FEATURE_COLS (legacy 32-feature set) because the P2 ranker is a
+# distinct model with its own feature order.
+FEATURES: list[str] = [
+    "exhibition_time", "rel_exhibition_time", "rel_exhibition_st",
+    "kado_x_exhibition",
+    "bc_lap_zscore", "bc_turn_zscore", "bc_straight_zscore", "bc_slit_zscore",
+    "tourn_exhibition_delta", "tourn_st_delta", "tourn_avg_position",
+    "racer_course_win_rate", "racer_course_top2_rate",
+    "recent_avg_position", "stadium_course_win_rate",
+    "wind_speed_x_boat", "rolling_position_alpha", "position_alpha",
+    "avg_course_diff", "course_taking_rate_at_boat", "race_min_avg_course_diff",
+]
+
 # Features with intentional intraday leakage.
 # At evaluation/prediction time, these are replaced with per-race mean
 # so LambdaRank cannot use them for within-race discrimination.

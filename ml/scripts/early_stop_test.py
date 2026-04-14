@@ -29,10 +29,11 @@ import numpy as np
 import pandas as pd
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
+from boatrace_tipster_ml.feature_config import FEATURES
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import train_model, walk_forward_splits
 from scripts.train_dev_model import parse_tune_log, params_to_hp
-from scripts.tune_p2 import FEATURES, _load_trifecta_odds, evaluate_p2_strategy
+from scripts.tune_p2 import _load_trifecta_odds, evaluate_p2_strategy
 
 FIELD_SIZE = 6
 BANKROLL = 70000.0

@@ -33,11 +33,11 @@ from typing import Any
 import pandas as pd
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
+from boatrace_tipster_ml.feature_config import FEATURES
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import train_model
 from scripts.analyze_model import evaluate_period
 from scripts.train_dev_model import parse_tune_log, params_to_hp
-from scripts.tune_p2 import FEATURES
 
 FIELD_SIZE = 6
 DEFAULT_SEEDS = [42, 100, 200, 300, 400]

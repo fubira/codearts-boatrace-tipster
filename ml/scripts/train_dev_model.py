@@ -32,11 +32,11 @@ from pathlib import Path
 import pandas as pd
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
+from boatrace_tipster_ml.feature_config import FEATURES
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import save_model, save_model_meta, train_model
 from boatrace_tipster_ml.registry import next_prefix as registry_next_prefix
 from boatrace_tipster_ml.registry import peek_prefix
-from scripts.tune_p2 import FEATURES
 
 FIELD_SIZE = 6
 MODELS_DIR = Path("models")

@@ -21,23 +21,12 @@ import optuna
 import pandas as pd
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
+from boatrace_tipster_ml.feature_config import FEATURES
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import train_model, walk_forward_splits
 from boatrace_tipster_ml.registry import next_prefix
 
 FIELD_SIZE = 6
-
-# Non-odds features
-FEATURES = [
-    "exhibition_time", "rel_exhibition_time", "rel_exhibition_st",
-    "kado_x_exhibition",
-    "bc_lap_zscore", "bc_turn_zscore", "bc_straight_zscore", "bc_slit_zscore",
-    "tourn_exhibition_delta", "tourn_st_delta", "tourn_avg_position",
-    "racer_course_win_rate", "racer_course_top2_rate",
-    "recent_avg_position", "stadium_course_win_rate",
-    "wind_speed_x_boat", "rolling_position_alpha", "position_alpha",
-    "avg_course_diff", "course_taking_rate_at_boat", "race_min_avg_course_diff",
-]
 
 
 def _load_enqueue_params(model_dir: str) -> dict:

@@ -23,7 +23,7 @@ from boatrace_tipster_ml.model import (
     save_model_meta,
     train_model,
 )
-from scripts.tune_p2 import FEATURES
+from boatrace_tipster_ml.feature_config import FEATURES
 
 FIELD_SIZE = 6
 
