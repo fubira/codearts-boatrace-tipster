@@ -88,6 +88,16 @@ seed_stability_check.py --tune-log PATH --top-n N --seeds 42,100,200,300,400 \
                         # tune の上位 N 個を K seed で再学習 → OOS 安定性検証 (winner's curse 検出)
                         # ディスクに model を残さず in-memory で完結 (~30s/trial-seed)
 
+# 運用診断ツール（日次 / 週次で状況確認）
+analyze_decisions.py [--date YYYY-MM-DD] [--model-dir DIR]
+                     # 1 日の P2 判定を bucket (BOUGHT/gap12_low/conc_low/gap23_low/ev_low) 別に分類、
+                     # hit 率・borderline skip・"閾値を緩めた場合の追加 hit" を表示
+                     # --date 省略で DB 最新日付。日次レビューに使う
+compare_miss_patterns.py [--recent-days 7] [--baseline-days 30] [--to YYYY-MM-DD]
+                         # recent vs baseline で miss 内訳 (boat1 NOT 1st / ordering wrong) を比較
+                         # 「最近のハズレが過去と同じ分布か」を確認、週次 health check
+                         # --recent-from / --recent-to / --baseline-from / --baseline-to で手動指定可
+
 simulate_p2_mc.py --from DATE --to DATE [--model-dir DIR]
                   [--bankroll N] [--unit-divisor N] [--bet-cap N]
                   [--n-sims N] [--seed N] [--days 30,90,180,365]
