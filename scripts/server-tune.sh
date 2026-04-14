@@ -279,17 +279,33 @@ _fetch() {
   # with 5 seeds and ranks them by stability_score = mean - std.
   if [ -n "${PHASE2_TOP}" ]; then
     local to_date="${PHASE2_TO:-$(date '+%Y-%m-%d')}"
+    local abs_log
+    abs_log="$(realpath "${log_file}")"
+    local phase2_log="${log_file%.log}.phase2.log"
+    local abs_phase2
+    abs_phase2="$(realpath -m "${phase2_log}")"
+
+    # Read active model's gap12_min_threshold from its model_meta.json so
+    # Phase 2 always evaluates at the current production filter, not a
+    # hardcoded value that drifts when production filter changes.
+    local active_model
+    active_model="$(cd ml && uv run python -c "import json; print(json.load(open('models/active.json'))['model'])" 2>/dev/null || echo "p2_v2")"
+    local gap12_th
+    gap12_th="$(cd ml && uv run python -c "import json; m=json.load(open('models/${active_model}/ranking/model_meta.json')); print(m['strategy']['gap12_min_threshold'])" 2>/dev/null || echo "0.04")"
+
     log "=== Phase 2: seed_stability_check (top ${PHASE2_TOP} by Kelly) ==="
     log "  OOS period: ${PHASE2_FROM} ~ ${to_date}"
+    log "  gap12_th: ${gap12_th} (from models/${active_model}/ranking/model_meta.json)"
     log "  Tune log: ${log_file}"
+    log "  Phase 2 log: ${phase2_log}"
     (
       cd ml && PYTHONPATH=scripts:src uv run python scripts/seed_stability_check.py \
-        --tune-log "../${log_file}" \
+        --tune-log "${abs_log}" \
         --top-n "${PHASE2_TOP}" \
         --from "${PHASE2_FROM}" \
         --to "${to_date}" \
-        --gap12-th 0.04
-    ) || log "WARNING: phase2 seed_stability_check failed"
+        --gap12-th "${gap12_th}"
+    ) 2>&1 | tee "${abs_phase2}" || log "WARNING: phase2 seed_stability_check failed"
   fi
 }
 

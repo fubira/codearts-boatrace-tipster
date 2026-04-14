@@ -204,9 +204,12 @@ def main():
         # OOS performance than growth in our data. The final ranking after
         # seed eval uses stability_score = mean - std (printed below).
         # Note: kelly lives in user_attrs (not at the top of the trial dict).
+        # Use `is not None` instead of `or` so trials with kelly=0.0 (all-fold
+        # break-even) sort as 0, not as -inf.
         def _kelly(kv):
             ua = kv[1].get("user_attrs") or {}
-            return ua.get("kelly") or float("-inf")
+            k = ua.get("kelly")
+            return k if k is not None else float("-inf")
         trial_items = sorted(
             log_info["trials"].items(), key=_kelly, reverse=True,
         )[: args.top_n]
@@ -319,7 +322,7 @@ def main():
             f"{r['stability_score']:>+11,.0f} "
             f"{r['mean_pl']:>+11,.0f} {r['std_pl']:>10,.0f} "
             f"{min(pls):>+10,.0f} {max(pls):>+10,.0f} "
-            f"{r['mean_hit']:>5.1f}{hit_marker}{r['relevance']:>10}"
+            f"{r['mean_hit']:>5.1f}{hit_marker} {r['relevance']:>9}"
         )
 
     print()
