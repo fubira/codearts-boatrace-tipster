@@ -49,6 +49,32 @@ DEFAULT_SEEDS = [42, 100, 200, 300, 400]
 PHASE2_MIN_RACES = 500
 
 
+def _compute_month_windows(
+    start_date: str, end_date: str
+) -> list[tuple[str, str, str]]:
+    """Return (name, from, to) for complete calendar months in [start, end).
+
+    A month is "complete" when its end (next month's first day) is <= end_date.
+    Partial months (e.g. the current in-progress month) are excluded so that
+    window definitions are stable across invocations on different days.
+    """
+    start = pd.Timestamp(start_date)
+    end = pd.Timestamp(end_date)
+    cur = pd.Timestamp(year=start.year, month=start.month, day=1)
+    windows: list[tuple[str, str, str]] = []
+    while True:
+        nxt = cur + pd.DateOffset(months=1)
+        if nxt > end:
+            break
+        if cur >= start:
+            windows.append(
+                (cur.strftime("%Y-%m"), cur.strftime("%Y-%m-%d"),
+                 nxt.strftime("%Y-%m-%d"))
+            )
+        cur = nxt
+    return windows
+
+
 def _load_trifecta_odds(db_path: str) -> dict:
     """Load all confirmed 3連単 odds. Same shape as analyze_model uses."""
     conn = get_connection(db_path)
@@ -167,8 +193,15 @@ def main():
                              "(e.g. '17,19'). Overrides --top-n.")
     parser.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS),
                         help="Comma-separated LightGBM random_state seeds")
-    parser.add_argument("--from", dest="from_date", required=True)
-    parser.add_argument("--to", dest="to_date", required=True)
+    parser.add_argument(
+        "--from", dest="from_date", default=None,
+        help="Evaluation range start (default: --end-date). The actual "
+             "windows are complete calendar months within [from, to).",
+    )
+    parser.add_argument(
+        "--to", dest="to_date", default=None,
+        help="Evaluation range end (default: today).",
+    )
     parser.add_argument("--end-date", default="2026-01-01",
                         help="Train data cutoff (default: 2026-01-01 OOS guard)")
     parser.add_argument("--val-months", type=int, default=2)
@@ -180,6 +213,12 @@ def main():
                              "added: pass --gap12-th 0.04 to evaluate at the "
                              "current production filter.")
     args = parser.parse_args()
+
+    # Default --from = --end-date (start of OOS), --to = today
+    if args.from_date is None:
+        args.from_date = args.end_date
+    if args.to_date is None:
+        args.to_date = pd.Timestamp.today().strftime("%Y-%m-%d")
 
     seeds = [int(s.strip()) for s in args.seeds.split(",")]
     print(f"Seeds: {seeds}", file=sys.stderr)
@@ -251,7 +290,21 @@ def main():
 
     odds = _load_trifecta_odds(args.db_path)
 
-    # Run trial × seed grid
+    month_windows = _compute_month_windows(args.from_date, args.to_date)
+    if not month_windows:
+        print(
+            f"ERROR: no complete calendar months in [{args.from_date}, "
+            f"{args.to_date}). Need at least one full month of OOS data.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(
+        f"Evaluation windows ({len(month_windows)} calendar months): "
+        f"{', '.join(w[0] for w in month_windows)}",
+        file=sys.stderr,
+    )
+
+    # Run trial × seed × window grid
     results: list[dict] = []
     for ti, (trial_num, trial) in enumerate(trial_items, 1):
         params = trial["params"]
@@ -263,42 +316,79 @@ def main():
         user_attrs = trial.get("user_attrs", {}) or {}
         avg_best_iter = user_attrs.get("avg_best_iter")
         effective_n_est = int(avg_best_iter) if avg_best_iter else n_est_upper
-        # relevance: search-space param > user_attrs (when fixed via --relevance) > default
         relevance = (
             params.get("relevance")
             or user_attrs.get("relevance")
             or "podium"
         )
 
-        trial_pls: list[float] = []
-        per_seed_rows: list[tuple[int, dict]] = []
+        # per_seed_windows[i][wname] = stats dict for seed[i], window wname
+        per_seed_windows: list[dict[str, dict]] = []
         t0 = time.time()
         for seed in seeds:
             model = _train_one_seed(
                 df_train, val_mask, hp, lr, effective_n_est, relevance, seed,
             )
-            stats = _evaluate(
-                model, df_full, feature_means, conc_th, gap12_th, gap23_th, ev_th,
-                odds, args.from_date, args.to_date,
-            )
-            trial_pls.append(stats["pl"])
-            per_seed_rows.append((seed, stats))
+            seed_window_stats: dict[str, dict] = {}
+            for wname, wfrom, wto in month_windows:
+                seed_window_stats[wname] = _evaluate(
+                    model, df_full, feature_means, conc_th, gap12_th,
+                    gap23_th, ev_th, odds, wfrom, wto,
+                )
+            per_seed_windows.append(seed_window_stats)
         elapsed = time.time() - t0
 
-        mean_pl = statistics.mean(trial_pls)
-        std_pl = statistics.stdev(trial_pls) if len(trial_pls) > 1 else 0.0
-        # Hit rate is critical for Kelly stability: a trial with high mean P/L
-        # but low hit rate accumulates consecutive losses, blowing up bankroll
-        # variance under fractional Kelly. Track mean hit rate alongside P/L.
-        trial_hits = [s["hit_pct"] for _, s in per_seed_rows]
-        mean_hit = statistics.mean(trial_hits)
+        # Aggregate per-window across seeds
+        window_summary: dict[str, dict] = {}
+        for wname, _, _ in month_windows:
+            pls = [s[wname]["pl"] for s in per_seed_windows]
+            hits = [s[wname]["hit_pct"] for s in per_seed_windows]
+            races = [s[wname]["races"] for s in per_seed_windows]
+            window_summary[wname] = {
+                "mean_pl": statistics.mean(pls),
+                "std_pl": statistics.stdev(pls) if len(pls) > 1 else 0.0,
+                "mean_hit": statistics.mean(hits),
+                "mean_races": statistics.mean(races),
+                "min_pl": min(pls),
+                "max_pl": max(pls),
+            }
+
+        # Full OOS = sum of monthly windows per seed, then aggregate across seeds
+        seed_total_pls = [
+            sum(s[wname]["pl"] for wname, _, _ in month_windows)
+            for s in per_seed_windows
+        ]
+        seed_total_races = [
+            sum(s[wname]["races"] for wname, _, _ in month_windows)
+            for s in per_seed_windows
+        ]
+        seed_total_wins = [
+            sum(s[wname]["wins"] for wname, _, _ in month_windows)
+            for s in per_seed_windows
+        ]
+        seed_total_hits = [
+            100 * w / r if r > 0 else 0.0
+            for w, r in zip(seed_total_wins, seed_total_races)
+        ]
+
+        mean_pl = statistics.mean(seed_total_pls)
+        std_pl = statistics.stdev(seed_total_pls) if len(seed_total_pls) > 1 else 0.0
+        mean_hit = statistics.mean(seed_total_hits)
+
+        min_window_pl = min(w["mean_pl"] for w in window_summary.values())
+        worst_window_hit = min(w["mean_hit"] for w in window_summary.values())
+
         results.append({
             "trial": trial_num,
             "wf_cv_value": trial.get("growth"),
             "mean_pl": mean_pl,
             "std_pl": std_pl,
             "mean_hit": mean_hit,
-            "per_seed": per_seed_rows,
+            "min_window_pl": min_window_pl,
+            "worst_window_hit": worst_window_hit,
+            "window_summary": window_summary,
+            "seed_total_pls": seed_total_pls,
+            "per_seed_windows": per_seed_windows,
             "elapsed": elapsed,
             "relevance": relevance,
             "n_est": effective_n_est,
@@ -306,53 +396,82 @@ def main():
         })
         print(
             f"  [{ti}/{len(trial_items)}] trial #{trial_num}: "
-            f"mean P/L {mean_pl:+,.0f} std {std_pl:,.0f} ({elapsed:.0f}s)",
+            f"mean P/L {mean_pl:+,.0f} std {std_pl:,.0f} "
+            f"min_win {min_window_pl:+,.0f} ({elapsed:.0f}s)",
             file=sys.stderr,
         )
 
-    # Output: per-trial summary then per-seed details.
-    # Sort by stability_score = mean - std (penalize variance). This
-    # automatically demotes winner's curse trials and surfaces robust HPs.
+    # Sort by stability_score = mean - std (full OOS across all windows).
+    # This penalizes seed variance. Per-window breakdown below surfaces
+    # regime fragility as diagnostic info; no hard filter is applied.
     for r in results:
         r["stability_score"] = r["mean_pl"] - r["std_pl"]
 
-    print(f"\n=== Seed stability check ===")
+    window_names = [w[0] for w in month_windows]
+
+    print("\n=== Seed stability check ===")
     print(f"Tune log: {args.tune_log}")
     print(f"Period: {args.from_date} ~ {args.to_date}")
     print(f"Seeds: {seeds}")
-    print(f"Ranked by stability_score = mean - std (higher = more robust)")
-    print(f"Hit% is mean across seeds. Hit% < 10% destabilizes Kelly betting.")
+    print(f"Windows: {', '.join(window_names)}")
+    print("Ranked by stability_score = mean - std (higher = more robust)")
     print()
     print(
         f"{'trial':>6} {'WF-CV':>9} {'stability':>11} {'mean P/L':>11} "
-        f"{'std P/L':>10} {'min':>10} {'max':>10} {'hit%':>6} {'rel':>10}"
+        f"{'std P/L':>10} {'min win':>11} {'worst hit%':>11} "
+        f"{'full hit%':>10} {'rel':>10}"
     )
-    print("-" * 92)
+    print("-" * 109)
     for r in sorted(results, key=lambda r: -r["stability_score"]):
-        pls = [s["pl"] for _, s in r["per_seed"]]
-        # Mark hit rate < 10% with a warning glyph (Kelly instability risk)
-        hit_marker = " " if r["mean_hit"] >= 10.0 else "!"
         print(
             f"  #{r['trial']:>3} {r['wf_cv_value']:>9.6f} "
             f"{r['stability_score']:>+11,.0f} "
             f"{r['mean_pl']:>+11,.0f} {r['std_pl']:>10,.0f} "
-            f"{min(pls):>+10,.0f} {max(pls):>+10,.0f} "
-            f"{r['mean_hit']:>5.1f}{hit_marker} {r['relevance']:>9}"
+            f"{r['min_window_pl']:>+11,.0f} "
+            f"{r['worst_window_hit']:>10.2f}% "
+            f"{r['mean_hit']:>9.2f}% "
+            f"{r['relevance']:>9}"
         )
 
-    print()
-    print("=== Per-seed details ===")
+    print("\n=== Per-window breakdown (calendar months) ===")
+    header = f"{'trial':>6}"
+    for wname in window_names:
+        header += f" | {wname + ' P/L':>12} {'hit%':>6}"
+    print(header)
+    print("-" * len(header))
+    for r in sorted(results, key=lambda r: -r["stability_score"]):
+        row = f"  #{r['trial']:>3}"
+        for wname in window_names:
+            w = r["window_summary"][wname]
+            row += f" | {w['mean_pl']:>+12,.0f} {w['mean_hit']:>5.2f}%"
+        print(row)
+
+    print("\n=== Per-seed details ===")
     for r in results:
         print(f"\nTrial #{r['trial']} (lr={r['lr']:.4f} n_est={r['n_est']}):")
         print(
             f"  {'seed':>5} {'races':>6} {'wins':>5} {'hit%':>6} "
             f"{'ROI%':>6} {'P/L':>11}"
         )
-        for seed, stats in r["per_seed"]:
+        for si, seed in enumerate(seeds):
+            total_races = sum(
+                r["per_seed_windows"][si][w]["races"] for w in window_names
+            )
+            total_wins = sum(
+                r["per_seed_windows"][si][w]["wins"] for w in window_names
+            )
+            total_cost = sum(
+                r["per_seed_windows"][si][w]["cost"] for w in window_names
+            )
+            total_pl = r["seed_total_pls"][si]
+            hit_pct = 100 * total_wins / total_races if total_races > 0 else 0.0
+            roi_pct = (
+                100 * (total_pl + total_cost) / total_cost if total_cost > 0 else 0.0
+            )
             print(
-                f"  {seed:>5} {stats['races']:>6} {stats['wins']:>5} "
-                f"{stats['hit_pct']:>5.1f}% {stats['roi_pct']:>5.0f}% "
-                f"{stats['pl']:>+11,.0f}"
+                f"  {seed:>5} {total_races:>6} {total_wins:>5} "
+                f"{hit_pct:>5.1f}% {roi_pct:>5.0f}% "
+                f"{total_pl:>+11,.0f}"
             )
 
 
