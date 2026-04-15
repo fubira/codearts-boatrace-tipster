@@ -73,7 +73,7 @@ bun run start predict -d "$(date +%F)"
 bun run start predict -d "$(date +%F)" --json          # JSON 出力
 bun run start predict -d "$(date +%F)" --use-snapshots # T-5 snapshot odds で再現
 
-# OOS バックテスト（学習期間外のみ: p2_v2 は --from 2026-01-01 以降）
+# OOS バックテスト（学習期間外のみ: 本番モデルの end_date 以降を指定）
 cd ml && uv run python -m scripts.daily_p2_summary --from 2026-01-01 --to "$(date +%F)"
 
 # 会場別 / 期間別 / feature importance の診断
@@ -98,12 +98,12 @@ bun run start run --live                            # LIVE モード（将来の
 
 ```bash
 ./scripts/server-tune.sh --trials 400                # 通常探索 (overnight target)
-./scripts/server-tune.sh --trials 400 --from-model models/p2_v2 --narrow
+./scripts/server-tune.sh --trials 400 --from-model models/<active> --narrow
 ./scripts/server-tune.sh --watch                     # ログ監視
 ./scripts/server-tune.sh --fetch                     # 結果取得 (Phase 1 + Phase 2 の log)
 
 # 上位 trial を dev モデルとして学習 (Phase 2 の stability_score 上位から)
-cd ml && uv run python -m scripts.train_dev_model --tune-log <log> --trials 294
+cd ml && uv run python -m scripts.train_dev_model --tune-log <log> --trials <N>
 # 本番昇格は ml/models/active.json を書き換えるだけ
 ```
 
@@ -119,10 +119,10 @@ src/
   shared/           共有モジュール（ロガー、設定、active model 解決）
 ml/
   models/
-    active.json     本番モデル指定（{"model": "p2_v2"}）
+    active.json     本番モデル指定（{"model": "<name>"}）
     .run-counter    dev model 命名カウンタ（整数1個）
-    p2_v2/          本番モデル（active.json で参照）
-    aa_294/         dev candidate（prefix は自動採番）
+    p2_v3/          本番モデル例（active.json で参照）
+    am_476/         dev candidate 例（prefix は自動採番）
   src/boatrace_tipster_ml/
     features.py     特徴量パイプライン（leak-safe cumulative、ローリング）
     snapshot_features.py  事前計算済み統計からの高速特徴量構築
