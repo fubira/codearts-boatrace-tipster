@@ -168,11 +168,39 @@ models/
 ```
 
 - **active model**: `models/active.json` の `model` フィールドが本番。runner / predict / config はここを唯一の真実の源として参照する。切り替えは JSON を1行書き換えるだけ
+- **runner は active.json を per-prediction で再読する**: `getActiveModelDir()` は `runPrediction` 内で呼ばれるので、active.json を書き換えると **次の predict から新モデルが使われる**。runner 再起動は不要。ただし `loadModelStrategy()` (gap12/conc/gap23/ev/div/cap/bankroll) は `run.ts` 起動時に 1 回だけ読まれるので、**strategy 値を変えたい場合は runner 再起動が必要**
 - **dev prefix counter**: `models/.run-counter` は整数1個。`registry.py:next_prefix()` がこれを読んで `aa, ab, ac, ..., az, ba, ..., zz` を採番（fixed 2-letter base-26）
 - 学習: `train_ranking.py` → `models/draft/` に保存
 - 探索: `tune_p2.py` → `models/tune_result/` に保存
 - 昇格: `promote_model.py` で draft → active model にコピー
 - 推論: `predict_p2.py` → active model を読む
+
+### 本番サーバへのモデル同期
+
+モデルは Docker イメージに含めず、ボリュームマウントで配信する (tag push → CI → ghcr.io → watchtower auto-pull はコードのみ)。新モデルを本番 runner に反映する手順:
+
+```bash
+# 1. モデルディレクトリを rsync (ローカル → サーバ)
+rsync -av ml/models/p2_v3/ one:${PRODUCT_DIR}/ml/models/p2_v3/
+
+# 2. md5 で転送整合性を確認
+ssh one "md5sum ${PRODUCT_DIR}/ml/models/p2_v3/ranking/model.pkl"
+md5sum ml/models/p2_v3/ranking/model.pkl  # ローカル側、両方一致を確認
+
+# 3. active.json を atomic に更新
+ssh one 'cat > '${PRODUCT_DIR}'/ml/models/active.json.new <<EOF
+{
+  "model": "p2_v3"
+}
+EOF
+mv '${PRODUCT_DIR}'/ml/models/active.json.new '${PRODUCT_DIR}'/ml/models/active.json'
+```
+
+**注意**:
+- rsync は非破壊 (新 dir を追加するだけ)、前モデルは残る
+- active.json の書き換えは `.new` 経由の `mv` で atomic に行う (読み込み中の半端な状態を防ぐ)
+- hot swap (次の prediction から切替) は **モデルディレクトリだけ** 反映される。**strategy パラメータ変更 (div / bankroll / threshold)** が必要な場合は **runner 停止 → 設定変更 → 再起動** が必要
+- 同じ model_meta.json の strategy 値で HP だけ差し替える場合は hot swap で十分
 
 ### モデル構成
 
