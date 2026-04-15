@@ -167,7 +167,19 @@ cd ml && uv run python -m scripts.analyze_decisions --date 2026-04-14
 # recent (default 7 日) vs baseline (default 30 日) で miss 内訳を比較
 # 最近のハズレが過去と同じ分布かを確認、週次 health check
 cd ml && uv run python -m scripts.compare_miss_patterns
+
+# T-5 / T-1 drift / 確定オッズの 3 path を期間比較
+# T-1 drop rate (T-5 EV+ → T-1 EV- に落ちた券の率) と per-day 内訳を表示
+# 対象期間は race_odds_snapshots 存在日に限定 (2026-04-07 以降)
+cd ml && uv run python -m scripts.analyze_t5_t1_drift \
+    --from 2026-04-07 --to "$(date +%F)"
 ```
+
+**使い分けの目安**:
+
+- `analyze_decisions`: 日次、今日の判定が妥当かの振り返り
+- `compare_miss_patterns`: 週次、近日の miss 分布が過去と一致するかの health check
+- `analyze_t5_t1_drift`: 月次、モデルが選ぶ券が市場で削られやすくなっていないかの構造監視。snapshot データ 30 日以上蓄積後に信頼度が上がる
 
 ## ML: 特徴量パイプライン
 

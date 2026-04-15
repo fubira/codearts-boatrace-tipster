@@ -98,6 +98,12 @@ compare_miss_patterns.py [--recent-days 7] [--baseline-days 30] [--to YYYY-MM-DD
                          # 「最近のハズレが過去と同じ分布か」を確認、週次 health check
                          # --recent-from / --recent-to / --baseline-from / --baseline-to で手動指定可
 
+analyze_t5_t1_drift.py --from DATE --to DATE [--model-dir DIR]
+                       # T-5 買い / T-1 drift 後 / 確定オッズ参考の 3 path で購入数・hit・ROI・P/L を比較
+                       # T-1 drop rate (T-5 で EV+ → T-1 で EV- に落ちた tickets 率) も計算
+                       # 期間は race_odds_snapshots 存在日 (2026-04-07 以降) に限定。
+                       # 「モデルの選ぶ券が市場で削られやすいか」を定期監視 (月次 health check)
+
 simulate_p2_mc.py --from DATE --to DATE [--model-dir DIR]
                   [--bankroll N] [--unit-divisor N] [--bet-cap N]
                   [--n-sims N] [--seed N] [--days 30,90,180,365]

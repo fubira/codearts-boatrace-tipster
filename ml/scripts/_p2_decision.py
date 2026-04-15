@@ -35,6 +35,11 @@ class Ticket:
     odds: float
     ev: float
     hit: bool
+    # softmax-derived model probability for this 3連単 combo. Kept alongside
+    # odds/ev so callers that re-evaluate against a different odds source
+    # (T-5 ↔ T-1 ↔ confirmed drift analysis) can recompute ev without
+    # reverse-solving from (ev, odds).
+    model_prob: float
 
 
 @dataclass
@@ -157,9 +162,12 @@ def compute_race_decisions(
             odds = odds_map.get((rid, combo))
             if not odds or odds <= 0:
                 continue
-            mp = _trifecta_prob(model_probs[i], *perm)
+            mp = float(_trifecta_prob(model_probs[i], *perm))
             ev = float(mp / (1 / odds) * 0.75 - 1)
-            tickets.append(Ticket(combo=combo, odds=float(odds), ev=ev, hit=combo == hit_combo))
+            tickets.append(Ticket(
+                combo=combo, odds=float(odds), ev=ev,
+                hit=combo == hit_combo, model_prob=mp,
+            ))
             if ev > max_ev:
                 max_ev = ev
 
