@@ -284,7 +284,23 @@ _fetch() {
 # ============================================================
 # Run (detach / foreground)
 # ============================================================
+_resolve_phase2_top() {
+  # Resolve Phase 2 top-N. Empty = auto-scale: max(15, TRIALS/15).
+  # 50 trials → 15, 200 → 15, 300 → 20, 500 → 33.
+  # Explicit SKIP is set by --no-phase2.
+  if [ "${PHASE2_TOP}" = "SKIP" ]; then
+    echo ""
+  elif [ -z "${PHASE2_TOP}" ]; then
+    local n=$(( TRIALS / 15 ))
+    if [ "$n" -lt 15 ]; then n=15; fi
+    echo "$n"
+  else
+    echo "${PHASE2_TOP}"
+  fi
+}
+
 _build_cmd() {
+  local final_top="$1"
   local cmd
   cmd="uv run --directory ml python -m scripts.tune_p2"
   cmd+=" --trials ${TRIALS}"
@@ -311,27 +327,22 @@ _build_cmd() {
   # behavior is decoupled from any future change to tune_p2's defaults.
   cmd+=" --n-jobs ${N_JOBS}"
   cmd+=" --num-threads ${NUM_THREADS}"
+  if [ -n "$final_top" ]; then
+    cmd+=" --final-top-n ${final_top}"
+  fi
   echo "$cmd"
 }
 
 _detach_run() {
-  local tune_cmd
-  tune_cmd=$(_build_cmd)
+  local phase2_top_resolved
+  phase2_top_resolved=$(_resolve_phase2_top)
+  # Phase 1 final ranking size should match Phase 2 candidate count so the
+  # user sees exactly the HPs that will be evaluated. Use 15 as a floor
+  # even when Phase 2 is disabled.
+  local final_top_n="${phase2_top_resolved:-15}"
 
-  # Resolve Phase 2 top-N. Empty = auto-scale: max(15, TRIALS/15).
-  # 50 trials → 15, 200 → 15, 300 → 20, 500 → 33.
-  # Explicit SKIP is set by --no-phase2.
-  local phase2_top_resolved=""
-  if [ "${PHASE2_TOP}" = "SKIP" ]; then
-    phase2_top_resolved=""
-  elif [ -z "${PHASE2_TOP}" ]; then
-    phase2_top_resolved=$(( TRIALS / 15 ))
-    if [ "${phase2_top_resolved}" -lt 15 ]; then
-      phase2_top_resolved=15
-    fi
-  else
-    phase2_top_resolved="${PHASE2_TOP}"
-  fi
+  local tune_cmd
+  tune_cmd=$(_build_cmd "${final_top_n}")
 
   # Resolve gap12_th from local active model so Phase 2 uses the current
   # production filter (not a hardcoded value that drifts).
@@ -417,8 +428,11 @@ EOF
 }
 
 _foreground_run() {
+  local phase2_top_resolved
+  phase2_top_resolved=$(_resolve_phase2_top)
+  local final_top_n="${phase2_top_resolved:-15}"
   local tune_cmd
-  tune_cmd=$(_build_cmd)
+  tune_cmd=$(_build_cmd "${final_top_n}")
 
   log "Running in foreground (${TRIALS} trials)..."
   remote bash <<EOF

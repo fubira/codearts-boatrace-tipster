@@ -341,6 +341,11 @@ def main():
                              "trials.json. All dev models trained from this "
                              "tune share the prefix. Auto-allocated from the "
                              "local registry if omitted.")
+    parser.add_argument("--final-top-n", type=int, default=10,
+                        help="Number of trials shown in the final ranking "
+                             "log output (growth top / Kelly top). Normally "
+                             "set to match Phase 2 candidate count so the "
+                             "log shows exactly the HPs that Phase 2 evaluates.")
     args = parser.parse_args()
 
     if args.narrow and not args.from_model:
@@ -764,8 +769,9 @@ def main():
             f"rel={rel} gap23={g23} ev={evt} conc={t3c} gap12={g12}"
         )
 
-    print(f"\nTop 10 trials (by {obj_label}):")
-    for t in sorted(completed, key=lambda t: t.value, reverse=True)[:10]:
+    top_n = args.final_top_n
+    print(f"\nTop {top_n} trials (by {obj_label}):")
+    for t in sorted(completed, key=lambda t: t.value, reverse=True)[:top_n]:
         print(_fmt_trial(t))
 
     # Kelly ranking: matches Phase 2 candidate selection.
@@ -781,9 +787,9 @@ def main():
         return k if k is not None else float("-inf")
 
     kelly_sorted = sorted(completed, key=_kelly_key, reverse=True)
-    kelly_top = [t for t in kelly_sorted if _kelly_key(t) != float("-inf")][:10]
+    kelly_top = [t for t in kelly_sorted if _kelly_key(t) != float("-inf")][:top_n]
     print(
-        f"\nTop 10 trials (by Kelly, Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
+        f"\nTop {top_n} trials (by Kelly, Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
     )
     for t in kelly_top:
         print(_fmt_trial(t))

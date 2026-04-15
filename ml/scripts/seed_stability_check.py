@@ -340,15 +340,19 @@ def main():
 
         # Aggregate per-window across seeds
         window_summary: dict[str, dict] = {}
-        for wname, _, _ in month_windows:
+        for wname, wfrom, wto in month_windows:
             pls = [s[wname]["pl"] for s in per_seed_windows]
             hits = [s[wname]["hit_pct"] for s in per_seed_windows]
             races = [s[wname]["races"] for s in per_seed_windows]
+            wins = [s[wname]["wins"] for s in per_seed_windows]
+            days = (pd.Timestamp(wto) - pd.Timestamp(wfrom)).days
             window_summary[wname] = {
                 "mean_pl": statistics.mean(pls),
                 "std_pl": statistics.stdev(pls) if len(pls) > 1 else 0.0,
                 "mean_hit": statistics.mean(hits),
                 "mean_races": statistics.mean(races),
+                "mean_wins": statistics.mean(wins),
+                "days": days,
                 "min_pl": min(pls),
                 "max_pl": max(pls),
             }
@@ -374,22 +378,31 @@ def main():
         mean_pl = statistics.mean(seed_total_pls)
         std_pl = statistics.stdev(seed_total_pls) if len(seed_total_pls) > 1 else 0.0
         mean_hit = statistics.mean(seed_total_hits)
+        mean_races = statistics.mean(seed_total_races)
+        total_days = sum(w["days"] for w in window_summary.values())
+        bets_per_day = mean_races / total_days if total_days > 0 else 0.0
 
         min_window_pl = min(w["mean_pl"] for w in window_summary.values())
         worst_window_hit = min(w["mean_hit"] for w in window_summary.values())
 
         results.append({
             "trial": trial_num,
-            "wf_cv_value": trial.get("growth"),
+            "wf_cv_growth": (trial.get("user_attrs") or {}).get("growth")
+                or trial.get("growth"),
+            "wf_cv_kelly": (trial.get("user_attrs") or {}).get("kelly"),
             "mean_pl": mean_pl,
             "std_pl": std_pl,
             "mean_hit": mean_hit,
+            "mean_races": mean_races,
+            "bets_per_day": bets_per_day,
+            "total_days": total_days,
             "min_window_pl": min_window_pl,
             "worst_window_hit": worst_window_hit,
             "window_summary": window_summary,
             "seed_total_pls": seed_total_pls,
             "per_seed_windows": per_seed_windows,
             "elapsed": elapsed,
+            "hp": hp,
             "relevance": relevance,
             "n_est": effective_n_est,
             "lr": lr,
@@ -409,6 +422,9 @@ def main():
 
     window_names = [w[0] for w in month_windows]
 
+    def _fmt_kelly(k):
+        return f"{k:>7.4f}" if k is not None else "      ?"
+
     print("\n=== Seed stability check ===")
     print(f"Tune log: {args.tune_log}")
     print(f"Period: {args.from_date} ~ {args.to_date}")
@@ -417,42 +433,55 @@ def main():
     print("Ranked by stability_score = mean - std (higher = more robust)")
     print()
     print(
-        f"{'trial':>6} {'WF-CV':>9} {'stability':>11} {'mean P/L':>11} "
-        f"{'std P/L':>10} {'min win':>11} {'worst hit%':>11} "
-        f"{'full hit%':>10} {'rel':>10}"
+        f"{'trial':>6} {'WF-CV g':>9} {'WF-CV k':>8} {'stability':>11} "
+        f"{'mean P/L':>11} {'std P/L':>10} {'min win':>11} "
+        f"{'worst h%':>9} {'full h%':>8} {'bets':>6} {'b/day':>6} {'rel':>8}"
     )
-    print("-" * 109)
+    print("-" * 120)
     for r in sorted(results, key=lambda r: -r["stability_score"]):
         print(
-            f"  #{r['trial']:>3} {r['wf_cv_value']:>9.6f} "
+            f"  #{r['trial']:>3} "
+            f"{r['wf_cv_growth']:>9.6f} "
+            f"{_fmt_kelly(r['wf_cv_kelly'])} "
             f"{r['stability_score']:>+11,.0f} "
             f"{r['mean_pl']:>+11,.0f} {r['std_pl']:>10,.0f} "
             f"{r['min_window_pl']:>+11,.0f} "
-            f"{r['worst_window_hit']:>10.2f}% "
-            f"{r['mean_hit']:>9.2f}% "
-            f"{r['relevance']:>9}"
+            f"{r['worst_window_hit']:>8.2f}% "
+            f"{r['mean_hit']:>7.2f}% "
+            f"{r['mean_races']:>6.0f} "
+            f"{r['bets_per_day']:>6.2f} "
+            f"{r['relevance']:>8}"
         )
 
-    print("\n=== Per-window breakdown (calendar months) ===")
-    header = f"{'trial':>6}"
-    for wname in window_names:
-        header += f" | {wname + ' P/L':>12} {'hit%':>6}"
-    print(header)
-    print("-" * len(header))
+    # Per-trial detail: HP + per-window rows + per-seed rows
+    print("\n=== Per-trial detail (ranked by stability) ===")
     for r in sorted(results, key=lambda r: -r["stability_score"]):
-        row = f"  #{r['trial']:>3}"
+        hp = r["hp"]
+        print(
+            f"\nTrial #{r['trial']}  "
+            f"stability={r['stability_score']:+,.0f}  "
+            f"bets/day={r['bets_per_day']:.2f}"
+        )
+        print(
+            f"  HP: nl={hp.get('num_leaves')} md={hp.get('max_depth')} "
+            f"mc={hp.get('min_child_samples')} "
+            f"sub={hp.get('subsample'):.3f} col={hp.get('colsample_bytree'):.3f} "
+            f"ra={hp.get('reg_alpha'):.1e} rl={hp.get('reg_lambda'):.4f} "
+            f"lr={r['lr']:.4f} n_est={r['n_est']} rel={r['relevance']}"
+        )
+        print(
+            f"  {'window':>8} {'days':>5} {'races':>6} {'wins':>5} "
+            f"{'hit%':>6} {'mean P/L':>11} {'std':>9}"
+        )
         for wname in window_names:
             w = r["window_summary"][wname]
-            row += f" | {w['mean_pl']:>+12,.0f} {w['mean_hit']:>5.2f}%"
-        print(row)
-
-    print("\n=== Per-seed details ===")
-    for r in results:
-        print(f"\nTrial #{r['trial']} (lr={r['lr']:.4f} n_est={r['n_est']}):")
-        print(
-            f"  {'seed':>5} {'races':>6} {'wins':>5} {'hit%':>6} "
-            f"{'ROI%':>6} {'P/L':>11}"
-        )
+            print(
+                f"  {wname:>8} {w['days']:>5} "
+                f"{w['mean_races']:>6.0f} {w['mean_wins']:>5.1f} "
+                f"{w['mean_hit']:>5.2f}% "
+                f"{w['mean_pl']:>+11,.0f} {w['std_pl']:>9,.0f}"
+            )
+        print(f"  {'per-seed':>8}")
         for si, seed in enumerate(seeds):
             total_races = sum(
                 r["per_seed_windows"][si][w]["races"] for w in window_names
@@ -460,18 +489,12 @@ def main():
             total_wins = sum(
                 r["per_seed_windows"][si][w]["wins"] for w in window_names
             )
-            total_cost = sum(
-                r["per_seed_windows"][si][w]["cost"] for w in window_names
-            )
             total_pl = r["seed_total_pls"][si]
             hit_pct = 100 * total_wins / total_races if total_races > 0 else 0.0
-            roi_pct = (
-                100 * (total_pl + total_cost) / total_cost if total_cost > 0 else 0.0
-            )
             print(
-                f"  {seed:>5} {total_races:>6} {total_wins:>5} "
-                f"{hit_pct:>5.1f}% {roi_pct:>5.0f}% "
-                f"{total_pl:>+11,.0f}"
+                f"  seed={seed:<5} races={total_races:>4} "
+                f"wins={total_wins:>3} hit={hit_pct:>5.2f}% "
+                f"P/L={total_pl:>+11,.0f}"
             )
 
 
