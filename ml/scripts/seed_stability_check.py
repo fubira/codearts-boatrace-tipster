@@ -42,11 +42,10 @@ from scripts.train_dev_model import parse_tune_log, params_to_hp
 FIELD_SIZE = 6
 DEFAULT_SEEDS = [42, 100, 200, 300, 400]
 
-# Minimum WF-CV races (across all folds) a trial must have to be a
-# Phase 2 candidate. Kelly = mean(log(fold_ROI)) explodes for low-volume
-# trials that catch a single lucky hit per fold — 4-14 tune had trial #12
-# with 51 races, Kelly 1.43 (fake), OOS mean +2,650. p2_v2-class trials
-# land around 500-1200 Phase 1 races, so 500 is a reasonable floor.
+# Minimum WF-CV races (across all folds) for a trial to be a Phase 2
+# candidate. Kelly = mean(log(fold_ROI)) explodes for low-volume trials
+# that catch a single lucky hit per fold, so a volume floor is needed.
+# Production-class trials land around 500-1200 Phase 1 races.
 PHASE2_MIN_RACES = 500
 
 
@@ -206,15 +205,11 @@ def main():
     else:
         # Top N by Kelly, with a volume floor to exclude winner's curse.
         # Kelly = mean(log(fold_ROI)) explodes when a fold catches a single
-        # lucky hit with few races (1 hit / 10 races → ROI 300%+ → log(3) = 1.1).
-        # 4-14 tune confirmed trial #12 with 51 races had Kelly 1.43 (fake)
-        # while OOS mean was only +2,650. p2_v2-class trials land at 500-1200
-        # Phase 1 races; PHASE2_MIN_RACES=500 excludes exploit-volume trials.
-        #
-        # Why Kelly over growth: 4-12 tune showed growth #1 (#266, kelly 0.28)
-        # was OOS-worst (+6,618 mean, -2,860 min) while kelly #1 (#294, growth
-        # 4位) became p2_v2 production. Kelly after the volume filter is the
-        # best Phase 1 signal for OOS performance in our data.
+        # lucky hit with few races (1 hit / 10 races → ROI 300%+ → log(3) = 1.1),
+        # so low-volume trials can score fake-high Kelly while having poor OOS.
+        # Kelly after the volume filter is the most reliable Phase 1 signal
+        # for OOS performance; raw growth ranking is dominated by high-variance
+        # trials that got lucky on one fold.
         def _kelly(kv):
             ua = kv[1].get("user_attrs") or {}
             k = ua.get("kelly")

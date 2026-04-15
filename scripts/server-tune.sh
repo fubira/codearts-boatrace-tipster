@@ -124,8 +124,8 @@ Optuna options:
 
 Phase 2 (デフォルト ON、Phase 1 完了後にサーバで連続実行):
   --phase2 N        Kelly 上位 N 個を seed_stability_check で 5 seed 評価。
-                    省略時は trials/25 で自動 scale (50→2, 400→16, 500→20)。
-                    2026-04-14 実測で「trial 数 / ~25 個」が真に検証すべき候補数。
+                    省略時は max(15, trials/15) で自動 scale
+                    (50→15, 200→15, 300→20, 500→33)。
                     最終 ranking は stability_score (mean - std) で並ぶ。
   --no-phase2       Phase 2 を無効化 (Phase 1 だけ実行)
   --phase2-from D   Phase 2 OOS 評価期間 開始 (default: 2026-01-01)
@@ -318,18 +318,16 @@ _detach_run() {
   local tune_cmd
   tune_cmd=$(_build_cmd)
 
-  # Resolve Phase 2 top-N. Empty = auto-scale: max(TRIALS/25, 2).
-  # This gives 50 trials → 2, 100 → 4, 400 → 16, 500 → 20 — scales with
-  # how many "real candidates" a tune run typically produces (rough rule
-  # of thumb from 2026-04-14: one usable HP per ~25-50 trials).
-  # Explicit "SKIP" from --no-phase2 disables Phase 2 entirely.
+  # Resolve Phase 2 top-N. Empty = auto-scale: max(15, TRIALS/15).
+  # 50 trials → 15, 200 → 15, 300 → 20, 500 → 33.
+  # Explicit SKIP is set by --no-phase2.
   local phase2_top_resolved=""
   if [ "${PHASE2_TOP}" = "SKIP" ]; then
     phase2_top_resolved=""
   elif [ -z "${PHASE2_TOP}" ]; then
-    phase2_top_resolved=$(( TRIALS / 25 ))
-    if [ "${phase2_top_resolved}" -lt 2 ]; then
-      phase2_top_resolved=2
+    phase2_top_resolved=$(( TRIALS / 15 ))
+    if [ "${phase2_top_resolved}" -lt 15 ]; then
+      phase2_top_resolved=15
     fi
   else
     phase2_top_resolved="${PHASE2_TOP}"

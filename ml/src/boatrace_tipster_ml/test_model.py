@@ -213,9 +213,9 @@ class TestModelMetaSaveLoad:
         assert meta is None
 
     def test_float_precision_preserved(self, tmp_path):
-        """Regression: LightGBM HP like subsample/colsample_bytree must round-trip
-        at full double precision. Silent rounding (e.g., :.2g, round(x, 2)) caused
-        aa_294/p2_v1/p2_v2 to drift ~16% on growth until detected on 2026-04-13."""
+        """LightGBM HP like subsample/colsample_bytree must round-trip at
+        full double precision. Silent rounding (e.g., :.2g, round(x, 2))
+        causes measurable growth drift on retrained models."""
         out_dir = str(tmp_path)
         hp = {
             "subsample": 0.7302700512037856,

@@ -553,12 +553,12 @@ def main():
         for fold in folds:
             # X is pre-filtered to FEATURES before walk_forward_splits, so fold
             # X already has exactly the FEATURES columns. LightGBM is silent
-            # (verbose=-1 in DEFAULT_PARAMS), so no stdout redirect needed —
-            # the redirect was thread-unsafe under --n-jobs > 1.
-            # ES disabled: Test E (2026-04-14) showed early_stopping_rounds=200
-            # picks wildly different best_iter from tiny val perturbations
-            # (363 vs 808 from 0.4% train shift → 2x growth diff for same HP).
-            # Full training matches production training regime.
+            # (verbose=-1 in DEFAULT_PARAMS), so no stdout redirect needed
+            # (stdout redirect is thread-unsafe under --n-jobs > 1).
+            # Early stopping is disabled: with a 1-month val window the val
+            # score curve is noise-dominated, so best_iter shifts wildly from
+            # tiny train perturbations. Full training matches the production
+            # training regime.
             rank_model, _ = train_model(
                 fold["train"]["X"], fold["train"]["y"], fold["train"]["meta"],
                 fold["val"]["X"], fold["val"]["y"], fold["val"]["meta"],
@@ -743,10 +743,9 @@ def main():
     print(f"Saved {len(trials_data['trials'])} completed trials to {trials_json_path}")
 
     # Top 10 trials
-    print(f"\nTop 10 trials (by {obj_label}):")
     completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
-    trials = sorted(completed, key=lambda t: t.value, reverse=True)
-    for t in trials[:10]:
+
+    def _fmt_trial(t) -> str:
         ua = t.user_attrs
         rel = ua.get("relevance", "?")
         g23 = t.params.get("gap23_threshold", fixed_thresholds.get("gap23", "?"))
@@ -759,11 +758,35 @@ def main():
         pl = ua.get("profit", 0.0)
         n = ua.get("total_races", 0)
         hit = ua.get("hit_pct", 0.0)
-        print(
+        return (
             f"  #{t.number:>3}: growth={growth:.6f} kelly={kelly_v} ROI={roi:.0%} "
             f"hit={hit:.1f}% P/L={pl:+,.0f} n={n} "
             f"rel={rel} gap23={g23} ev={evt} conc={t3c} gap12={g12}"
         )
+
+    print(f"\nTop 10 trials (by {obj_label}):")
+    for t in sorted(completed, key=lambda t: t.value, reverse=True)[:10]:
+        print(_fmt_trial(t))
+
+    # Kelly ranking: matches Phase 2 candidate selection.
+    # Volume gate (>= PHASE2_MIN_RACES) excludes low-sample Kelly exploit trials.
+    from scripts.seed_stability_check import PHASE2_MIN_RACES
+
+    def _kelly_key(t):
+        ua = t.user_attrs or {}
+        races = ua.get("total_races") or 0
+        if races < PHASE2_MIN_RACES:
+            return float("-inf")
+        k = ua.get("kelly")
+        return k if k is not None else float("-inf")
+
+    kelly_sorted = sorted(completed, key=_kelly_key, reverse=True)
+    kelly_top = [t for t in kelly_sorted if _kelly_key(t) != float("-inf")][:10]
+    print(
+        f"\nTop 10 trials (by Kelly, Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
+    )
+    for t in kelly_top:
+        print(_fmt_trial(t))
 
     # Save best params
     meta_dir = "models/tune_result"
