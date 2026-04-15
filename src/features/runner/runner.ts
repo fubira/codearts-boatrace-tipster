@@ -631,6 +631,33 @@ function refreshDeadlinesFromDb(schedule: RaceSlot[], date: string): void {
   }
 }
 
+function refreshScheduleFromDb(state: RunnerState): void {
+  const known = new Set(state.schedule.map((s) => s.raceId));
+  const rows = getDatabase()
+    .query(
+      `SELECT id, stadium_id, race_number, deadline FROM races
+       WHERE race_date = ? AND deadline IS NOT NULL`,
+    )
+    .all(state.date) as {
+    id: number;
+    stadium_id: number;
+    race_number: number;
+    deadline: string;
+  }[];
+
+  const newRows = rows.filter((r) => !known.has(r.id));
+  if (newRows.length === 0) return;
+
+  const newSlots = buildSchedule(newRows, stadiumNames, state.date);
+  state.schedule.push(...newSlots);
+  state.schedule.sort((a, b) => a.deadlineMs - b.deadlineMs);
+
+  const venues = new Set(newSlots.map((s) => s.stadiumName));
+  logger.info(
+    `Schedule augmented: +${newSlots.length}R from ${[...venues].join(",")} (total ${state.schedule.length}R)`,
+  );
+}
+
 function hasSnapshot(raceId: number, timing: string): boolean {
   const row = getDatabase()
     .query(
@@ -645,6 +672,9 @@ function hasSnapshot(raceId: number, timing: string): boolean {
 // ---------------------------------------------------------------------------
 
 async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
+  refreshScheduleFromDb(state);
+  refreshDeadlinesFromDb(state.schedule, state.date);
+
   const { schedule, bets, results } = state;
   const now = Date.now();
   const {
@@ -669,8 +699,6 @@ async function poll(state: RunnerState, opts: RunnerOptions): Promise<void> {
     );
     state.lastStatusLine = statusLine;
   }
-
-  refreshDeadlinesFromDb(schedule, state.date);
 
   // 1. Activate races approaching deadline
   for (const slot of activate) {
