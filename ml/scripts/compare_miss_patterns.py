@@ -39,6 +39,7 @@ import pandas as pd
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
 from boatrace_tipster_ml.features import build_features_df
+from boatrace_tipster_ml.registry import get_active_model_dir
 from scripts._p2_decision import (
     RaceDecision,
     compute_race_decisions,
@@ -145,7 +146,7 @@ def main():
                     help="Override baseline window start (YYYY-MM-DD)")
     ap.add_argument("--baseline-to", default=None,
                     help="Override baseline window end (YYYY-MM-DD)")
-    ap.add_argument("--model-dir", default="models/p2_v2")
+    ap.add_argument("--model-dir", default=get_active_model_dir())
     ap.add_argument("--db-path", default=DEFAULT_DB_PATH)
     args = ap.parse_args()
 

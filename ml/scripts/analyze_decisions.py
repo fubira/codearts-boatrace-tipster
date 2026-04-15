@@ -21,9 +21,11 @@ import io
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
 from boatrace_tipster_ml.features import build_features_df
+from boatrace_tipster_ml.registry import get_active_model_dir
 from scripts._p2_decision import (
     RaceDecision,
     compute_race_decisions,
@@ -45,7 +47,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--date", default=None,
                     help="Race date YYYY-MM-DD (default: latest date in DB)")
-    ap.add_argument("--model-dir", default="models/p2_v2")
+    ap.add_argument("--model-dir", default=get_active_model_dir())
     ap.add_argument("--db-path", default=DEFAULT_DB_PATH)
     args = ap.parse_args()
 
@@ -89,7 +91,11 @@ def main():
         classified.append(ClassifiedRace(d=d, reason=reason, margin=margin, any_hit=any_hit))
 
     # Summary by reason
-    print(f"\n=== p2_v2 decisions for {args.date} (total {n_races} races) ===\n")
+    model_name = Path(args.model_dir).name
+    print(
+        f"\n=== {model_name} decisions for {args.date} "
+        f"(total {n_races} races) ===\n"
+    )
     buckets: dict[str, list[ClassifiedRace]] = defaultdict(list)
     for c in classified:
         buckets[c.reason].append(c)
