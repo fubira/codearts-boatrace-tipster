@@ -239,16 +239,16 @@ def predict_p2(
     available_meta = [c for c in meta_cols if c in df.columns]
     meta_df = df[available_meta].copy()
 
-    # bc_* (oriten exhibition) data is timing-sensitive: scraper fetches at T-7
-    # but the runner predicts at T-5, so a race occasionally lands with NULL
-    # bc_*. fill_nan_with_means then collapses bc_*_zscore to 0, which silently
-    # weakens the prediction. Surface this per-race so the log can flag it.
+    # bc_status: detect fetch failure vs per-boat data gaps.
+    # - "missing": fetch failed (all 6 boats have zero bc values)
+    # - "partial:N/6": fetch succeeded but N < 6 boats have data (abnormal)
+    # - "full": all 6 boats have at least one bc value (column-level NULLs are normal)
     bc_cols = [c for c in
                ("bc_lap_time", "bc_turn_time", "bc_straight_time", "bc_slit_diff")
                if c in df.columns]
     if bc_cols:
-        bc_full_per_boat = df[bc_cols].notna().all(axis=1).astype(int)
-        bc_count_per_race = bc_full_per_boat.groupby(df["race_id"]).sum().to_dict()
+        bc_has_any = df[bc_cols].notna().any(axis=1).astype(int)
+        bc_count_per_race = bc_has_any.groupby(df["race_id"]).sum().to_dict()
     else:
         bc_count_per_race = {}
 
