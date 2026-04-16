@@ -42,6 +42,17 @@ function saveCache(
   writeFileSync(path, content, "utf-8");
 }
 
+function hasCacheContent(
+  type: DataType,
+  dateStr: string,
+  jcd: string,
+  race: number,
+): boolean {
+  const path = cachePath(type, dateStr, jcd, race);
+  if (!existsSync(path)) return false;
+  return readFileSync(path, "utf-8").length >= 10;
+}
+
 async function fetchText(url: string): Promise<string | null> {
   try {
     const resp = await fetch(url, {
@@ -59,54 +70,57 @@ async function fetchText(url: string): Promise<string | null> {
   }
 }
 
+async function fetchOrReadCache(
+  type: DataType,
+  dateStr: string,
+  jcd: string,
+  raceNumber: number,
+  skipCacheRead: boolean,
+): Promise<string> {
+  const path = cachePath(type, dateStr, jcd, raceNumber);
+
+  if (!skipCacheRead && existsSync(path)) {
+    return readFileSync(path, "utf-8");
+  }
+
+  const url = DATA_URLS[type](jcd, dateStr, raceNumber);
+  const text = await fetchText(url);
+  if (text) {
+    saveCache(type, dateStr, jcd, raceNumber, text);
+    return text;
+  }
+  return "";
+}
+
 /**
  * Fetch BOATCAST exhibition data for a single race, parse, and save to DB.
  *
- * @param stadiumId Stadium ID (1-24)
- * @param raceDate Date in YYYY-MM-DD format
- * @param raceNumber Race number (1-12)
- * @returns true if data was fetched and saved
+ * @param skipCacheRead - Bypass cache and re-fetch from network (for retry)
  */
 export async function fetchAndSaveBoatcast(
   stadiumId: number,
   raceDate: string,
   raceNumber: number,
+  options?: { skipCacheRead?: boolean },
 ): Promise<boolean> {
   const jcd = String(stadiumId).padStart(2, "0");
   const dateStr = raceDate.replace(/-/g, "");
+  const skip = options?.skipCacheRead ?? false;
 
-  let oritenContent = "";
-  let sttContent = "";
-
-  // Fetch oriten
-  const oritenCachePath = cachePath("oriten", dateStr, jcd, raceNumber);
-  if (existsSync(oritenCachePath)) {
-    oritenContent = readFileSync(oritenCachePath, "utf-8");
-  } else {
-    const url = DATA_URLS.oriten(jcd, dateStr, raceNumber);
-    const text = await fetchText(url);
-    if (text) {
-      saveCache("oriten", dateStr, jcd, raceNumber, text);
-      oritenContent = text;
-    } else {
-      saveCache("oriten", dateStr, jcd, raceNumber, "");
-    }
-  }
-
-  // Fetch stt
-  const sttCachePath = cachePath("stt", dateStr, jcd, raceNumber);
-  if (existsSync(sttCachePath)) {
-    sttContent = readFileSync(sttCachePath, "utf-8");
-  } else {
-    const url = DATA_URLS.stt(jcd, dateStr, raceNumber);
-    const text = await fetchText(url);
-    if (text) {
-      saveCache("stt", dateStr, jcd, raceNumber, text);
-      sttContent = text;
-    } else {
-      saveCache("stt", dateStr, jcd, raceNumber, "");
-    }
-  }
+  const oritenContent = await fetchOrReadCache(
+    "oriten",
+    dateStr,
+    jcd,
+    raceNumber,
+    skip,
+  );
+  const sttContent = await fetchOrReadCache(
+    "stt",
+    dateStr,
+    jcd,
+    raceNumber,
+    skip,
+  );
 
   const oriten = parseOriten(oritenContent);
   const stt = parseStt(sttContent);
@@ -118,4 +132,26 @@ export async function fetchAndSaveBoatcast(
   ]);
 
   return result.updated > 0;
+}
+
+/**
+ * Retry BOATCAST fetch for a race if prior attempt got empty/partial data.
+ * Skips re-fetch for types that already have cached content.
+ */
+export async function retryBoatcastIfMissing(
+  stadiumId: number,
+  raceDate: string,
+  raceNumber: number,
+): Promise<boolean> {
+  const jcd = String(stadiumId).padStart(2, "0");
+  const dateStr = raceDate.replace(/-/g, "");
+
+  const oritenOk = hasCacheContent("oriten", dateStr, jcd, raceNumber);
+  const sttOk = hasCacheContent("stt", dateStr, jcd, raceNumber);
+
+  if (oritenOk && sttOk) return false;
+
+  return fetchAndSaveBoatcast(stadiumId, raceDate, raceNumber, {
+    skipCacheRead: true,
+  });
 }

@@ -24,7 +24,10 @@ import {
 } from "@/features/scraper/cache-manager";
 import { fetchPage } from "@/features/scraper/http-client";
 import { getScraper } from "@/features/scraper/registry";
-import { fetchAndSaveBoatcast } from "@/features/scraper/sources/boatcast/fetcher";
+import {
+  fetchAndSaveBoatcast,
+  retryBoatcastIfMissing,
+} from "@/features/scraper/sources/boatcast/fetcher";
 import {
   STADIUMS,
   raceListUrl,
@@ -338,8 +341,25 @@ async function poll(state: ScrapeState): Promise<void> {
         `[SCRAPER] Odds (T-5): ${fetched}/${actionable.oddsT5.length} fetched`,
       );
     }
+    // Retry BOATCAST for races where T-7 fetch got empty/partial data
+    let bcRetried = 0;
     for (const slot of actionable.oddsT5) {
+      try {
+        const ok = await retryBoatcastIfMissing(
+          slot.stadiumId,
+          state.date,
+          slot.raceNumber,
+        );
+        if (ok) bcRetried++;
+      } catch {
+        // Non-critical
+      }
       slot.status = "predicted";
+    }
+    if (bcRetried > 0) {
+      logger.info(
+        `[SCRAPER] BOATCAST retry (T-5): ${bcRetried}/${actionable.oddsT5.length} refreshed`,
+      );
     }
   }
   if (actionable.oddsT3.length > 0) {
