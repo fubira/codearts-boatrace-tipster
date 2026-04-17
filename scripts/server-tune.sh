@@ -48,6 +48,7 @@ N_JOBS=2
 NUM_THREADS=2
 OBJECTIVE=""
 FIX_THRESHOLDS=""
+DROP_FEATURES=""         # Forwarded to server as BOATRACE_DROP_FEATURES env var.
 PHASE2_TOP=""            # empty = auto-scale from TRIALS (see resolve below).
                          # --phase2 N: override. --no-phase2: disable.
 PHASE2_FROM="2026-01-01"
@@ -86,6 +87,7 @@ while [[ $# -gt 0 ]]; do
     --num-threads) NUM_THREADS="$2"; shift 2 ;;
     --objective) OBJECTIVE="$2"; shift 2 ;;
     --fix-thresholds) FIX_THRESHOLDS="$2"; shift 2 ;;
+    --drop-features) DROP_FEATURES="$2"; shift 2 ;;
     --phase2)
       if ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
         echo "ERROR: --phase2 requires a positive integer, got '$2'" >&2
@@ -117,6 +119,9 @@ Optuna options:
   --seed N          random seed (default: 自動ランダム、明示で再現性確保)
   --objective O     tune_p2 objective: growth | kelly (default: growth)
   --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "gap23=0.13,ev=0.0,top3_conc=0.7")
+  --drop-features F 特徴量 ablation (comma-separated feature names to drop from FEATURES).
+                    例: "racer_course_win_rate,stadium_course_win_rate"。
+                    BOATRACE_DROP_FEATURES env var としてサーバへ転送される。
   --from-model D    既存モデルのHPを初期trialとして投入（カンマ区切り可能）
   --narrow          --from-model の最初のモデル周辺だけを探索（要 --from-model）
   --n-jobs N        並列 trial 数 (default: 2、サーバーでのみ許可)
@@ -382,6 +387,7 @@ cat > ${REMOTE_SCRIPT_FILE} << 'INNERSCRIPT'
 set -euo pipefail
 export PATH="\$HOME/.local/bin:\$PATH"
 export BOATRACE_TUNE_PARALLEL=1
+export BOATRACE_DROP_FEATURES="${DROP_FEATURES}"
 # Force line-buffered Python output so per-trial Optuna logs appear
 # immediately in the remote log file (otherwise nohup file output is
 # block-buffered and trials only surface in batches of ~20).
@@ -439,6 +445,7 @@ _foreground_run() {
 set -euo pipefail
 export PATH="\$HOME/.local/bin:\$PATH"
 export BOATRACE_TUNE_PARALLEL=1
+export BOATRACE_DROP_FEATURES="${DROP_FEATURES}"
 export PYTHONUNBUFFERED=1
 cd ${REMOTE_DIR_RESOLVED}
 nice -n 19 ionice -c 3 ${tune_cmd}

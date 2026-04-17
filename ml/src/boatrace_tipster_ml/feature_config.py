@@ -4,6 +4,8 @@ Feature order matters for model compatibility — append new features at the end
 of each section, never reorder existing ones.
 """
 
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -77,6 +79,26 @@ FEATURES: list[str] = [
     "wind_speed_x_boat", "rolling_position_alpha", "position_alpha",
     "avg_course_diff", "course_taking_rate_at_boat", "race_min_avg_course_diff",
 ]
+
+# Ablation hook. Set BOATRACE_DROP_FEATURES to a comma-separated list of
+# feature names to temporarily exclude them from FEATURES at import time.
+# Used for market-priced-feature ablation experiments (see knowledge_public_rate_features_no_edge.md).
+# Unknown names in the list raise — typos silently skipping would fake a
+# "clean" ablation.
+_drop_env = os.environ.get("BOATRACE_DROP_FEATURES", "").strip()
+if _drop_env:
+    _drop_set = {f.strip() for f in _drop_env.split(",") if f.strip()}
+    _unknown = _drop_set - set(FEATURES)
+    if _unknown:
+        raise ValueError(
+            f"BOATRACE_DROP_FEATURES contains unknown feature(s): {sorted(_unknown)}. "
+            f"Valid names: {FEATURES}"
+        )
+    FEATURES = [f for f in FEATURES if f not in _drop_set]
+    print(
+        f"[feature_config] BOATRACE_DROP_FEATURES active: dropped "
+        f"{sorted(_drop_set)}, {len(FEATURES)} features remain"
+    )
 
 # Features with intentional intraday leakage.
 # At evaluation/prediction time, these are replaced with per-race mean
