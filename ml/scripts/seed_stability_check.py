@@ -4,7 +4,9 @@ WF-CV growth came from a single lucky seed rather than robust HP.
 
 Workflow:
   1. Parse a tune log (trials.json sidecar)
-  2. Pick top N trials by tune objective value (growth/kelly)
+  2. Pick top N trials by ROI stability = mean(rois) - std(rois). Structurally
+     mirrors the final stability_score = mean(P/L) - std(P/L) formula, so
+     Phase 1 candidate pool selection correlates with Phase 2 ranking by design.
   3. For each trial, re-train K final models with different random_state
      values (end_date=2026-01-01 to keep OOS clean)
   4. Evaluate each model on the OOS period (analyze_model.evaluate_period)
@@ -242,30 +244,31 @@ def main():
             else:
                 print(f"WARN: trial #{num} not in log, skipping", file=sys.stderr)
     else:
-        # Top N by Kelly, with a volume floor to exclude winner's curse.
-        # Kelly = mean(log(fold_ROI)) explodes when a fold catches a single
-        # lucky hit with few races (1 hit / 10 races → ROI 300%+ → log(3) = 1.1),
-        # so low-volume trials can score fake-high Kelly while having poor OOS.
-        # Kelly after the volume filter is the most reliable Phase 1 signal
-        # for OOS performance; raw growth ranking is dominated by high-variance
-        # trials that got lucky on one fold.
-        def _kelly(kv):
+        # Top N by ROI stability = mean(rois) - std(rois), with volume floor.
+        # Structurally matches Phase 2's stability_score = mean(P/L) - std(P/L),
+        # just on ROI instead of P/L and over 4 WF-CV folds instead of 5 seeds.
+        # The hypothesis: HPs that are consistent across folds (data partitions)
+        # tend to also be consistent across seeds. This is untested empirically
+        # but mirrors the Phase 2 selection formula directly.
+        # Kelly (prior default) compressed at ev=-0.25 where fold ROIs cluster
+        # near 1.0-1.15, making Kelly log differences lose discrimination power.
+        # ROI stability uses linear ROI so differences stay visible.
+        def _roi_stability(kv):
             ua = kv[1].get("user_attrs") or {}
-            k = ua.get("kelly")
             races = ua.get("total_races") or 0
-            # Volume gate: low-volume trials have unreliable Kelly.
             if races < PHASE2_MIN_RACES:
                 return float("-inf")
-            return k if k is not None else float("-inf")
+            rois = ua.get("rois")
+            if not rois or len(rois) < 2:
+                return float("-inf")
+            return statistics.mean(rois) - statistics.stdev(rois)
         trial_items = sorted(
-            log_info["trials"].items(), key=_kelly, reverse=True,
+            log_info["trials"].items(), key=_roi_stability, reverse=True,
         )[: args.top_n]
-        # Drop trials with -inf (all below volume floor). Should be rare
-        # but defensive: if the tune is entirely low-volume, Phase 2 just
-        # evaluates the survivors (fewer than top_n).
+        # Drop trials with -inf (all below volume floor or with missing rois).
         trial_items = [
             (num, t) for num, t in trial_items
-            if ((t.get("user_attrs") or {}).get("total_races") or 0) >= PHASE2_MIN_RACES
+            if _roi_stability((num, t)) != float("-inf")
         ]
     if not trial_items:
         print("No trials found.", file=sys.stderr)

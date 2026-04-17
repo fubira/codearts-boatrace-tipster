@@ -774,24 +774,31 @@ def main():
     for t in sorted(completed, key=lambda t: t.value, reverse=True)[:top_n]:
         print(_fmt_trial(t))
 
-    # Kelly ranking: matches Phase 2 candidate selection.
-    # Volume gate (>= PHASE2_MIN_RACES) excludes low-sample Kelly exploit trials.
+    # ROI-stability ranking: matches Phase 2 candidate selection.
+    # stability = mean(rois) - std(rois), structurally mirroring the final
+    # stability_score = mean(P/L) - std(P/L). Volume gate (>= PHASE2_MIN_RACES)
+    # excludes low-sample noise.
     from scripts.seed_stability_check import PHASE2_MIN_RACES
 
-    def _kelly_key(t):
+    def _roi_stability_key(t):
         ua = t.user_attrs or {}
         races = ua.get("total_races") or 0
         if races < PHASE2_MIN_RACES:
             return float("-inf")
-        k = ua.get("kelly")
-        return k if k is not None else float("-inf")
+        rois = ua.get("rois")
+        if not rois or len(rois) < 2:
+            return float("-inf")
+        return float(np.mean(rois) - np.std(rois, ddof=1))
 
-    kelly_sorted = sorted(completed, key=_kelly_key, reverse=True)
-    kelly_top = [t for t in kelly_sorted if _kelly_key(t) != float("-inf")][:top_n]
+    roi_sorted = sorted(completed, key=_roi_stability_key, reverse=True)
+    roi_top = [
+        t for t in roi_sorted if _roi_stability_key(t) != float("-inf")
+    ][:top_n]
     print(
-        f"\nTop {top_n} trials (by Kelly, Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
+        f"\nTop {top_n} trials (by ROI stability = mean(rois) - std(rois), "
+        f"Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
     )
-    for t in kelly_top:
+    for t in roi_top:
         print(_fmt_trial(t))
 
     # Save best params
