@@ -209,6 +209,31 @@ function todayJST(): string {
     .replace(/\//g, "-");
 }
 
+// Wipe per-day runtime state (schedule, bets, caches, counters) while
+// preserving bankroll. Co-located with RunnerState so new fields force a
+// compile-time touch here — silent drift would recreate the stale-state
+// failure mode fixed in 2026-04-17.
+function resetStateForNoRaceDay(state: RunnerState): void {
+  state.schedule = [];
+  state.bets.clear();
+  state.results.clear();
+  state.predictionCache = null;
+  state.date = todayJST();
+  state.lastStatusLine = "";
+  state.snapshotPath = undefined;
+  state.skipCounts = {
+    not_b1_top: 0,
+    gap12_low: 0,
+    top3_conc_low: 0,
+    gap23_low: 0,
+    no_ev_tickets: 0,
+    drift_drop: 0,
+    stadium_excluded: 0,
+    withdrawal: 0,
+  };
+  state.t1DroppedTickets = 0;
+}
+
 /**
  * Sleep until 07:00 JST. `when="today"` is a no-op if it's already past 7 AM
  * (used at startup); `when="tomorrow"` always targets the next day (used at
@@ -1141,56 +1166,62 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
   process.on("SIGTERM", shutdown);
 
   while (true) {
-    await poll(state, opts);
+    // Skip day processing if we entered a new day with no schedule
+    // (scrape-daemon lag or genuine no-race day). Without this guard, poll()
+    // would run on stale yesterday state, allDone() would fire, and we'd
+    // sleep to tomorrow prematurely — the 2026-04-17 failure mode.
+    if (state.schedule.length > 0) {
+      await poll(state, opts);
 
-    let dayDone = false;
-    while (!dayDone) {
-      const interval = getPollInterval(state.schedule);
-      await Bun.sleep(interval);
-      try {
-        await poll(state, opts);
-        if (allDone(state.schedule)) {
-          logger.info("All races done for today");
-          dayDone = true;
-        }
-      } catch (err) {
-        await notifyError("poll", err).catch(console.error);
-      }
-    }
-
-    // Daily summary
-    {
-      let totalWagered = 0;
-      let totalPayout = 0;
-      let totalTickets = 0;
-      let wins = 0;
-      for (const [raceId, bet] of state.bets) {
-        totalWagered += bet.betAmount;
-        // Recover ticket count from cache (bet doesn't store it directly)
-        const cached = state.predictionCache?.get(raceId);
-        if (cached && !("skipReason" in cached)) {
-          totalTickets += cached.tickets.length;
-        }
-        const r = state.results.get(raceId);
-        if (r) {
-          totalPayout += r.payout;
-          if (r.won) wins++;
+      let dayDone = false;
+      while (!dayDone) {
+        const interval = getPollInterval(state.schedule);
+        await Bun.sleep(interval);
+        try {
+          await poll(state, opts);
+          if (allDone(state.schedule)) {
+            logger.info("All races done for today");
+            dayDone = true;
+          }
+        } catch (err) {
+          await notifyError("poll", err).catch(console.error);
         }
       }
-      await notifyDailySummary({
-        date: state.date,
-        totalRaces: state.schedule.length,
-        totalBets: state.bets.size,
-        totalTickets,
-        wins,
-        totalWagered,
-        totalPayout,
-        bankroll: state.bankroll,
-        allTimeInitial: state.bankrollState.allTimeInitial,
-        startedAt: state.bankrollState.startedAt,
-        skipCounts: state.skipCounts,
-        t1DroppedTickets: state.t1DroppedTickets,
-      });
+
+      // Daily summary
+      {
+        let totalWagered = 0;
+        let totalPayout = 0;
+        let totalTickets = 0;
+        let wins = 0;
+        for (const [raceId, bet] of state.bets) {
+          totalWagered += bet.betAmount;
+          // Recover ticket count from cache (bet doesn't store it directly)
+          const cached = state.predictionCache?.get(raceId);
+          if (cached && !("skipReason" in cached)) {
+            totalTickets += cached.tickets.length;
+          }
+          const r = state.results.get(raceId);
+          if (r) {
+            totalPayout += r.payout;
+            if (r.won) wins++;
+          }
+        }
+        await notifyDailySummary({
+          date: state.date,
+          totalRaces: state.schedule.length,
+          totalBets: state.bets.size,
+          totalTickets,
+          wins,
+          totalWagered,
+          totalPayout,
+          bankroll: state.bankroll,
+          allTimeInitial: state.bankrollState.allTimeInitial,
+          startedAt: state.bankrollState.startedAt,
+          skipCounts: state.skipCounts,
+          t1DroppedTickets: state.t1DroppedTickets,
+        });
+      }
     }
 
     await waitUntilJST7am("tomorrow");
@@ -1199,10 +1230,30 @@ export async function runDaemon(opts: RunnerOptions): Promise<void> {
     closeDatabase();
     initializeDatabase();
 
-    // bankrollState persists across days and restarts
-    const newState = await setupDay(opts, state.bankrollState);
-    if (!newState) continue;
+    // bankrollState persists across days and restarts.
+    // setupDay already retries DB 31 times over 30 min. If that's not enough
+    // (scrape-daemon sometimes stays stuck on yesterday's retry loop past
+    // 08:00), keep retrying at 10-min intervals until 12:00 JST cutoff.
+    let newState = await setupDay(opts, state.bankrollState);
+    while (!newState) {
+      const jstHour = new Date(Date.now() + 9 * 3600_000).getUTCHours();
+      if (jstHour >= 12) {
+        logger.warn(
+          "setupDay still failing past 12:00 JST — treating as no-race day",
+        );
+        break;
+      }
+      logger.info("setupDay failed, retrying in 10 min...");
+      await Bun.sleep(10 * 60_000);
+      newState = await setupDay(opts, state.bankrollState);
+    }
 
-    Object.assign(state, newState);
+    if (newState) {
+      Object.assign(state, newState);
+    } else {
+      // Purge stale yesterday schedule/state so the next loop iteration
+      // skips day processing and waits cleanly until tomorrow.
+      resetStateForNoRaceDay(state);
+    }
   }
 }
