@@ -48,6 +48,14 @@ const ODDS_T3_LEAD = 3;
 const ODDS_T1_LEAD = 1;
 const SKIP_THRESHOLD = 5;
 const RESULT_DELAY = 12;
+// Abandon result scrapes that never populate (race cancelled, page 404,
+// HTML structure change). Without this the daemon spins forever on
+// yesterday's 'No result table found' entries, starving today's setupDay
+// well past 07:00 JST — the 2026-04-17 failure mode.
+// 180 min = last race (20:45 JST) + 3h = 23:45 JST, well before next-day
+// setupDay at 07:00 JST. If a result genuinely takes longer, it's an
+// outage (cancellation / site issue) and retrying won't help.
+const RESULT_ABANDON_MINUTES = 180;
 
 const stadiumNames = new Map(
   Object.entries(STADIUMS).map(([code, name]) => [
@@ -173,7 +181,12 @@ function getScrapableRaces(
         break;
       case "decided": // T-1 done, waiting for results
       case "result_pending":
-        if (minutesToDeadline <= -RESULT_DELAY) {
+        if (minutesToDeadline <= -RESULT_ABANDON_MINUTES) {
+          logger.warn(
+            `Abandoning result: ${slot.stadiumName} R${slot.raceNumber} | ${Math.round(-minutesToDeadline)} min past deadline (${slot.status})`,
+          );
+          slot.status = "done";
+        } else if (minutesToDeadline <= -RESULT_DELAY) {
           results.push(slot);
         }
         break;
