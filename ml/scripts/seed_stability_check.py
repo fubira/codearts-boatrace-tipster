@@ -4,8 +4,9 @@ WF-CV growth came from a single lucky seed rather than robust HP.
 
 Workflow:
   1. Parse a tune log (trials.json sidecar)
-  2. Pick top N trials by Phase 1 hit_pct (empirically the best predictor
-     of Phase 2 stability; see selection rationale below)
+  2. Pick top N trials by Phase 1 profit (with volume + hit_pct floors) —
+     aligned with the --objective=profit default in tune_p2. See selection
+     rationale below.
   3. For each trial, re-train K final models with different random_state
      values (end_date=2026-01-01 to keep OOS clean)
   4. Evaluate each model on the OOS period (analyze_model.evaluate_period)
@@ -242,39 +243,37 @@ def main():
             else:
                 print(f"WARN: trial #{num} not in log, skipping", file=sys.stderr)
     else:
-        # Top N by Phase 1 hit_pct, with a volume floor to exclude winner's
-        # curse. Empirically the strongest predictor of Phase 2 stability
-        # within the pool that passes the volume floor.
+        # Top N by Phase 1 profit, with dual floor (volume + hit_pct) to
+        # exclude two distinct failure modes:
+        #   - volume < PHASE2_MIN_RACES: naive exploitation (few races, lucky
+        #     high-odds hit)
+        #   - hit_pct < 7.0: favorite-heavy HPs with ROI near 1.0 that look
+        #     fine on hit% alone but earn ~0 P/L (empirically seen in bd run
+        #     where hit_pct sort promoted ROI=99% / P/L=-1,980 trials).
         #
-        # Measured (ba 200-trial run, 2026-04-17, full volume-filtered pool
-        # of 176 trials, recall = Phase 2 top-10 captured in top-N selection):
-        #   kelly     top-30 → 0/10   ← NEGATIVE Spearman ρ, rejects winners
-        #   growth    top-30 → 0/10
-        #   wins      top-30 → 2/10   (within Kelly-100 pool it looks better,
-        #                              but on the full pool it pulls in high-
-        #                              volume / low-hit noisy trials)
-        #   hit_pct   top-30 → 7/10   ← best single signal
-        #
-        # Kelly fails because mean(log(fold_ROI)) explodes when one fold
-        # catches a single lucky hit with few races. Quality (hit_pct) after
-        # the volume floor is the most reliable Phase 1 signal for OOS
-        # stability.
-        def _hit_pct(kv):
+        # profit directly ranks odds-weighted P/L, so low-ROI/high-hit HPs
+        # are auto-demoted without an explicit ROI floor. Floors mirror the
+        # tune_p2 --objective=profit defaults so Phase 2 pool == Phase 1
+        # top-N when the tune uses the default objective. For legacy runs
+        # (growth/kelly), Phase 2 still selects the subset with good volume
+        # and hit quality, regardless of what was optimized.
+        def _profit_key(kv):
             ua = kv[1].get("user_attrs") or {}
             races = ua.get("total_races") or 0
-            if races < PHASE2_MIN_RACES:
+            hit = ua.get("hit_pct") or 0.0
+            if races < PHASE2_MIN_RACES or hit < 7.0:
                 return float("-inf")
-            hp = ua.get("hit_pct")
-            return hp if hp is not None else float("-inf")
+            pr = ua.get("profit")
+            return pr if pr is not None else float("-inf")
         trial_items = sorted(
-            log_info["trials"].items(), key=_hit_pct, reverse=True,
+            log_info["trials"].items(), key=_profit_key, reverse=True,
         )[: args.top_n]
-        # Drop trials with -inf (all below volume floor). Should be rare
-        # but defensive: if the tune is entirely low-volume, Phase 2 just
-        # evaluates the survivors (fewer than top_n).
+        # Drop trials with -inf (all below floors). Should be rare but
+        # defensive: if the tune is entirely low-volume or low-hit, Phase 2
+        # just evaluates the survivors (fewer than top_n).
         trial_items = [
             (num, t) for num, t in trial_items
-            if ((t.get("user_attrs") or {}).get("total_races") or 0) >= PHASE2_MIN_RACES
+            if _profit_key((num, t)) != float("-inf")
         ]
     if not trial_items:
         print("No trials found.", file=sys.stderr)
