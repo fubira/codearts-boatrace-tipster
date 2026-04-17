@@ -94,7 +94,7 @@ bun run start run --live                            # LIVE モード（将来の
 
 ## ML 学習・チューニング
 
-サーバ側の Optuna 探索 (server-tune.sh) で並列実行・自動 prefix 採番される。Phase 1 (tune) 完了後に Phase 2 (Kelly 上位 N × 5 seed stability check) がサーバで自動連続実行され、kick 1 回 + fetch 1 回で promote 候補の ranking まで取得できる。
+サーバ側の Optuna 探索 (server-tune.sh) で並列実行・自動 prefix 採番される。Phase 1 (tune) 完了後に Phase 2 (ROI stability 上位 N × 5 seed stability check) がサーバで自動連続実行され、kick 1 回 + fetch 1 回で promote 候補の ranking まで取得できる。
 
 ```bash
 ./scripts/server-tune.sh --trials 400                # 通常探索 (overnight target)

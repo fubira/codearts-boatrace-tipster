@@ -142,7 +142,7 @@ P2 戦略 Optuna 探索をサーバで実行。**Phase 1 (tune) + Phase 2 (seed 
 --seed N                         # random seed (default: 自動ランダム、明示で再現性確保)
 
 # Phase 2 (ROI stability top-N × 5 seed stability check、Phase 1 完了後にサーバで連続実行)
---phase2 N                       # ROI stability (mean(rois)-std(rois)) 上位 N を評価 (default: trials/25、最低 2)
+--phase2 N                       # ROI stability (mean(rois)-std(rois)) 上位 N を評価 (default: max(15, trials/15))
 --no-phase2                      # Phase 2 を無効化 (Phase 1 だけ実行)
 --phase2-from DATE               # OOS 評価期間 開始 (default: 2026-01-01)
 --phase2-to DATE                 # OOS 評価期間 終了 (default: 今日)
