@@ -47,8 +47,6 @@ def main():
     parser.add_argument("--colsample-bytree", type=float, default=None)
     parser.add_argument("--reg-alpha", type=float, default=None)
     parser.add_argument("--reg-lambda", type=float, default=None)
-    parser.add_argument("--seed", type=int, default=None,
-                        help="LGBM random_state override (default: 42 from DEFAULT_PARAMS)")
     args = parser.parse_args()
 
     # Build params: start from model_meta or defaults
@@ -77,8 +75,6 @@ def main():
         val = getattr(args, key.replace("-", "_"))
         if val is not None:
             params["extra_params"][key] = val
-    if args.seed is not None:
-        params["extra_params"]["random_state"] = args.seed
 
     print(f"Training params:")
     print(f"  relevance={params['relevance_scheme']}, n_est={params['n_estimators']}, lr={params['learning_rate']:.4f}")

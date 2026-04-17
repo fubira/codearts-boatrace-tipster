@@ -403,7 +403,7 @@ echo "" >> "\$LOG"
 echo "=== Phase 1: Optuna tune ===" >> "\$LOG"
 nice -n 19 ionice -c 3 ${tune_cmd} >> "\$LOG" 2>&1
 echo "" >> "\$LOG"
-# Phase 2: seed_stability_check on profit top-N of Phase 1 results.
+# Phase 2: seed_stability_check on Kelly top-N of Phase 1 results.
 # Runs on server so no local intervention is required.
 if [ -n "${phase2_cmd}" ]; then
   echo "=== Phase 2: seed_stability_check ===" >> "\$LOG"
@@ -423,7 +423,7 @@ EOF
   log "Started on ${REMOTE_HOSTNAME} (PID: ${pid})"
   log "  Phase 1: ${TRIALS} trials × ${FOLDS} folds"
   if [ -n "${phase2_top_resolved}" ]; then
-    log "  Phase 2: profit top ${phase2_top_resolved} × 5 seeds (gap12=${gap12_th}, to=${phase2_to})"
+    log "  Phase 2: Kelly top ${phase2_top_resolved} × 5 seeds (gap12=${gap12_th}, to=${phase2_to})"
   else
     log "  Phase 2: skipped (--no-phase2)"
   fi

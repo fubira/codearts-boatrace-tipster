@@ -4,9 +4,7 @@ WF-CV growth came from a single lucky seed rather than robust HP.
 
 Workflow:
   1. Parse a tune log (trials.json sidecar)
-  2. Pick top N trials by Phase 1 profit (with volume + hit_pct floors) —
-     aligned with the --objective=profit default in tune_p2. See selection
-     rationale below.
+  2. Pick top N trials by tune objective value (growth/kelly)
   3. For each trial, re-train K final models with different random_state
      values (end_date=2026-01-01 to keep OOS clean)
   4. Evaluate each model on the OOS period (analyze_model.evaluate_period)
@@ -45,7 +43,8 @@ FIELD_SIZE = 6
 DEFAULT_SEEDS = [42, 100, 200, 300, 400]
 
 # Minimum WF-CV races (across all folds) for a trial to be a Phase 2
-# candidate. Low-volume trials are too noisy to rank reliably.
+# candidate. Kelly = mean(log(fold_ROI)) explodes for low-volume trials
+# that catch a single lucky hit per fold, so a volume floor is needed.
 # Production-class trials land around 500-1200 Phase 1 races.
 PHASE2_MIN_RACES = 500
 
@@ -243,37 +242,30 @@ def main():
             else:
                 print(f"WARN: trial #{num} not in log, skipping", file=sys.stderr)
     else:
-        # Top N by Phase 1 profit, with dual floor (volume + hit_pct) to
-        # exclude two distinct failure modes:
-        #   - volume < PHASE2_MIN_RACES: naive exploitation (few races, lucky
-        #     high-odds hit)
-        #   - hit_pct < 7.0: favorite-heavy HPs with ROI near 1.0 that look
-        #     fine on hit% alone but earn ~0 P/L (empirically seen in bd run
-        #     where hit_pct sort promoted ROI=99% / P/L=-1,980 trials).
-        #
-        # profit directly ranks odds-weighted P/L, so low-ROI/high-hit HPs
-        # are auto-demoted without an explicit ROI floor. Floors mirror the
-        # tune_p2 --objective=profit defaults so Phase 2 pool == Phase 1
-        # top-N when the tune uses the default objective. For legacy runs
-        # (growth/kelly), Phase 2 still selects the subset with good volume
-        # and hit quality, regardless of what was optimized.
-        def _profit_key(kv):
+        # Top N by Kelly, with a volume floor to exclude winner's curse.
+        # Kelly = mean(log(fold_ROI)) explodes when a fold catches a single
+        # lucky hit with few races (1 hit / 10 races → ROI 300%+ → log(3) = 1.1),
+        # so low-volume trials can score fake-high Kelly while having poor OOS.
+        # Kelly after the volume filter is the most reliable Phase 1 signal
+        # for OOS performance; raw growth ranking is dominated by high-variance
+        # trials that got lucky on one fold.
+        def _kelly(kv):
             ua = kv[1].get("user_attrs") or {}
+            k = ua.get("kelly")
             races = ua.get("total_races") or 0
-            hit = ua.get("hit_pct") or 0.0
-            if races < PHASE2_MIN_RACES or hit < 7.0:
+            # Volume gate: low-volume trials have unreliable Kelly.
+            if races < PHASE2_MIN_RACES:
                 return float("-inf")
-            pr = ua.get("profit")
-            return pr if pr is not None else float("-inf")
+            return k if k is not None else float("-inf")
         trial_items = sorted(
-            log_info["trials"].items(), key=_profit_key, reverse=True,
+            log_info["trials"].items(), key=_kelly, reverse=True,
         )[: args.top_n]
-        # Drop trials with -inf (all below floors). Should be rare but
-        # defensive: if the tune is entirely low-volume or low-hit, Phase 2
-        # just evaluates the survivors (fewer than top_n).
+        # Drop trials with -inf (all below volume floor). Should be rare
+        # but defensive: if the tune is entirely low-volume, Phase 2 just
+        # evaluates the survivors (fewer than top_n).
         trial_items = [
             (num, t) for num, t in trial_items
-            if _profit_key((num, t)) != float("-inf")
+            if ((t.get("user_attrs") or {}).get("total_races") or 0) >= PHASE2_MIN_RACES
         ]
     if not trial_items:
         print("No trials found.", file=sys.stderr)

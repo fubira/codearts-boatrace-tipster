@@ -312,16 +312,8 @@ def main():
     parser.add_argument("--fold-months", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
-    parser.add_argument(
-        "--objective", choices=["profit", "growth", "kelly"], default="profit",
-        help=(
-            "Optimization objective. Default 'profit' (WF-CV total P/L with "
-            "volume + hit_pct floors) is aligned with Phase 2 selection so "
-            "Phase 1 value ↔ Phase 2 candidate pool stay consistent. "
-            "'growth' (log-compressed daily P/L) and 'kelly' (mean log-ROI) "
-            "are legacy alternatives; both diverge from Phase 2 selection."
-        ),
-    )
+    parser.add_argument("--objective", choices=["growth", "kelly"], default="growth",
+                        help="Optimization objective: growth (daily compound, default) or kelly (log-ROI, favors high ROI)")
     parser.add_argument("--relevance", default=None,
                         help="Fix relevance scheme (linear/top_heavy/podium). If omitted, included in search space.")
     parser.add_argument("--fix-thresholds", default=None,
@@ -649,22 +641,11 @@ def main():
         trial.set_user_attr("avg_best_iter", avg_best_iter)
         trial.set_user_attr("fold_best_iters", fold_best_iters)
 
-        # Dual floor for the profit objective (default):
-        #   - volume: reject HPs that buy <PHASE2_MIN_RACES races across the
-        #     WF-CV horizon (naive exploitation via lucky high-odds hits).
-        #   - quality: reject HPs that hit <7.0% (favorite-heavy + losing ROI
-        #     combos that would slip past a pure volume gate at ev=-0.25).
-        # Sentinel is returned AFTER user_attrs so floored trials remain
-        # inspectable in logs/trials.json.
-        # growth/kelly legacy objectives keep the looser <20-race sentinel
-        # for backward compatibility with archived tune-run comparisons.
-        from scripts.seed_stability_check import PHASE2_MIN_RACES
-        if args.objective == "profit":
-            if total_races < PHASE2_MIN_RACES or hit_pct < 7.0:
-                return -1e9
-            return profit
+        # Require minimum volume — return sentinel AFTER user_attrs so the
+        # trial is still inspectable in logs/trials.json.
         if total_races < 20:
             return -999.0
+
         if args.objective == "kelly":
             return kelly
         return growth
@@ -717,15 +698,11 @@ def main():
     )
 
     # Results
-    obj_label = {"profit": "Profit", "growth": "Growth", "kelly": "Kelly"}[args.objective]
+    obj_label = {"growth": "Growth", "kelly": "Kelly"}[args.objective]
     print("\n" + "=" * 70)
     print(f"Optuna Search Complete — P2 Trifecta Strategy (objective: {args.objective})")
     print("=" * 70)
-    # profit prints as yen; growth/kelly keep 6-decimal scientific display.
-    if args.objective == "profit":
-        print(f"Best {obj_label}: {study.best_value:+,.0f}円")
-    else:
-        print(f"Best {obj_label}: {study.best_value:.6f}")
+    print(f"Best {obj_label}: {study.best_value:.6f}")
     bp = study.best_params
     print(f"Best params:")
     for k, v in sorted(bp.items()):
@@ -797,30 +774,24 @@ def main():
     for t in sorted(completed, key=lambda t: t.value, reverse=True)[:top_n]:
         print(_fmt_trial(t))
 
-    # Phase 2 candidate ranking: matches seed_stability_check selection.
-    # Same floors as the profit objective (volume >= PHASE2_MIN_RACES AND
-    # hit_pct >= 7.0) so Phase 1 value and Phase 2 pool agree regardless of
-    # which --objective was used for the tune.
+    # Kelly ranking: matches Phase 2 candidate selection.
+    # Volume gate (>= PHASE2_MIN_RACES) excludes low-sample Kelly exploit trials.
     from scripts.seed_stability_check import PHASE2_MIN_RACES
 
-    def _profit_key(t):
+    def _kelly_key(t):
         ua = t.user_attrs or {}
         races = ua.get("total_races") or 0
-        hit = ua.get("hit_pct") or 0.0
-        if races < PHASE2_MIN_RACES or hit < 7.0:
+        if races < PHASE2_MIN_RACES:
             return float("-inf")
-        pr = ua.get("profit")
-        return pr if pr is not None else float("-inf")
+        k = ua.get("kelly")
+        return k if k is not None else float("-inf")
 
-    profit_sorted = sorted(completed, key=_profit_key, reverse=True)
-    profit_top = [
-        t for t in profit_sorted if _profit_key(t) != float("-inf")
-    ][:top_n]
+    kelly_sorted = sorted(completed, key=_kelly_key, reverse=True)
+    kelly_top = [t for t in kelly_sorted if _kelly_key(t) != float("-inf")][:top_n]
     print(
-        f"\nTop {top_n} trials (by profit, Phase 2 candidates, "
-        f"volume>={PHASE2_MIN_RACES} AND hit>=7.0%):"
+        f"\nTop {top_n} trials (by Kelly, Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
     )
-    for t in profit_top:
+    for t in kelly_top:
         print(_fmt_trial(t))
 
     # Save best params
