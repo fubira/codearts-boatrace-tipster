@@ -774,24 +774,24 @@ def main():
     for t in sorted(completed, key=lambda t: t.value, reverse=True)[:top_n]:
         print(_fmt_trial(t))
 
-    # Kelly ranking: matches Phase 2 candidate selection.
-    # Volume gate (>= PHASE2_MIN_RACES) excludes low-sample Kelly exploit trials.
+    # hit_pct ranking: matches Phase 2 candidate selection.
+    # Volume gate (>= PHASE2_MIN_RACES) excludes low-sample noise.
     from scripts.seed_stability_check import PHASE2_MIN_RACES
 
-    def _kelly_key(t):
+    def _hit_pct_key(t):
         ua = t.user_attrs or {}
         races = ua.get("total_races") or 0
         if races < PHASE2_MIN_RACES:
             return float("-inf")
-        k = ua.get("kelly")
-        return k if k is not None else float("-inf")
+        hp = ua.get("hit_pct")
+        return hp if hp is not None else float("-inf")
 
-    kelly_sorted = sorted(completed, key=_kelly_key, reverse=True)
-    kelly_top = [t for t in kelly_sorted if _kelly_key(t) != float("-inf")][:top_n]
+    hit_sorted = sorted(completed, key=_hit_pct_key, reverse=True)
+    hit_top = [t for t in hit_sorted if _hit_pct_key(t) != float("-inf")][:top_n]
     print(
-        f"\nTop {top_n} trials (by Kelly, Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
+        f"\nTop {top_n} trials (by hit_pct, Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
     )
-    for t in kelly_top:
+    for t in hit_top:
         print(_fmt_trial(t))
 
     # Save best params

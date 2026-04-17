@@ -4,7 +4,8 @@ WF-CV growth came from a single lucky seed rather than robust HP.
 
 Workflow:
   1. Parse a tune log (trials.json sidecar)
-  2. Pick top N trials by tune objective value (growth/kelly)
+  2. Pick top N trials by Phase 1 hit_pct (empirically the best predictor
+     of Phase 2 stability; see selection rationale below)
   3. For each trial, re-train K final models with different random_state
      values (end_date=2026-01-01 to keep OOS clean)
   4. Evaluate each model on the OOS period (analyze_model.evaluate_period)
@@ -43,8 +44,7 @@ FIELD_SIZE = 6
 DEFAULT_SEEDS = [42, 100, 200, 300, 400]
 
 # Minimum WF-CV races (across all folds) for a trial to be a Phase 2
-# candidate. Kelly = mean(log(fold_ROI)) explodes for low-volume trials
-# that catch a single lucky hit per fold, so a volume floor is needed.
+# candidate. Low-volume trials are too noisy to rank reliably.
 # Production-class trials land around 500-1200 Phase 1 races.
 PHASE2_MIN_RACES = 500
 
@@ -242,23 +242,32 @@ def main():
             else:
                 print(f"WARN: trial #{num} not in log, skipping", file=sys.stderr)
     else:
-        # Top N by Kelly, with a volume floor to exclude winner's curse.
-        # Kelly = mean(log(fold_ROI)) explodes when a fold catches a single
-        # lucky hit with few races (1 hit / 10 races → ROI 300%+ → log(3) = 1.1),
-        # so low-volume trials can score fake-high Kelly while having poor OOS.
-        # Kelly after the volume filter is the most reliable Phase 1 signal
-        # for OOS performance; raw growth ranking is dominated by high-variance
-        # trials that got lucky on one fold.
-        def _kelly(kv):
+        # Top N by Phase 1 hit_pct, with a volume floor to exclude winner's
+        # curse. Empirically the strongest predictor of Phase 2 stability
+        # within the pool that passes the volume floor.
+        #
+        # Measured (ba 200-trial run, 2026-04-17, full volume-filtered pool
+        # of 176 trials, recall = Phase 2 top-10 captured in top-N selection):
+        #   kelly     top-30 → 0/10   ← NEGATIVE Spearman ρ, rejects winners
+        #   growth    top-30 → 0/10
+        #   wins      top-30 → 2/10   (within Kelly-100 pool it looks better,
+        #                              but on the full pool it pulls in high-
+        #                              volume / low-hit noisy trials)
+        #   hit_pct   top-30 → 7/10   ← best single signal
+        #
+        # Kelly fails because mean(log(fold_ROI)) explodes when one fold
+        # catches a single lucky hit with few races. Quality (hit_pct) after
+        # the volume floor is the most reliable Phase 1 signal for OOS
+        # stability.
+        def _hit_pct(kv):
             ua = kv[1].get("user_attrs") or {}
-            k = ua.get("kelly")
             races = ua.get("total_races") or 0
-            # Volume gate: low-volume trials have unreliable Kelly.
             if races < PHASE2_MIN_RACES:
                 return float("-inf")
-            return k if k is not None else float("-inf")
+            hp = ua.get("hit_pct")
+            return hp if hp is not None else float("-inf")
         trial_items = sorted(
-            log_info["trials"].items(), key=_kelly, reverse=True,
+            log_info["trials"].items(), key=_hit_pct, reverse=True,
         )[: args.top_n]
         # Drop trials with -inf (all below volume floor). Should be rare
         # but defensive: if the tune is entirely low-volume, Phase 2 just
