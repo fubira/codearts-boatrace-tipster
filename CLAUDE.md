@@ -104,6 +104,15 @@ analyze_t5_t1_drift.py --from DATE --to DATE [--model-dir DIR]
                        # 期間は race_odds_snapshots 存在日 (2026-04-07 以降) に限定。
                        # 「モデルの選ぶ券が市場で削られやすいか」を定期監視 (月次 health check)
 
+analyze_ev_sensitivity.py --from DATE --to DATE [--model-dir DIR]
+                          [--paths t5,t1,confirmed] [--ev-levels LIST]
+                          [--rank2-breakdown] [--diff-ev BASE,NEW] [--diff-path t1]
+                          # EV 閾値 × path ごとの P/L / ROI / hit% を sweep 出力。
+                          # --rank2-breakdown で rank2 ∈ {2..6} 構成を追加 (outer-2nd バイアス検査)。
+                          # --diff-ev で 2 閾値間の具体的な追加買い目を per-race 列挙。
+                          # 新モデルの EV 基本線決定と validation に使う。
+                          # 負値 EV は --ev-levels="-0.25,..." のように = 付きで渡す。
+
 simulate_p2_mc.py --from DATE --to DATE [--model-dir DIR]
                   [--bankroll N] [--unit-divisor N] [--bet-cap N]
                   [--n-sims N] [--seed N] [--days 30,90,180,365]
