@@ -54,119 +54,32 @@ def _trifecta_prob(p, i1, i2, i3):
     return a * (b / (1 - a)) * (c / (1 - a - b))
 
 
-def evaluate_period(
-    model, meta, df, odds, from_date: str, to_date: str
-) -> tuple[list[Purchase], dict[int, int]]:
-    """Run model predictions on a period and apply P2 strategy filter.
+@dataclass
+class _RaceContext:
+    """EV-independent per-race state after race-level P2 filters pass.
 
-    Returns:
-      purchases: list of Purchase records (only those passing all filters)
-      total_by_stadium: total races per stadium_id in the period (for context)
+    Candidates hold all buyable tickets with pre-computed ev values so
+    callers can apply ev_threshold without redoing model prediction.
     """
-    features = meta["feature_columns"]
-    st = meta.get("strategy", {})
-    conc_th = st.get("top3_conc_threshold", 0.0)
-    gap23_th = st.get("gap23_threshold", 0.0)
-    gap12_th = st.get("gap12_min_threshold", 0.0)
-    ev_th = st.get("ev_threshold", 0.0)
-    excluded = set(st.get("excluded_stadiums") or [])
-
-    test = df[(df["race_date"] >= from_date) & (df["race_date"] < to_date)].copy()
-    X = test[features].copy()
-    fill_nan_with_means(X, meta)
-    scores = model.predict(X)
-
-    n = len(X) // FIELD_SIZE
-    s2 = scores.reshape(n, FIELD_SIZE)
-    b2 = test["boat_number"].values.reshape(n, FIELD_SIZE).astype(int)
-    ri = test["race_id"].values.reshape(n, FIELD_SIZE)[:, 0].astype(int)
-    sid_arr = test["stadium_id"].values.reshape(n, FIELD_SIZE)[:, 0].astype(int)
-    dates = test["race_date"].values.reshape(n, FIELD_SIZE)[:, 0]
-    y2 = test["finish_position"].values.reshape(n, FIELD_SIZE)
-
-    po = np.argsort(-s2, axis=1)
-    tb = np.take_along_axis(b2, po, axis=1)
-    ex = np.exp(s2 - s2.max(axis=1, keepdims=True))
-    mp = ex / ex.sum(axis=1, keepdims=True)
-    ao = np.argsort(y2, axis=1)
-    ab = np.take_along_axis(b2, ao, axis=1).astype(int)
-
-    purchases: list[Purchase] = []
-    total_by_stadium: dict[int, int] = defaultdict(int)
-
-    for i in range(n):
-        sid = int(sid_arr[i])
-        total_by_stadium[sid] += 1
-
-        if sid in excluded:
-            continue
-        if tb[i, 0] != 1:
-            continue
-        p1 = float(mp[i, po[i, 0]])
-        p2 = float(mp[i, po[i, 1]])
-        p3 = float(mp[i, po[i, 2]])
-        gap12 = p1 - p2
-        if gap12 < gap12_th:
-            continue
-        top3_conc = (p2 + p3) / (1 - p1 + 1e-10)
-        gap23 = p2 - p3
-        if top3_conc < conc_th or gap23 < gap23_th:
-            continue
-
-        rid = int(ri[i])
-        r2, r3 = int(tb[i, 1]), int(tb[i, 2])
-        a1, a2, a3 = int(ab[i, 0]), int(ab[i, 1]), int(ab[i, 2])
-        hit = f"{a1}-{a2}-{a3}"
-
-        tks: list[tuple[str, float, float]] = []
-        for combo, ia, ib, ic in [
-            (f"1-{r2}-{r3}", po[i, 0], po[i, 1], po[i, 2]),
-            (f"1-{r3}-{r2}", po[i, 0], po[i, 2], po[i, 1]),
-        ]:
-            o = odds.get((rid, combo), 0)
-            if o <= 0:
-                continue
-            m2 = _trifecta_prob(mp[i], ia, ib, ic)
-            ev = m2 / (1 / o) * 0.75 - 1
-            if ev >= ev_th:
-                tks.append((combo, o, ev))
-        if not tks:
-            continue
-
-        cost = len(tks) * 100
-        payout = 0.0
-        won = False
-        for combo, o, _ in tks:
-            if combo == hit:
-                won = True
-                payout = o * 100
-                break
-
-        purchases.append(
-            Purchase(
-                race_id=rid, race_date=str(dates[i]), stadium_id=sid,
-                top3_conc=top3_conc, gap23=gap23, tickets=tks,
-                hit_combo=hit, won=won, b1_won=(a1 == 1),
-                cost=cost, payout=payout,
-            )
-        )
-
-    return purchases, dict(total_by_stadium)
+    race_id: int
+    stadium_id: int
+    race_date: str
+    top3_conc: float
+    gap23: float
+    b1_won: bool
+    hit_combo: str
+    candidates: list[tuple[str, float, float]]  # (combo, odds, ev)
 
 
-def evaluate_period_sweep(
+def _collect_race_candidates(
     model, meta, df, odds, from_date: str, to_date: str,
-    ev_levels: list[float],
-) -> tuple[dict[float, list[Purchase]], dict[int, int]]:
-    """EV sweep version of evaluate_period.
+) -> tuple[list[_RaceContext], dict[int, int]]:
+    """Predict once and enumerate ev-independent ticket candidates per race.
 
-    Predict 1 回 + race-level filter 1 回でやり、ticket の ev >= ev_th
-    判定のみ ev_levels 全てに対して繰り返す。predict の重複コストを避けつつ
-    各 ev 閾値での Purchase 群を生成し、peak ev 探索に使う。
-
-    Returns:
-      purchases_by_ev: {ev_th: [Purchase, ...]}
-      total_by_stadium: 期間内の stadium 別 race 数 (ev 非依存)
+    Runs model prediction, applies race-level P2 filters (excluded stadium,
+    b1 top-1, gap12, top3_conc, gap23), and collects candidate tickets with
+    pre-computed ev. The caller filters by ev_threshold — this lets
+    evaluate_period and evaluate_period_sweep share the heavy predict work.
     """
     features = meta["feature_columns"]
     st = meta.get("strategy", {})
@@ -195,7 +108,7 @@ def evaluate_period_sweep(
     ao = np.argsort(y2, axis=1)
     ab = np.take_along_axis(b2, ao, axis=1).astype(int)
 
-    purchases_by_ev: dict[float, list[Purchase]] = {ev: [] for ev in ev_levels}
+    contexts: list[_RaceContext] = []
     total_by_stadium: dict[int, int] = defaultdict(int)
 
     for i in range(n):
@@ -222,7 +135,6 @@ def evaluate_period_sweep(
         a1, a2, a3 = int(ab[i, 0]), int(ab[i, 1]), int(ab[i, 2])
         hit = f"{a1}-{a2}-{a3}"
 
-        # Candidate tickets are ev-independent; compute once per race.
         candidates: list[tuple[str, float, float]] = []
         for combo, ia, ib, ic in [
             (f"1-{r2}-{r3}", po[i, 0], po[i, 1], po[i, 2]),
@@ -238,30 +150,80 @@ def evaluate_period_sweep(
         if not candidates:
             continue
 
+        contexts.append(_RaceContext(
+            race_id=rid, stadium_id=sid, race_date=str(dates[i]),
+            top3_conc=top3_conc, gap23=gap23,
+            b1_won=(a1 == 1), hit_combo=hit, candidates=candidates,
+        ))
+
+    return contexts, dict(total_by_stadium)
+
+
+def _make_purchase(
+    ctx: _RaceContext, tickets: list[tuple[str, float, float]],
+) -> Purchase:
+    cost = len(tickets) * 100
+    payout = 0.0
+    won = False
+    for combo, o, _ in tickets:
+        if combo == ctx.hit_combo:
+            won = True
+            payout = o * 100
+            break
+    return Purchase(
+        race_id=ctx.race_id, race_date=ctx.race_date, stadium_id=ctx.stadium_id,
+        top3_conc=ctx.top3_conc, gap23=ctx.gap23, tickets=tickets,
+        hit_combo=ctx.hit_combo, won=won, b1_won=ctx.b1_won,
+        cost=cost, payout=payout,
+    )
+
+
+def evaluate_period(
+    model, meta, df, odds, from_date: str, to_date: str
+) -> tuple[list[Purchase], dict[int, int]]:
+    """Run model predictions on a period and apply P2 strategy filter.
+
+    Returns:
+      purchases: list of Purchase records (only those passing all filters)
+      total_by_stadium: total races per stadium_id in the period (for context)
+    """
+    ev_th = meta.get("strategy", {}).get("ev_threshold", 0.0)
+    contexts, total_by_stadium = _collect_race_candidates(
+        model, meta, df, odds, from_date, to_date,
+    )
+    purchases: list[Purchase] = []
+    for ctx in contexts:
+        tks = [(c, o, ev) for c, o, ev in ctx.candidates if ev >= ev_th]
+        if not tks:
+            continue
+        purchases.append(_make_purchase(ctx, tks))
+    return purchases, total_by_stadium
+
+
+def evaluate_period_sweep(
+    model, meta, df, odds, from_date: str, to_date: str,
+    ev_levels: list[float],
+) -> tuple[dict[float, list[Purchase]], dict[int, int]]:
+    """EV sweep version of evaluate_period.
+
+    Predicts once and re-filters tickets per ev_threshold so peak-ev
+    search can inspect multiple ev levels cheaply.
+
+    Returns:
+      purchases_by_ev: {ev_th: [Purchase, ...]}
+      total_by_stadium: per-stadium race totals (ev-independent)
+    """
+    contexts, total_by_stadium = _collect_race_candidates(
+        model, meta, df, odds, from_date, to_date,
+    )
+    purchases_by_ev: dict[float, list[Purchase]] = {ev: [] for ev in ev_levels}
+    for ctx in contexts:
         for ev_th in ev_levels:
-            tks = [(c, o, ev) for c, o, ev in candidates if ev >= ev_th]
+            tks = [(c, o, ev) for c, o, ev in ctx.candidates if ev >= ev_th]
             if not tks:
                 continue
-
-            cost = len(tks) * 100
-            payout = 0.0
-            won = False
-            for combo, o, _ in tks:
-                if combo == hit:
-                    won = True
-                    payout = o * 100
-                    break
-
-            purchases_by_ev[ev_th].append(
-                Purchase(
-                    race_id=rid, race_date=str(dates[i]), stadium_id=sid,
-                    top3_conc=top3_conc, gap23=gap23, tickets=tks,
-                    hit_combo=hit, won=won, b1_won=(a1 == 1),
-                    cost=cost, payout=payout,
-                )
-            )
-
-    return purchases_by_ev, dict(total_by_stadium)
+            purchases_by_ev[ev_th].append(_make_purchase(ctx, tks))
+    return purchases_by_ev, total_by_stadium
 
 
 def aggregate(purchases: list[Purchase], key=None) -> dict:
