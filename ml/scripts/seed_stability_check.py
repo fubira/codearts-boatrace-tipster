@@ -215,6 +215,12 @@ def main():
                              "Useful when the tune was launched before gap12 was "
                              "added: pass --gap12-th 0.04 to evaluate at the "
                              "current production filter.")
+    parser.add_argument("--ev-threshold", type=float, default=None,
+                        help="Override ev_threshold for OOS eval. Defaults to "
+                             "the tune's fix_thresholds value (or 0 if absent). "
+                             "Required for cross-tune comparisons when logs use "
+                             "different ev defaults, or to evaluate an older tune's "
+                             "trials at the current production ev (e.g. -0.25).")
     args = parser.parse_args()
 
     # Default --from = --end-date (start of OOS), --to = today
@@ -230,9 +236,15 @@ def main():
     log_info = parse_tune_log(Path(args.tune_log))
     fix_th = log_info["fix_thresholds"]
     gap23_th = fix_th.get("gap23", 0.13)
-    ev_th = fix_th.get("ev", 0.0)
+    ev_th = args.ev_threshold if args.ev_threshold is not None else fix_th.get("ev", 0.0)
     conc_default = fix_th.get("top3_conc", 0.0)
     gap12_default = fix_th.get("gap12", 0.0)
+    if args.ev_threshold is not None:
+        print(
+            f"ev_threshold override: tune log had ev={fix_th.get('ev', 0.0)}, "
+            f"evaluating with ev={args.ev_threshold}",
+            file=sys.stderr,
+        )
 
     # log_info["trials"] is {trial_number: {growth, params, user_attrs}}.
     if args.trials:
