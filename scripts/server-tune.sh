@@ -131,7 +131,9 @@ Phase 2 (デフォルト ON、Phase 1 完了後にサーバで連続実行):
   --phase2 N        Kelly 上位 N 個を seed_stability_check で 5 seed 評価。
                     省略時は max(15, trials/15) で自動 scale
                     (50→15, 200→15, 300→20, 500→33)。
-                    最終 ranking は stability_score (mean - std) で並ぶ。
+                    EV sweep (0.0〜-0.35 step 0.05) で各 trial の peak ev を
+                    特定し、peak ev での stability_score (mean - std) で
+                    最終 ranking。
   --no-phase2       Phase 2 を無効化 (Phase 1 だけ実行)
   --phase2-from D   Phase 2 OOS 評価期間 開始 (default: 2026-01-01)
   --phase2-to D     Phase 2 OOS 評価期間 終了 (default: 今日)
@@ -378,6 +380,9 @@ EOF
     phase2_cmd+=" --from ${PHASE2_FROM}"
     phase2_cmd+=" --to ${phase2_to}"
     phase2_cmd+=" --gap12-th ${gap12_th}"
+    # EV sweep: tune time ev=0 固定 + Phase 2 で peak ev 探索 (separation rule).
+    # 0.05 step で -0.35 まで sweep。細かい sweep は後続で個別実施。
+    phase2_cmd+=" --ev-sweep 0.0,-0.05,-0.10,-0.15,-0.20,-0.25,-0.30,-0.35"
   fi
 
   # Create run script

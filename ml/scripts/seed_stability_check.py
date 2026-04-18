@@ -36,7 +36,7 @@ from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
 from boatrace_tipster_ml.feature_config import FEATURES
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import train_model
-from scripts.analyze_model import evaluate_period
+from scripts.analyze_model import evaluate_period, evaluate_period_sweep
 from scripts.train_dev_model import parse_tune_log, params_to_hp
 
 FIELD_SIZE = 6
@@ -182,6 +182,48 @@ def _evaluate(
     }
 
 
+def _evaluate_sweep(
+    model,
+    df_eval: pd.DataFrame,
+    feature_means: dict[str, float],
+    conc_th: float,
+    gap12_th: float,
+    gap23_th: float,
+    ev_levels: list[float],
+    odds: dict,
+    from_date: str,
+    to_date: str,
+) -> dict[float, dict]:
+    """EV sweep version of _evaluate.
+
+    Predict once and re-filter tickets per ev level. ev_levels の各 ev で
+    同じ stats 構造を返すので、呼び出し側は既存の集計ロジックを ev 軸に
+    拡張するだけで再利用できる。
+
+    Returns {ev_th: {races, wins, hit_pct, roi_pct, pl, cost}}
+    """
+    # ev_th=0.0 として meta を作るが、evaluate_period_sweep は strategy.ev_threshold
+    # を参照しないので値はダミー。conc/gap12/gap23 は filter で使われる。
+    meta = _build_strategy_meta(feature_means, conc_th, gap12_th, gap23_th, 0.0)
+    purchases_by_ev, _ = evaluate_period_sweep(
+        model, meta, df_eval, odds, from_date, to_date, ev_levels,
+    )
+    out: dict[float, dict] = {}
+    for ev_th, purchases in purchases_by_ev.items():
+        total_cost = sum(p.cost for p in purchases)
+        total_payout = sum(p.payout for p in purchases)
+        wins = sum(1 for p in purchases if p.won)
+        out[ev_th] = {
+            "races": len(purchases),
+            "wins": wins,
+            "hit_pct": 100 * wins / len(purchases) if purchases else 0.0,
+            "roi_pct": 100 * total_payout / total_cost if total_cost > 0 else 0.0,
+            "pl": total_payout - total_cost,
+            "cost": total_cost,
+        }
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tune-log", required=True,
@@ -219,7 +261,18 @@ def main():
                              "Required for cross-tune comparisons when logs use "
                              "different ev defaults, or to evaluate an older tune's "
                              "trials at the current production ev (e.g. -0.25).")
+    parser.add_argument("--ev-sweep", default=None,
+                        help="Comma-separated ev list for peak-EV search "
+                             "(e.g. '0.0,-0.05,-0.10,-0.15,-0.20,-0.25,-0.30,-0.35'). "
+                             "When given, each trial × seed is evaluated at all ev "
+                             "levels; the peak ev (max stability_score = mean-std of "
+                             "per-seed full-OOS P/L) is chosen per trial and ranking "
+                             "is reported at each trial's peak. Mutually exclusive "
+                             "with --ev-threshold.")
     args = parser.parse_args()
+
+    if args.ev_sweep and args.ev_threshold is not None:
+        parser.error("--ev-sweep and --ev-threshold are mutually exclusive")
 
     # Default --from = --end-date (start of OOS), --to = today
     if args.from_date is None:
@@ -229,6 +282,14 @@ def main():
 
     seeds = [int(s.strip()) for s in args.seeds.split(",")]
     print(f"Seeds: {seeds}", file=sys.stderr)
+
+    ev_sweep_levels: list[float] | None = None
+    if args.ev_sweep:
+        ev_sweep_levels = sorted(
+            {float(x.strip()) for x in args.ev_sweep.split(",")},
+            reverse=True,
+        )
+        print(f"EV sweep levels: {ev_sweep_levels}", file=sys.stderr)
 
     print(f"Parsing {args.tune_log}...", file=sys.stderr)
     log_info = parse_tune_log(Path(args.tune_log))
@@ -335,21 +396,66 @@ def main():
             or "podium"
         )
 
-        # per_seed_windows[i][wname] = stats dict for seed[i], window wname
+        # per_seed_windows[i][wname] = stats dict for seed[i], window wname.
+        # In sweep mode, per_seed_windows_sweep[i][wname][ev] holds per-ev
+        # stats and per_seed_windows is filled from it at the peak ev below.
         per_seed_windows: list[dict[str, dict]] = []
+        per_seed_windows_sweep: list[dict[str, dict[float, dict]]] = []
         t0 = time.time()
         for seed in seeds:
             model = _train_one_seed(
                 df_train, val_mask, hp, lr, effective_n_est, relevance, seed,
             )
-            seed_window_stats: dict[str, dict] = {}
-            for wname, wfrom, wto in month_windows:
-                seed_window_stats[wname] = _evaluate(
-                    model, df_full, feature_means, conc_th, gap12_th,
-                    gap23_th, ev_th, odds, wfrom, wto,
-                )
-            per_seed_windows.append(seed_window_stats)
+            if ev_sweep_levels:
+                seed_window_ev_stats: dict[str, dict[float, dict]] = {}
+                for wname, wfrom, wto in month_windows:
+                    seed_window_ev_stats[wname] = _evaluate_sweep(
+                        model, df_full, feature_means, conc_th, gap12_th,
+                        gap23_th, ev_sweep_levels, odds, wfrom, wto,
+                    )
+                per_seed_windows_sweep.append(seed_window_ev_stats)
+            else:
+                seed_window_stats: dict[str, dict] = {}
+                for wname, wfrom, wto in month_windows:
+                    seed_window_stats[wname] = _evaluate(
+                        model, df_full, feature_means, conc_th, gap12_th,
+                        gap23_th, ev_th, odds, wfrom, wto,
+                    )
+                per_seed_windows.append(seed_window_stats)
         elapsed = time.time() - t0
+
+        # In sweep mode, pick peak ev per trial (max stability across seeds,
+        # tie-break by higher ev = more conservative) and reconstruct
+        # per_seed_windows so downstream aggregation is identical.
+        trial_peak_ev: float | None = None
+        trial_ev_profile: dict[float, dict] | None = None
+        if ev_sweep_levels:
+            trial_ev_profile = {}
+            for ev in ev_sweep_levels:
+                pls = [
+                    sum(s[wname][ev]["pl"] for wname, _, _ in month_windows)
+                    for s in per_seed_windows_sweep
+                ]
+                mean_pl_ev = statistics.mean(pls)
+                std_pl_ev = (
+                    statistics.stdev(pls) if len(pls) > 1 else 0.0
+                )
+                trial_ev_profile[ev] = {
+                    "mean_pl": mean_pl_ev,
+                    "std_pl": std_pl_ev,
+                    "stability": mean_pl_ev - std_pl_ev,
+                }
+            trial_peak_ev = max(
+                ev_sweep_levels,
+                key=lambda e: (trial_ev_profile[e]["stability"], e),
+            )
+            per_seed_windows = [
+                {
+                    wname: s[wname][trial_peak_ev]
+                    for wname, _, _ in month_windows
+                }
+                for s in per_seed_windows_sweep
+            ]
 
         # Aggregate per-window across seeds
         window_summary: dict[str, dict] = {}
@@ -419,9 +525,14 @@ def main():
             "relevance": relevance,
             "n_est": effective_n_est,
             "lr": lr,
+            "peak_ev": trial_peak_ev,
+            "ev_profile": trial_ev_profile,
         })
+        peak_tag = (
+            f" peak_ev={trial_peak_ev:+.2f}" if trial_peak_ev is not None else ""
+        )
         print(
-            f"  [{ti}/{len(trial_items)}] trial #{trial_num}: "
+            f"  [{ti}/{len(trial_items)}] trial #{trial_num}:{peak_tag} "
             f"mean P/L {mean_pl:+,.0f} std {std_pl:,.0f} "
             f"min_win {min_window_pl:+,.0f} ({elapsed:.0f}s)",
             file=sys.stderr,
@@ -438,22 +549,32 @@ def main():
     def _fmt_kelly(k):
         return f"{k:>7.4f}" if k is not None else "      ?"
 
+    sweep_on = ev_sweep_levels is not None
+
     print("\n=== Seed stability check ===")
     print(f"Tune log: {args.tune_log}")
     print(f"Period: {args.from_date} ~ {args.to_date}")
     print(f"Seeds: {seeds}")
     print(f"Windows: {', '.join(window_names)}")
+    if sweep_on:
+        print(f"EV sweep: {ev_sweep_levels} (peak ev reported per trial)")
     print("Ranked by stability_score = mean - std (higher = more robust)")
     print()
+    peak_col = f"{'peak ev':>8} " if sweep_on else ""
     print(
-        f"{'trial':>6} {'WF-CV g':>9} {'WF-CV k':>8} {'stability':>11} "
+        f"{'trial':>6} {peak_col}{'WF-CV g':>9} {'WF-CV k':>8} {'stability':>11} "
         f"{'mean P/L':>11} {'std P/L':>10} {'min win':>11} "
         f"{'worst h%':>9} {'full h%':>8} {'bets':>6} {'b/day':>6} {'rel':>8}"
     )
-    print("-" * 120)
+    print("-" * (130 if sweep_on else 120))
     for r in sorted(results, key=lambda r: -r["stability_score"]):
+        peak_val = (
+            f"{r['peak_ev']:>+8.2f} "
+            if sweep_on and r["peak_ev"] is not None
+            else ""
+        )
         print(
-            f"  #{r['trial']:>3} "
+            f"  #{r['trial']:>3} {peak_val}"
             f"{r['wf_cv_growth']:>9.6f} "
             f"{_fmt_kelly(r['wf_cv_kelly'])} "
             f"{r['stability_score']:>+11,.0f} "
@@ -470,10 +591,13 @@ def main():
     print("\n=== Per-trial detail (ranked by stability) ===")
     for r in sorted(results, key=lambda r: -r["stability_score"]):
         hp = r["hp"]
+        peak_hdr = (
+            f"  peak_ev={r['peak_ev']:+.2f}" if r.get("peak_ev") is not None else ""
+        )
         print(
             f"\nTrial #{r['trial']}  "
             f"stability={r['stability_score']:+,.0f}  "
-            f"bets/day={r['bets_per_day']:.2f}"
+            f"bets/day={r['bets_per_day']:.2f}{peak_hdr}"
         )
         print(
             f"  HP: nl={hp.get('num_leaves')} md={hp.get('max_depth')} "
@@ -482,6 +606,20 @@ def main():
             f"ra={hp.get('reg_alpha'):.1e} rl={hp.get('reg_lambda'):.4f} "
             f"lr={r['lr']:.4f} n_est={r['n_est']} rel={r['relevance']}"
         )
+        if r.get("ev_profile"):
+            print(f"  {'ev sweep':>10}")
+            print(
+                f"  {'ev':>6} {'mean P/L':>11} {'std P/L':>10} {'stability':>11}"
+            )
+            for ev, prof in sorted(
+                r["ev_profile"].items(), key=lambda kv: -kv[0]
+            ):
+                marker = " *" if ev == r["peak_ev"] else "  "
+                print(
+                    f"  {ev:>+6.2f} {prof['mean_pl']:>+11,.0f} "
+                    f"{prof['std_pl']:>10,.0f} "
+                    f"{prof['stability']:>+11,.0f}{marker}"
+                )
         print(
             f"  {'window':>8} {'days':>5} {'races':>6} {'wins':>5} "
             f"{'hit%':>6} {'mean P/L':>11} {'std':>9}"

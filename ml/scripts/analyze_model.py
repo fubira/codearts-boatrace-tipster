@@ -154,6 +154,116 @@ def evaluate_period(
     return purchases, dict(total_by_stadium)
 
 
+def evaluate_period_sweep(
+    model, meta, df, odds, from_date: str, to_date: str,
+    ev_levels: list[float],
+) -> tuple[dict[float, list[Purchase]], dict[int, int]]:
+    """EV sweep version of evaluate_period.
+
+    Predict 1 回 + race-level filter 1 回でやり、ticket の ev >= ev_th
+    判定のみ ev_levels 全てに対して繰り返す。predict の重複コストを避けつつ
+    各 ev 閾値での Purchase 群を生成し、peak ev 探索に使う。
+
+    Returns:
+      purchases_by_ev: {ev_th: [Purchase, ...]}
+      total_by_stadium: 期間内の stadium 別 race 数 (ev 非依存)
+    """
+    features = meta["feature_columns"]
+    st = meta.get("strategy", {})
+    conc_th = st.get("top3_conc_threshold", 0.0)
+    gap23_th = st.get("gap23_threshold", 0.0)
+    gap12_th = st.get("gap12_min_threshold", 0.0)
+    excluded = set(st.get("excluded_stadiums") or [])
+
+    test = df[(df["race_date"] >= from_date) & (df["race_date"] < to_date)].copy()
+    X = test[features].copy()
+    fill_nan_with_means(X, meta)
+    scores = model.predict(X)
+
+    n = len(X) // FIELD_SIZE
+    s2 = scores.reshape(n, FIELD_SIZE)
+    b2 = test["boat_number"].values.reshape(n, FIELD_SIZE).astype(int)
+    ri = test["race_id"].values.reshape(n, FIELD_SIZE)[:, 0].astype(int)
+    sid_arr = test["stadium_id"].values.reshape(n, FIELD_SIZE)[:, 0].astype(int)
+    dates = test["race_date"].values.reshape(n, FIELD_SIZE)[:, 0]
+    y2 = test["finish_position"].values.reshape(n, FIELD_SIZE)
+
+    po = np.argsort(-s2, axis=1)
+    tb = np.take_along_axis(b2, po, axis=1)
+    ex = np.exp(s2 - s2.max(axis=1, keepdims=True))
+    mp = ex / ex.sum(axis=1, keepdims=True)
+    ao = np.argsort(y2, axis=1)
+    ab = np.take_along_axis(b2, ao, axis=1).astype(int)
+
+    purchases_by_ev: dict[float, list[Purchase]] = {ev: [] for ev in ev_levels}
+    total_by_stadium: dict[int, int] = defaultdict(int)
+
+    for i in range(n):
+        sid = int(sid_arr[i])
+        total_by_stadium[sid] += 1
+
+        if sid in excluded:
+            continue
+        if tb[i, 0] != 1:
+            continue
+        p1 = float(mp[i, po[i, 0]])
+        p2 = float(mp[i, po[i, 1]])
+        p3 = float(mp[i, po[i, 2]])
+        gap12 = p1 - p2
+        if gap12 < gap12_th:
+            continue
+        top3_conc = (p2 + p3) / (1 - p1 + 1e-10)
+        gap23 = p2 - p3
+        if top3_conc < conc_th or gap23 < gap23_th:
+            continue
+
+        rid = int(ri[i])
+        r2, r3 = int(tb[i, 1]), int(tb[i, 2])
+        a1, a2, a3 = int(ab[i, 0]), int(ab[i, 1]), int(ab[i, 2])
+        hit = f"{a1}-{a2}-{a3}"
+
+        # Candidate tickets are ev-independent; compute once per race.
+        candidates: list[tuple[str, float, float]] = []
+        for combo, ia, ib, ic in [
+            (f"1-{r2}-{r3}", po[i, 0], po[i, 1], po[i, 2]),
+            (f"1-{r3}-{r2}", po[i, 0], po[i, 2], po[i, 1]),
+        ]:
+            o = odds.get((rid, combo), 0)
+            if o <= 0:
+                continue
+            m2 = _trifecta_prob(mp[i], ia, ib, ic)
+            ev = m2 / (1 / o) * 0.75 - 1
+            candidates.append((combo, o, ev))
+
+        if not candidates:
+            continue
+
+        for ev_th in ev_levels:
+            tks = [(c, o, ev) for c, o, ev in candidates if ev >= ev_th]
+            if not tks:
+                continue
+
+            cost = len(tks) * 100
+            payout = 0.0
+            won = False
+            for combo, o, _ in tks:
+                if combo == hit:
+                    won = True
+                    payout = o * 100
+                    break
+
+            purchases_by_ev[ev_th].append(
+                Purchase(
+                    race_id=rid, race_date=str(dates[i]), stadium_id=sid,
+                    top3_conc=top3_conc, gap23=gap23, tickets=tks,
+                    hit_combo=hit, won=won, b1_won=(a1 == 1),
+                    cost=cost, payout=payout,
+                )
+            )
+
+    return purchases_by_ev, dict(total_by_stadium)
+
+
 def aggregate(purchases: list[Purchase], key=None) -> dict:
     """Group purchases and compute summary metrics for each group."""
     groups: dict = defaultdict(list)
