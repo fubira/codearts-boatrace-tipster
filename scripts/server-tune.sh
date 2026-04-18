@@ -118,7 +118,7 @@ Optuna options:
   --relevance R     relevance scheme: linear|top_heavy|podium
   --seed N          random seed (default: 自動ランダム、明示で再現性確保)
   --objective O     tune_p2 objective: growth | kelly (default: growth)
-  --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "gap23=0.13,ev=0.0,top3_conc=0.7")
+  --fix-thresholds  閾値固定でハイパラのみ探索 (e.g., "gap23=0.13,top3_conc=0.6,gap12=0.04")
   --drop-features F 特徴量 ablation (comma-separated feature names to drop from FEATURES).
                     例: "racer_course_win_rate,stadium_course_win_rate"。
                     BOATRACE_DROP_FEATURES env var としてサーバへ転送される。
@@ -128,7 +128,7 @@ Optuna options:
   --num-threads N   trial あたりの LightGBM スレッド数 (default: 2 = 4thread/2jobs、i7-6700 の半分)
 
 Phase 2 (デフォルト ON、Phase 1 完了後にサーバで連続実行):
-  --phase2 N        hit_pct 上位 N 個を seed_stability_check で 5 seed 評価。
+  --phase2 N        Kelly 上位 N 個を seed_stability_check で 5 seed 評価。
                     省略時は max(15, trials/15) で自動 scale
                     (50→15, 200→15, 300→20, 500→33)。
                     最終 ranking は stability_score (mean - std) で並ぶ。
@@ -403,7 +403,7 @@ echo "" >> "\$LOG"
 echo "=== Phase 1: Optuna tune ===" >> "\$LOG"
 nice -n 19 ionice -c 3 ${tune_cmd} >> "\$LOG" 2>&1
 echo "" >> "\$LOG"
-# Phase 2: seed_stability_check on hit_pct top-N of Phase 1 results.
+# Phase 2: seed_stability_check on Kelly top-N of Phase 1 results.
 # Runs on server so no local intervention is required.
 if [ -n "${phase2_cmd}" ]; then
   echo "=== Phase 2: seed_stability_check ===" >> "\$LOG"
@@ -423,7 +423,7 @@ EOF
   log "Started on ${REMOTE_HOSTNAME} (PID: ${pid})"
   log "  Phase 1: ${TRIALS} trials × ${FOLDS} folds"
   if [ -n "${phase2_top_resolved}" ]; then
-    log "  Phase 2: hit_pct top ${phase2_top_resolved} × 5 seeds (gap12=${gap12_th}, to=${phase2_to})"
+    log "  Phase 2: Kelly top ${phase2_top_resolved} × 5 seeds (gap12=${gap12_th}, to=${phase2_to})"
   else
     log "  Phase 2: skipped (--no-phase2)"
   fi

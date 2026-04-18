@@ -313,12 +313,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument(
-        "--objective", choices=["hit_pct", "growth", "kelly"], default="hit_pct",
+        "--objective", choices=["growth", "kelly"], default="growth",
         help=(
-            "Optimization objective. Default 'hit_pct' (+ volume floor) — "
-            "empirical ρ=+0.648 with 106-day OOS P/L in 2026-04-18 calibration "
-            "(n=45); best single predictor. 'growth' (log daily P/L) and "
-            "'kelly' (mean log-ROI) are legacy; measured ρ=−0.13 and ρ=−0.50."
+            "Optimization objective: growth (daily compound, default) or "
+            "kelly (log-ROI, favors high ROI)."
         ),
     )
     parser.add_argument(
@@ -326,8 +324,8 @@ def main():
         help=(
             "Relevance scheme. Default 'podium' (proven winning config; 21feat "
             "+ podium is the established optimum per CLAUDE.md). Use 'linear' "
-            "or 'top_heavy' only for ablation; empirically linear under-performs "
-            "at ev=-0.25 (bh run). 'search' enables Optuna categorical search."
+            "or 'top_heavy' only for ablation. 'search' enables Optuna "
+            "categorical search."
         ),
     )
     parser.add_argument("--fix-thresholds", default=None,
@@ -656,20 +654,11 @@ def main():
         trial.set_user_attr("avg_best_iter", avg_best_iter)
         trial.set_user_attr("fold_best_iters", fold_best_iters)
 
-        # hit_pct objective (default): volume floor is structural — HPs
-        # buying <PHASE2_MIN_RACES races don't accumulate enough signal
-        # for the hit_pct rate to be meaningful (winner's curse). Without
-        # this floor, Optuna would reward HPs that hit once at low volume.
-        # Calibration 2026-04-18: hit_pct ρ=+0.648 vs 106-day OOS P/L (n=45).
-        # growth/kelly legacy paths keep the looser <20 floor for archived
-        # tune-run comparability.
-        from scripts.seed_stability_check import PHASE2_MIN_RACES
-        if args.objective == "hit_pct":
-            if total_races < PHASE2_MIN_RACES:
-                return -1e9
-            return hit_pct
+        # Require minimum volume — return sentinel AFTER user_attrs so the
+        # trial is still inspectable in logs/trials.json.
         if total_races < 20:
             return -999.0
+
         if args.objective == "kelly":
             return kelly
         return growth
@@ -722,14 +711,11 @@ def main():
     )
 
     # Results
-    obj_label = {"hit_pct": "Hit%", "growth": "Growth", "kelly": "Kelly"}[args.objective]
+    obj_label = {"growth": "Growth", "kelly": "Kelly"}[args.objective]
     print("\n" + "=" * 70)
     print(f"Optuna Search Complete — P2 Trifecta Strategy (objective: {args.objective})")
     print("=" * 70)
-    if args.objective == "hit_pct":
-        print(f"Best {obj_label}: {study.best_value:.2f}%")
-    else:
-        print(f"Best {obj_label}: {study.best_value:.6f}")
+    print(f"Best {obj_label}: {study.best_value:.6f}")
     bp = study.best_params
     print(f"Best params:")
     for k, v in sorted(bp.items()):
@@ -801,29 +787,24 @@ def main():
     for t in sorted(completed, key=lambda t: t.value, reverse=True)[:top_n]:
         print(_fmt_trial(t))
 
-    # hit_pct ranking: matches Phase 2 candidate selection. Volume gate
-    # (>= PHASE2_MIN_RACES) excludes low-sample winner's curse.
-    # Empirical ρ=+0.648 vs 106-day OOS P/L (calibration 2026-04-18, n=45) —
-    # strongest single Phase 1 predictor of true OOS performance.
+    # Kelly ranking: matches Phase 2 candidate selection.
+    # Volume gate (>= PHASE2_MIN_RACES) excludes low-sample Kelly exploit trials.
     from scripts.seed_stability_check import PHASE2_MIN_RACES
 
-    def _hit_pct_key(t):
+    def _kelly_key(t):
         ua = t.user_attrs or {}
         races = ua.get("total_races") or 0
         if races < PHASE2_MIN_RACES:
             return float("-inf")
-        hit = ua.get("hit_pct")
-        return hit if hit is not None else float("-inf")
+        k = ua.get("kelly")
+        return k if k is not None else float("-inf")
 
-    hit_sorted = sorted(completed, key=_hit_pct_key, reverse=True)
-    hit_top = [
-        t for t in hit_sorted if _hit_pct_key(t) != float("-inf")
-    ][:top_n]
+    kelly_sorted = sorted(completed, key=_kelly_key, reverse=True)
+    kelly_top = [t for t in kelly_sorted if _kelly_key(t) != float("-inf")][:top_n]
     print(
-        f"\nTop {top_n} trials (by hit_pct, Phase 2 candidates, "
-        f"volume>={PHASE2_MIN_RACES}):"
+        f"\nTop {top_n} trials (by Kelly, Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
     )
-    for t in hit_top:
+    for t in kelly_top:
         print(_fmt_trial(t))
 
     # Save best params
