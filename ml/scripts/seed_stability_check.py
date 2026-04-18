@@ -54,24 +54,25 @@ PHASE2_MIN_RACES = 500
 def _compute_month_windows(
     start_date: str, end_date: str
 ) -> list[tuple[str, str, str]]:
-    """Return (name, from, to) for complete calendar months in [start, end).
+    """Return (name, from, to) for calendar months in [start, end].
 
-    A month is "complete" when its end (next month's first day) is <= end_date.
-    Partial months (e.g. the current in-progress month) are excluded so that
-    window definitions are stable across invocations on different days.
+    The last month in the range may be partial (clamped to end_date) so the
+    full evaluation period is always covered. stability_score is computed
+    from per-seed full-period sums (sum across all returned windows per
+    seed), so the partial last month contributes correctly to ranking.
+    Per-month breakdown is used for diagnostic display only.
     """
     start = pd.Timestamp(start_date)
     end = pd.Timestamp(end_date)
     cur = pd.Timestamp(year=start.year, month=start.month, day=1)
     windows: list[tuple[str, str, str]] = []
-    while True:
+    while cur < end:
         nxt = cur + pd.DateOffset(months=1)
-        if nxt > end:
-            break
-        if cur >= start:
+        win_end = min(nxt, end)
+        if cur >= start and cur < end:
             windows.append(
                 (cur.strftime("%Y-%m"), cur.strftime("%Y-%m-%d"),
-                 nxt.strftime("%Y-%m-%d"))
+                 win_end.strftime("%Y-%m-%d"))
             )
         cur = nxt
     return windows
@@ -244,31 +245,25 @@ def main():
             else:
                 print(f"WARN: trial #{num} not in log, skipping", file=sys.stderr)
     else:
-        # Top N by ROI stability = mean(rois) - std(rois), with volume floor.
-        # Structurally matches Phase 2's stability_score = mean(P/L) - std(P/L),
-        # just on ROI instead of P/L and over 4 WF-CV folds instead of 5 seeds.
-        # The hypothesis: HPs that are consistent across folds (data partitions)
-        # tend to also be consistent across seeds. This is untested empirically
-        # but mirrors the Phase 2 selection formula directly.
-        # Kelly (prior default) compressed at ev=-0.25 where fold ROIs cluster
-        # near 1.0-1.15, making Kelly log differences lose discrimination power.
-        # ROI stability uses linear ROI so differences stay visible.
-        def _roi_stability(kv):
+        # Top N by Phase 1 hit_pct with volume floor. Empirically the
+        # strongest Phase 1 predictor of real OOS P/L: ρ=+0.648 vs 106-day
+        # single-seed OOS (calibration 2026-04-18, n=45). Prior selection
+        # keys (kelly, ROI stability) measured ρ<0 in the same dataset.
+        # Volume floor (>= PHASE2_MIN_RACES) removes low-sample winner's
+        # curse before ranking.
+        def _hit_pct_key(kv):
             ua = kv[1].get("user_attrs") or {}
             races = ua.get("total_races") or 0
             if races < PHASE2_MIN_RACES:
                 return float("-inf")
-            rois = ua.get("rois")
-            if not rois or len(rois) < 2:
-                return float("-inf")
-            return statistics.mean(rois) - statistics.stdev(rois)
+            hit = ua.get("hit_pct")
+            return hit if hit is not None else float("-inf")
         trial_items = sorted(
-            log_info["trials"].items(), key=_roi_stability, reverse=True,
+            log_info["trials"].items(), key=_hit_pct_key, reverse=True,
         )[: args.top_n]
-        # Drop trials with -inf (all below volume floor or with missing rois).
         trial_items = [
             (num, t) for num, t in trial_items
-            if _roi_stability((num, t)) != float("-inf")
+            if _hit_pct_key((num, t)) != float("-inf")
         ]
     if not trial_items:
         print("No trials found.", file=sys.stderr)
@@ -296,14 +291,14 @@ def main():
     month_windows = _compute_month_windows(args.from_date, args.to_date)
     if not month_windows:
         print(
-            f"ERROR: no complete calendar months in [{args.from_date}, "
-            f"{args.to_date}). Need at least one full month of OOS data.",
+            f"ERROR: empty evaluation range [{args.from_date}, {args.to_date}).",
             file=sys.stderr,
         )
         sys.exit(1)
     print(
-        f"Evaluation windows ({len(month_windows)} calendar months): "
-        f"{', '.join(w[0] for w in month_windows)}",
+        f"Evaluation: full period {args.from_date}〜{args.to_date} "
+        f"({len(month_windows)} month bucket(s) for diagnostic: "
+        f"{', '.join(w[0] for w in month_windows)})",
         file=sys.stderr,
     )
 

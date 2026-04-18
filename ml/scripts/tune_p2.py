@@ -312,10 +312,24 @@ def main():
     parser.add_argument("--fold-months", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
-    parser.add_argument("--objective", choices=["growth", "kelly"], default="growth",
-                        help="Optimization objective: growth (daily compound, default) or kelly (log-ROI, favors high ROI)")
-    parser.add_argument("--relevance", default=None,
-                        help="Fix relevance scheme (linear/top_heavy/podium). If omitted, included in search space.")
+    parser.add_argument(
+        "--objective", choices=["hit_pct", "growth", "kelly"], default="hit_pct",
+        help=(
+            "Optimization objective. Default 'hit_pct' (+ volume floor) — "
+            "empirical ρ=+0.648 with 106-day OOS P/L in 2026-04-18 calibration "
+            "(n=45); best single predictor. 'growth' (log daily P/L) and "
+            "'kelly' (mean log-ROI) are legacy; measured ρ=−0.13 and ρ=−0.50."
+        ),
+    )
+    parser.add_argument(
+        "--relevance", default="podium",
+        help=(
+            "Relevance scheme. Default 'podium' (proven winning config; 21feat "
+            "+ podium is the established optimum per CLAUDE.md). Use 'linear' "
+            "or 'top_heavy' only for ablation; empirically linear under-performs "
+            "at ev=-0.25 (bh run). 'search' enables Optuna categorical search."
+        ),
+    )
     parser.add_argument("--fix-thresholds", default=None,
                         help="Fix strategy thresholds. Format: gap23=0.15,ev=0.1,top3_conc=0.7,gap12=0.04")
     parser.add_argument("--output-json", default="models/tune_result/trials.json",
@@ -487,15 +501,16 @@ def main():
             rank_params["num_threads"] = args.num_threads
         n_estimators = trial.suggest_int("n_estimators", ne_lo, ne_hi)
         learning_rate = trial.suggest_float("learning_rate", lr_lo, lr_hi, log=True)
-        if args.relevance:
-            relevance = args.relevance
+        if args.relevance == "search":
+            relevance = trial.suggest_categorical(
+                "relevance", ["linear", "top_heavy", "podium"]
+            )
         elif narrow_seed and "relevance" in narrow_seed:
             # Lock relevance in narrow mode (categorical can't be narrowed)
             relevance = narrow_seed["relevance"]
         else:
-            relevance = trial.suggest_categorical(
-                "relevance", ["linear", "top_heavy", "podium"]
-            )
+            # Default: fixed to args.relevance (typically "podium").
+            relevance = args.relevance
 
         # Strategy thresholds
         if "gap23" in fixed_thresholds:
@@ -641,11 +656,20 @@ def main():
         trial.set_user_attr("avg_best_iter", avg_best_iter)
         trial.set_user_attr("fold_best_iters", fold_best_iters)
 
-        # Require minimum volume — return sentinel AFTER user_attrs so the
-        # trial is still inspectable in logs/trials.json.
+        # hit_pct objective (default): volume floor is structural — HPs
+        # buying <PHASE2_MIN_RACES races don't accumulate enough signal
+        # for the hit_pct rate to be meaningful (winner's curse). Without
+        # this floor, Optuna would reward HPs that hit once at low volume.
+        # Calibration 2026-04-18: hit_pct ρ=+0.648 vs 106-day OOS P/L (n=45).
+        # growth/kelly legacy paths keep the looser <20 floor for archived
+        # tune-run comparability.
+        from scripts.seed_stability_check import PHASE2_MIN_RACES
+        if args.objective == "hit_pct":
+            if total_races < PHASE2_MIN_RACES:
+                return -1e9
+            return hit_pct
         if total_races < 20:
             return -999.0
-
         if args.objective == "kelly":
             return kelly
         return growth
@@ -698,11 +722,14 @@ def main():
     )
 
     # Results
-    obj_label = {"growth": "Growth", "kelly": "Kelly"}[args.objective]
+    obj_label = {"hit_pct": "Hit%", "growth": "Growth", "kelly": "Kelly"}[args.objective]
     print("\n" + "=" * 70)
     print(f"Optuna Search Complete — P2 Trifecta Strategy (objective: {args.objective})")
     print("=" * 70)
-    print(f"Best {obj_label}: {study.best_value:.6f}")
+    if args.objective == "hit_pct":
+        print(f"Best {obj_label}: {study.best_value:.2f}%")
+    else:
+        print(f"Best {obj_label}: {study.best_value:.6f}")
     bp = study.best_params
     print(f"Best params:")
     for k, v in sorted(bp.items()):
@@ -774,31 +801,29 @@ def main():
     for t in sorted(completed, key=lambda t: t.value, reverse=True)[:top_n]:
         print(_fmt_trial(t))
 
-    # ROI-stability ranking: matches Phase 2 candidate selection.
-    # stability = mean(rois) - std(rois), structurally mirroring the final
-    # stability_score = mean(P/L) - std(P/L). Volume gate (>= PHASE2_MIN_RACES)
-    # excludes low-sample noise.
+    # hit_pct ranking: matches Phase 2 candidate selection. Volume gate
+    # (>= PHASE2_MIN_RACES) excludes low-sample winner's curse.
+    # Empirical ρ=+0.648 vs 106-day OOS P/L (calibration 2026-04-18, n=45) —
+    # strongest single Phase 1 predictor of true OOS performance.
     from scripts.seed_stability_check import PHASE2_MIN_RACES
 
-    def _roi_stability_key(t):
+    def _hit_pct_key(t):
         ua = t.user_attrs or {}
         races = ua.get("total_races") or 0
         if races < PHASE2_MIN_RACES:
             return float("-inf")
-        rois = ua.get("rois")
-        if not rois or len(rois) < 2:
-            return float("-inf")
-        return float(np.mean(rois) - np.std(rois, ddof=1))
+        hit = ua.get("hit_pct")
+        return hit if hit is not None else float("-inf")
 
-    roi_sorted = sorted(completed, key=_roi_stability_key, reverse=True)
-    roi_top = [
-        t for t in roi_sorted if _roi_stability_key(t) != float("-inf")
+    hit_sorted = sorted(completed, key=_hit_pct_key, reverse=True)
+    hit_top = [
+        t for t in hit_sorted if _hit_pct_key(t) != float("-inf")
     ][:top_n]
     print(
-        f"\nTop {top_n} trials (by ROI stability = mean(rois) - std(rois), "
-        f"Phase 2 candidates, volume>={PHASE2_MIN_RACES}):"
+        f"\nTop {top_n} trials (by hit_pct, Phase 2 candidates, "
+        f"volume>={PHASE2_MIN_RACES}):"
     )
-    for t in roi_top:
+    for t in hit_top:
         print(_fmt_trial(t))
 
     # Save best params
