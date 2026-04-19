@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "ignore": ["data/", "dist/", ".claude/"]
+    "ignore": ["data/", "dist/", ".claude/", "archive/"]
   },
   "formatter": {
     "enabled": true,
