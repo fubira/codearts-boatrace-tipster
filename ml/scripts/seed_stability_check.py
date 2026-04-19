@@ -35,7 +35,7 @@ import pandas as pd
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH, get_connection
 from boatrace_tipster_ml.feature_config import FEATURES
 from boatrace_tipster_ml.features import build_features_df
-from boatrace_tipster_ml.model import train_model
+from boatrace_tipster_ml.training import train_p2_ranker
 from scripts.analyze_model import evaluate_period, evaluate_period_sweep
 from scripts.train_dev_model import parse_tune_log, params_to_hp
 
@@ -116,8 +116,9 @@ def _build_strategy_meta(
 
 
 def _train_one_seed(
-    df_train: pd.DataFrame,
-    val_mask: pd.Series,
+    df_full: pd.DataFrame,
+    end_date: str,
+    val_months: int,
     hp: dict,
     lr: float,
     n_est: int,
@@ -126,25 +127,21 @@ def _train_one_seed(
 ) -> Any:
     """Train a single LightGBM model with a specific random_state seed.
 
-    Re-uses the WF-CV-derived n_est (no early stopping to keep behavior
-    deterministic w.r.t. the saved trial config). Returns the model object.
+    Uses the unified training pipeline (training.train_p2_ranker) so val
+    split and early-stopping behavior match train_ranking / train_dev_model.
     """
-    extra = dict(hp)
-    extra["random_state"] = seed
-
-    X = df_train[FEATURES].copy()
-    y = df_train["finish_position"]
-    meta = df_train[["race_id", "racer_id", "race_date", "boat_number"]].copy()
-
     with contextlib.redirect_stdout(io.StringIO()):
-        model, _ = train_model(
-            X[~val_mask], y[~val_mask], meta[~val_mask],
-            X[val_mask], y[val_mask], meta[val_mask],
-            n_estimators=n_est, learning_rate=lr,
-            relevance_scheme=relevance, extra_params=extra,
-            early_stopping_rounds=None,
+        result = train_p2_ranker(
+            df_full,
+            hp=hp,
+            n_estimators=n_est,
+            learning_rate=lr,
+            relevance_scheme=relevance,
+            end_date=end_date,
+            val_months=val_months,
+            seed=seed,
         )
-    return model
+    return result["model"]
 
 
 def _evaluate(
@@ -348,18 +345,15 @@ def main():
     print(f"Selected top {len(trial_items)} trials. "
           f"Loading features (end_date={args.end_date})...", file=sys.stderr)
     with contextlib.redirect_stdout(io.StringIO()):
-        df_train = build_features_df(args.db_path, end_date=args.end_date)
         df_full = build_features_df(args.db_path)
 
-    val_start = pd.Timestamp(args.end_date) - pd.DateOffset(months=args.val_months)
-    val_mask = df_train["race_date"] >= str(val_start.date())
-
-    # feature_means must come from df_train (the actual training data) to
-    # match what train_dev_model.train_one() persists into the saved meta.
-    # Computing from df_full[<from_date] would use a different cache build
-    # and introduce ~5% numerical drift in OOS evaluation.
+    # feature_means は train window (race_date < end_date) から計算して
+    # train_dev_model.train_one() が保存する値と揃える。training 統合後は
+    # train_p2_ranker が内部で同等の計算をするが、evaluate_period の
+    # NaN fallback に使うため事前に取得しておく。
+    train_df = df_full[df_full["race_date"] < args.end_date]
     feature_means = {
-        c: float(df_train[c].astype("float64").mean()) for c in FEATURES
+        c: float(train_df[c].astype("float64").mean()) for c in FEATURES
     }
 
     odds = _load_trifecta_odds(args.db_path)
@@ -404,7 +398,14 @@ def main():
         t0 = time.time()
         for seed in seeds:
             model = _train_one_seed(
-                df_train, val_mask, hp, lr, effective_n_est, relevance, seed,
+                df_full,
+                end_date=args.end_date,
+                val_months=args.val_months,
+                hp=hp,
+                lr=lr,
+                n_est=effective_n_est,
+                relevance=relevance,
+                seed=seed,
             )
             if ev_sweep_levels:
                 seed_window_ev_stats: dict[str, dict[float, dict]] = {}

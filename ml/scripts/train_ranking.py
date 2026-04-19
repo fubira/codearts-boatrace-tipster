@@ -15,17 +15,19 @@ import argparse
 import time
 
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
+from boatrace_tipster_ml.feature_config import FEATURES
 from boatrace_tipster_ml.features import build_features_df
 from boatrace_tipster_ml.model import (
     DEFAULT_PARAMS,
     load_training_params,
     save_model,
     save_model_meta,
-    train_model,
 )
-from boatrace_tipster_ml.feature_config import FEATURES
+from boatrace_tipster_ml.training import train_p2_ranker
 
 FIELD_SIZE = 6
+DEFAULT_END_DATE = "2026-01-01"
+DEFAULT_VAL_MONTHS = 2
 
 
 def main():
@@ -83,63 +85,48 @@ def main():
 
     t0 = time.time()
     print("Building features...")
-    df = build_features_df(args.db_path, end_date=args.end_date)
+    df = build_features_df(args.db_path)
 
-    # Use P2 non-odds features
     missing = [f for f in FEATURES if f not in df.columns]
     if missing:
         print(f"ERROR: Missing features: {missing}")
         return
 
-    meta = df[["race_id", "racer_id", "race_date", "boat_number"]].copy()
-    X = df[FEATURES].copy()
-    y = df["finish_position"]
-    print(f"  {len(X)} entries ({len(X)//FIELD_SIZE} races), {len(FEATURES)} features")
-
-    # Val = last ~2 months
-    dates = sorted(df["race_date"].unique())
-    val_start = dates[max(0, len(dates) - 60)]
-
-    race_dates = meta["race_date"].values
-    train_mask = race_dates < val_start
-    val_mask = race_dates >= val_start
-
-    X_train, y_train, meta_train = X[train_mask], y[train_mask], meta[train_mask]
-    X_val, y_val, meta_val = X[val_mask], y[val_mask], meta[val_mask]
-
-    print(f"  Train: {len(X_train)//FIELD_SIZE}R, Val: {len(X_val)//FIELD_SIZE}R")
+    end_date = args.end_date or DEFAULT_END_DATE
+    print(f"  {len(df)} entries ({len(df) // FIELD_SIZE} races), {len(FEATURES)} features")
+    print(f"  end_date={end_date}, val_months={DEFAULT_VAL_MONTHS}")
     print("Training LambdaRank...")
 
-    model, metrics = train_model(
-        X_train, y_train, meta_train,
-        X_val, y_val, meta_val,
+    result = train_p2_ranker(
+        df,
+        hp=params["extra_params"],
         n_estimators=params["n_estimators"],
         learning_rate=params["learning_rate"],
-        extra_params=params["extra_params"],
         relevance_scheme=params["relevance_scheme"],
-        early_stopping_rounds=200,
+        end_date=end_date,
+        val_months=DEFAULT_VAL_MONTHS,
     )
 
-    # Feature means for NaN fallback
-    feature_means = {c: float(X[c].astype("float64").mean()) for c in FEATURES}
+    print(f"  Train: {result['n_train']}R, Val: {result['n_val']}R")
 
-    # Save
     all_hp = dict(params["extra_params"])
     all_hp["n_estimators"] = params["n_estimators"]
     all_hp["learning_rate"] = params["learning_rate"]
     all_hp["relevance_scheme"] = params["relevance_scheme"]
 
-    save_model(model, args.model_dir)
+    save_model(result["model"], args.model_dir)
     save_model_meta(
         args.model_dir,
         feature_columns=FEATURES,
         hyperparameters=all_hp,
         training={
-            "n_train": len(X_train) // FIELD_SIZE,
-            "n_val": len(X_val) // FIELD_SIZE,
-            "date_range": f"{dates[0]} ~ {dates[-1]}",
+            "n_train": result["n_train"],
+            "n_val": result["n_val"],
+            "date_range": result["date_range"],
+            "end_date": end_date,
+            "val_months": DEFAULT_VAL_MONTHS,
         },
-        feature_means=feature_means,
+        feature_means=result["feature_means"],
     )
     print(f"Model saved to {args.model_dir}/")
     print(f"Total time: {time.time() - t0:.1f}s")

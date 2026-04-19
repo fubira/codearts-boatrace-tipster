@@ -34,9 +34,10 @@ import pandas as pd
 from boatrace_tipster_ml.db import DEFAULT_DB_PATH
 from boatrace_tipster_ml.feature_config import FEATURES
 from boatrace_tipster_ml.features import build_features_df
-from boatrace_tipster_ml.model import save_model, save_model_meta, train_model
+from boatrace_tipster_ml.model import save_model, save_model_meta
 from boatrace_tipster_ml.registry import next_prefix as registry_next_prefix
 from boatrace_tipster_ml.registry import peek_prefix
+from boatrace_tipster_ml.training import train_p2_ranker
 
 FIELD_SIZE = 6
 MODELS_DIR = Path("models")
@@ -192,36 +193,29 @@ def train_one(df, prefix, trial_num, trial_info, end_date, val_months, log_path,
         effective_n_est = n_est_upper
         src = f"n_est (no avg_best_iter in trial attrs — using upper bound)"
 
-    train_df = df[df["race_date"] < end_date]
-    val_start = pd.Timestamp(end_date) - pd.DateOffset(months=val_months)
-    val_mask = train_df["race_date"] >= str(val_start.date())
-
-    X = train_df[FEATURES].copy()
-    y = train_df["finish_position"]
-    meta = train_df[["race_id", "racer_id", "race_date", "boat_number"]].copy()
-
-    n_train = int((~val_mask).sum() // FIELD_SIZE)
-    n_val = int(val_mask.sum() // FIELD_SIZE)
-
     model_name = f"{prefix}_{trial_num}"
     output_dir = MODELS_DIR / model_name / "ranking"
+    t0 = time.time()
+    with contextlib.redirect_stdout(io.StringIO()):
+        result = train_p2_ranker(
+            df,
+            hp=hp,
+            n_estimators=effective_n_est,
+            learning_rate=lr,
+            relevance_scheme="podium",
+            end_date=end_date,
+            val_months=val_months,
+        )
+    model = result["model"]
+    n_train = result["n_train"]
+    n_val = result["n_val"]
+    feature_means = result["feature_means"]
     print(
         f"[{model_name}] Training (n_train={n_train}, n_val={n_val}, "
         f"lr={lr:.4f}, n_est={effective_n_est}, conc={conc_th:.3f}) {src}",
         flush=True,
     )
-    t0 = time.time()
-    with contextlib.redirect_stdout(io.StringIO()):
-        model, _ = train_model(
-            X[~val_mask], y[~val_mask], meta[~val_mask],
-            X[val_mask], y[val_mask], meta[val_mask],
-            n_estimators=effective_n_est, learning_rate=lr,
-            relevance_scheme="podium", extra_params=hp,
-            early_stopping_rounds=None,  # Match WF-CV effective iterations
-        )
     print(f"[{model_name}] Done in {time.time()-t0:.0f}s", flush=True)
-
-    feature_means = {c: float(X[c].astype("float64").mean()) for c in FEATURES}
     all_hp = dict(hp)
     all_hp["n_estimators"] = effective_n_est
     all_hp["n_estimators_upper"] = n_est_upper
