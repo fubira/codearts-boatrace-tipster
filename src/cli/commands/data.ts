@@ -3,6 +3,7 @@ import {
   pushDb,
   syncCache,
   syncDb,
+  syncRunnerState,
   syncSnapshots,
   verify,
 } from "@/features/data-sync";
@@ -71,6 +72,10 @@ dataCommand
           logger.info(`Backup: ${result.backupPath}`);
         }
       }
+
+      // runner-state: DB と同じ扱いで pull (サーバ runner の状態を反映)
+      const rsResult = syncRunnerState(conf, { dryRun: opts.dryRun });
+      logger.info(`Runner state sync: pulled ${rsResult.pulled} file(s)`);
     }
 
     // Snapshot sync: only in full sync mode (skip when --db-only or --cache-only)
