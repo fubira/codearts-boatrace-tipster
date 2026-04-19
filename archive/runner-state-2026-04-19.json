@@ -1,0 +1,159 @@
+{
+  "bankroll": 60100,
+  "allTimeInitial": 70000,
+  "startedAt": "2026-04-12T13:37:43.096Z",
+  "lastUpdate": "2026-04-19T04:56:32.244Z",
+  "today": {
+    "date": "2026-04-19",
+    "bets": [
+      {
+        "raceId": 215665,
+        "decision": {
+          "raceId": 215665,
+          "stadiumName": "三国",
+          "raceNumber": 1,
+          "boatNumber": 1,
+          "prob": 0,
+          "odds": 0,
+          "ev": -23.556797500000005,
+          "betAmount": 300,
+          "recommend": true,
+          "tickets": [
+            {
+              "combo": "1-4-2",
+              "modelProb": 0.050209,
+              "marketOdds": 20.3,
+              "ev": -0.23556797500000004
+            }
+          ]
+        }
+      },
+      {
+        "raceId": 215727,
+        "decision": {
+          "raceId": 215727,
+          "stadiumName": "芦屋",
+          "raceNumber": 3,
+          "boatNumber": 1,
+          "prob": 0,
+          "odds": 0,
+          "ev": 32.749032500000006,
+          "betAmount": 300,
+          "recommend": true,
+          "tickets": [
+            {
+              "combo": "1-5-3",
+              "modelProb": 0.053799,
+              "marketOdds": 32.9,
+              "ev": 0.3274903250000001
+            }
+          ]
+        }
+      },
+      {
+        "raceId": 215729,
+        "decision": {
+          "raceId": 215729,
+          "stadiumName": "芦屋",
+          "raceNumber": 5,
+          "boatNumber": 1,
+          "prob": 0,
+          "odds": 0,
+          "ev": -0.39218500000000045,
+          "betAmount": 300,
+          "recommend": true,
+          "tickets": [
+            {
+              "combo": "1-3-2",
+              "modelProb": 0.101382,
+              "marketOdds": 13.1,
+              "ev": -0.0039218500000000045
+            }
+          ]
+        }
+      },
+      {
+        "raceId": 215730,
+        "decision": {
+          "raceId": 215730,
+          "stadiumName": "芦屋",
+          "raceNumber": 6,
+          "boatNumber": 1,
+          "prob": 0,
+          "odds": 0,
+          "ev": -5.228050000000007,
+          "betAmount": 300,
+          "recommend": true,
+          "tickets": [
+            {
+              "combo": "1-3-2",
+              "modelProb": 0.04823,
+              "marketOdds": 26.2,
+              "ev": -0.05228050000000006
+            }
+          ]
+        }
+      },
+      {
+        "raceId": 215618,
+        "decision": {
+          "raceId": 215618,
+          "stadiumName": "浜名湖",
+          "raceNumber": 2,
+          "boatNumber": 1,
+          "prob": 0,
+          "odds": 0,
+          "ev": 6.120777499999996,
+          "betAmount": 300,
+          "recommend": true,
+          "tickets": [
+            {
+              "combo": "1-5-3",
+              "modelProb": 0.051081,
+              "marketOdds": 27.7,
+              "ev": 0.061207774999999964
+            }
+          ]
+        }
+      }
+    ],
+    "results": [
+      {
+        "raceId": 215665,
+        "won": false,
+        "payout": 0
+      },
+      {
+        "raceId": 215727,
+        "won": false,
+        "payout": 0
+      },
+      {
+        "raceId": 215729,
+        "won": false,
+        "payout": 0
+      },
+      {
+        "raceId": 215730,
+        "won": false,
+        "payout": 0
+      },
+      {
+        "raceId": 215618,
+        "won": false,
+        "payout": 0
+      }
+    ],
+    "skipCounts": {
+      "not_b1_top": 7,
+      "gap12_low": 4,
+      "top3_conc_low": 21,
+      "gap23_low": 34,
+      "no_ev_tickets": 2,
+      "drift_drop": 0,
+      "stadium_excluded": 0,
+      "withdrawal": 2
+    },
+    "t1DroppedTickets": 0
+  }
+}

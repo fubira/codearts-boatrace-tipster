@@ -1,14 +1,15 @@
 services:
-  runner:
+  scraper:
     image: ghcr.io/fubira/codearts-boatrace-tipster:latest
+    command: ["bun", "run", "start", "scrape-daemon"]
     restart: unless-stopped
     env_file: .env
     environment:
       TZ: Asia/Tokyo
     volumes:
       - ./data:/app/data
-      - ./logs:/app/logs
       - ./ml/models:/app/ml/models
+      - ./logs:/app/logs
     labels:
       - "com.centurylinklabs.watchtower.scope=boatrace-tipster"
     logging:
