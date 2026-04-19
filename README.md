@@ -2,6 +2,12 @@
 
 競艇予想AI - 機械学習（LightGBM LambdaRank）による P2 三連単戦略
 
+## 運用ステータス
+
+P2 1 号艇軸戦略は 2026-04-19 撤退、runner 停止中。scraper（データ収集）と
+watchtower のみ稼働。以下の runner / 学習関連の記述は再開時の参照用として保持。
+詳細は `CLAUDE.md` 冒頭と journal `2026-04-19_1343_roi-ceiling-and-strategic-retreat.md`。
+
 ## 技術スタック
 
 | レイヤー | 技術 |
@@ -21,18 +27,13 @@ cd ml && uv sync
 ## クイックスタート
 
 ```bash
-# 1. データ収集
-bun run start scrape -m 202601           # 月単位
+# データ収集（サーバの scraper が自動実行中、手動実行する場合）
+bun run start scrape -m 202601
 bun run start scrape-odds -m 202601
 
-# 2. 予測（active モデルから自動解決）
+# 予測（active モデルから自動解決、OOS バックテスト用）
 bun run start predict -d "$(date +%F)"
-
-# 3. 自動運用デーモン
-bun run start run                         # DRY RUN
 ```
-
-各コマンドの詳細は `--help` で確認できる。
 
 ## ドキュメント
 
@@ -43,14 +44,12 @@ bun run start run                         # DRY RUN
 ## スクレイピング
 
 ```bash
-bun run start scrape -d 2025-01-15          # 指定日の全会場
-bun run start scrape -m 202501              # 指定月
-bun run start scrape -y 2025               # 指定年
-bun run start scrape -d 2025-01-15 -r 1,2,3 # レース番号指定
-bun run start scrape --dry-run -d 2025-01-15  # DB 書き込みなし
-bun run start scrape --cache-only -y 2025    # HTML ダウンロードのみ
-bun run start scrape --from-cache -y 2025    # キャッシュからのみ投入
-bun run start scrape --force -d 2025-01-15   # キャッシュ無視で再取得
+bun run start scrape -d 2025-01-15              # 指定日
+bun run start scrape -m 202501                  # 指定月 (-y で年単位も可)
+bun run start scrape -d 2025-01-15 -r 1,2,3     # レース番号指定
+bun run start scrape --cache-only -y 2025       # HTML ダウンロードのみ
+bun run start scrape --from-cache -y 2025       # キャッシュからパースのみ
+bun run start scrape --force -d 2025-01-15      # キャッシュ無視で再取得
 ```
 
 ## データ管理
@@ -81,28 +80,30 @@ cd ml && uv run python scripts/analyze_model.py --from 2026-01-01 --to "$(date +
 cd ml && uv run python scripts/analyze_model.py --from 2026-01-01 --to "$(date +%F)" --split-by month
 ```
 
-## 自動運用デーモン
+## 自動運用デーモン（停止中）
+
+runner は 2026-04-19 の撤退で停止、compose.yaml から削除済み。再開時の CLI:
 
 ```bash
-bun run start run                                   # DRY RUN（デフォルト）
+bun run start run                                   # DRY RUN
 bun run start run --bet-cap 30000 --bankroll 70000  # サイジング指定
-bun run start run --live                            # LIVE モード（将来の自動購入用）
+bun run start run --live                            # LIVE モード
 ```
 
-締切時刻ベースで自動データ取得 → T-5 で predict → T-1 で drift 判定 → Slack 通知。
-`.env` に `SLACK_WEBHOOK_URL` を設定すると Slack に通知が飛ぶ（未設定時はコンソール出力）。
+締切時刻ベースで自動データ取得 → T-5 で predict → T-1 で drift → Slack 通知
+(`.env` の `SLACK_WEBHOOK_URL` 未設定時はコンソール出力)。
 
-## ML 学習・チューニング
+## ML 学習・チューニング（maintenance 停止中）
 
-サーバ側の Optuna 探索 (server-tune.sh) で並列実行・自動 prefix 採番される。Phase 1 (tune) 完了後に Phase 2 (ROI stability 上位 N × 5 seed stability check) がサーバで自動連続実行され、kick 1 回 + fetch 1 回で promote 候補の ranking まで取得できる。
+P2 戦略の tune / retrain は撤退に伴い停止。再開時は以下を参照:
 
 ```bash
 ./scripts/server-tune.sh --trials 400                # 通常探索 (overnight target)
 ./scripts/server-tune.sh --trials 400 --from-model models/<active> --narrow
 ./scripts/server-tune.sh --watch                     # ログ監視
-./scripts/server-tune.sh --fetch                     # 結果取得 (Phase 1 + Phase 2 の log)
+./scripts/server-tune.sh --fetch                     # 結果取得 (Phase 1 + Phase 2)
 
-# 上位 trial を dev モデルとして学習 (Phase 2 の stability_score 上位から)
+# 上位 trial を dev モデルとして学習
 cd ml && uv run python -m scripts.train_dev_model --tune-log <log> --trials <N>
 # 本番昇格は ml/models/active.json を書き換えるだけ
 ```
