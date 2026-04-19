@@ -298,6 +298,70 @@ def _rolling_rate_daily(
     return _rolling_mean_daily(df, group_cols, value_col, window)
 
 
+def _before_window_mean(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    value_col: str,
+    window: int,
+) -> np.ndarray:
+    """Mean over races older than the last `window` race-days.
+
+    cumulative (same-day excluded) から直近 window race-days を差し引いた
+    「古い部分だけ」の平均。累積と直近の情報分離検証で使う
+    (例: 累積と rolling(20) の性能差は "古い情報が重要" なのか
+    "サンプル数が重要" なのかの分析)。old_count == 0 の場合 NaN。
+    """
+    valid = df[value_col].notna()
+    val = df[value_col].fillna(0.0)
+
+    # Cumulative sum / count (same-day excluded)
+    cum_sum_all = df.assign(_val=val).groupby(group_cols, sort=False)["_val"].cumsum()
+    cum_cnt_all = df.assign(_valid=valid.astype(int)).groupby(
+        group_cols, sort=False
+    )["_valid"].cumsum()
+    daily_group = group_cols + ["race_date"]
+    cum_sum_daily = (
+        df.assign(_val=val).groupby(daily_group, sort=False)["_val"].cumsum()
+    )
+    cum_cnt_daily = df.assign(_valid=valid.astype(int)).groupby(
+        daily_group, sort=False
+    )["_valid"].cumsum()
+
+    prior_sum = (cum_sum_all - cum_sum_daily).values
+    prior_cnt = (cum_cnt_all - cum_cnt_daily).values
+
+    # Rolling last-window sum / count (via daily aggregate + shift)
+    tmp = df[group_cols + ["race_date"]].copy()
+    tmp["_val"] = val
+    tmp["_valid"] = valid.astype(int)
+    daily = (
+        tmp.groupby(group_cols + ["race_date"], sort=False)
+        .agg(_dsum=("_val", "sum"), _dcnt=("_valid", "sum"))
+        .reset_index()
+        .sort_values(group_cols + ["race_date"])
+    )
+    g = daily.groupby(group_cols, sort=False)
+    daily["_cs_sum"] = g["_dsum"].cumsum().values
+    daily["_cs_cnt"] = g["_dcnt"].cumsum().values
+    g2 = daily.groupby(group_cols, sort=False)
+    rsum = g2["_cs_sum"].shift(1).fillna(0) - g2["_cs_sum"].shift(1 + window).fillna(0)
+    rcnt = g2["_cs_cnt"].shift(1).fillna(0) - g2["_cs_cnt"].shift(1 + window).fillna(0)
+    daily["_rsum"] = rsum.values
+    daily["_rcnt"] = rcnt.values
+
+    merge_keys = group_cols + ["race_date"]
+    result = df[merge_keys].merge(
+        daily[merge_keys + ["_rsum", "_rcnt"]],
+        on=merge_keys, how="left",
+    )
+    last_sum = result["_rsum"].values
+    last_cnt = result["_rcnt"].values
+
+    old_sum = prior_sum - last_sum
+    old_cnt = prior_cnt - last_cnt
+    return np.where(old_cnt > 0, old_sum / old_cnt, np.nan)
+
+
 # ---------------------------------------------------------------------------
 # Tournament ID generation
 # ---------------------------------------------------------------------------
@@ -398,16 +462,17 @@ def _add_course_taking_rate(df: pd.DataFrame) -> None:
 
 
 def _add_recent_form(df: pd.DataFrame) -> None:
-    """B4: Recent 20-race form (win rate, top2 rate, avg position).
+    """B4: Career form (win rate, top2 rate, avg position) per racer.
 
-    Uses cum_all - cum_daily pattern (same as other historical features)
-    to fully exclude same-day races, then takes the last-20 rolling window.
+    Despite the "recent" naming, this is a cumulative mean (leak-safe with
+    same-day excluded). Empirical experiments 2026-04-19 showed rolling
+    windows underperform this cumulative signal for P2 strategy, so we keep
+    the cumulative implementation. Rename is pending but outside current scope.
     """
     df["_is_win"] = (df["finish_position"] == 1).astype(float)
     df["_is_top2"] = (df["finish_position"] <= 2).astype(float)
     df["_pos"] = df["finish_position"].astype(float)
 
-    # Use cumulative rate (same-day excluded) as the base
     df["recent_win_rate"] = _cumulative_rate(df, ["racer_id"], "_is_win")
     df["recent_top2_rate"] = _cumulative_rate(df, ["racer_id"], "_is_top2")
     df["recent_avg_position"] = _cumulative_mean(df, ["racer_id"], "_pos")
