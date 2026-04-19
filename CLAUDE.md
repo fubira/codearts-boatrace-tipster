@@ -2,6 +2,12 @@
 
 競艇予想AI - 機械学習（LightGBM）による競艇予想ソフトウェア
 
+## 運用ステータス (2026-04-19 撤退)
+
+P2 1 号艇軸戦略は clean 1 年 OOS で ROI +22.89% 上限と確定、A (ensemble) / B (stadium filter) / C (Kelly) すべて uplift なしで **開発終了、runner 停止**。scraper + watchtower のみ稼働中 (データ蓄積継続)。再開 / 再評価は 2027-04 頃、または非 1 号艇戦略への pivot 時。詳細は journal `2026-04-19_1343_roi-ceiling-and-strategic-retreat.md`。
+
+以下の仕様記述は **再起動時の参照用に保持**。runner 関連の CLI / 運用ルールは停止中だが仕様は有効。
+
 ## アーキテクチャ
 
 - **TypeScript (Bun)**: CLI、スクレイピング、DB 管理、オーケストレーション
